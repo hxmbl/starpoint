@@ -10,6 +10,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 
 	"github.com/starpoint/starpoint/internal/config"
@@ -79,6 +80,7 @@ func (e *Engine) Plan(ctx context.Context, doc *config.Document, opts Options) (
 	for _, pkg := range packages {
 		st := e.evaluate(ctx, pkg, available, opts)
 		states = append(states, st)
+		warnings = append(warnings, unavailableOwnerWarnings(st, available)...)
 	}
 	model.SortStates(states)
 
@@ -394,6 +396,34 @@ func (e *Engine) validate(pkgs []model.Package, available map[string]provider.He
 	return out
 }
 
+// unavailableOwnerWarnings reports packages whose owner is not on this machine.
+//
+// A package whose provider cannot be reached produces no action at all, so
+// without this warning it would silently do nothing — the most confusing outcome
+// a tool like this can have.
+func unavailableOwnerWarnings(st model.State, available map[string]provider.Health) []model.Warning {
+	h, ok := available[st.Res.Provider]
+	if !ok || h.Available {
+		return nil
+	}
+	if st.Desired != nil {
+		// The provider is missing yet reports the software: trust the inventory
+		// and do not claim a contradiction.
+		return nil
+	}
+	reason := h.Reason
+	if reason == "" {
+		reason = "it is not available on this machine"
+	}
+	return []model.Warning{{
+		Severity: model.SeverityWarn,
+		Package:  st.Package.Name,
+		Provider: st.Res.Provider,
+		Message: fmt.Sprintf("nothing can be done for it: provider %s is unavailable (%s)",
+			st.Res.Provider, reason),
+	}}
+}
+
 func sortedProviders(m map[string]provider.Health) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -463,6 +493,70 @@ func (e *Engine) Duplicates(ctx context.Context, doc *config.Document, opts Opti
 func (e *Engine) Discovery(ctx context.Context, name string, opts Options) *model.Installation {
 	pkg := model.Package{Name: name}
 	return e.findExisting(ctx, pkg, e.health(ctx))
+}
+
+// Shadowing describes a package whose owner is known but whose executable is not
+// the one a shell would run.
+type Shadowing struct {
+	Package string
+	// Managed is the installation the configuration points at.
+	Managed model.Installation
+	// OnPath is the executable the name currently resolves to.
+	OnPath string
+}
+
+// Shadowed reports managed packages whose name on PATH resolves somewhere other
+// than the installation Starpoint is managing.
+//
+// Provider inventories answer "who installed this", which is the wrong question
+// when a second copy sits earlier on PATH. A Homebrew `rust` formula and a rustup
+// toolchain both provide `rustc`; only one of them is what `rustc` runs. Saying so
+// is the difference between Starpoint describing ownership and Starpoint being
+// right about it.
+func (e *Engine) Shadowed(ctx context.Context, doc *config.Document, opts Options) []Shadowing {
+	if e.locator == nil {
+		return nil
+	}
+	available := e.health(ctx)
+	var out []Shadowing
+	for _, pkg := range doc.Packages() {
+		owner := pkg.Provider
+		if owner == "" {
+			owner = e.Decide(ctx, doc, pkg, opts).Provider
+		}
+		p, ok := e.reg.Get(owner)
+		if !ok || !available[owner].Available || !p.Capabilities().Discover {
+			continue
+		}
+		inst, err := e.providerInstallation(ctx, p, pkg)
+		if err != nil || inst == nil || inst.Path == "" {
+			continue
+		}
+		found := e.locator.Locate(pkg.Name)
+		if found.Path == "" || samePath(found.Path, inst.Path) {
+			continue
+		}
+		out = append(out, Shadowing{Package: pkg.Name, Managed: *inst, OnPath: found.Path})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Package < out[j].Package })
+	return out
+}
+
+// samePath compares two paths after resolving symlinks, so a shim and its target
+// are not reported as a conflict with themselves.
+func samePath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		return false
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	if err != nil {
+		return false
+	}
+	return ra == rb
 }
 
 // Registry exposes the provider registry, which the CLI needs for doctor output.

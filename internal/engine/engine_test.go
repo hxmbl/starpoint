@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/starpoint/starpoint/internal/providers/brew"
 	"github.com/starpoint/starpoint/internal/providers/cargo"
 	"github.com/starpoint/starpoint/internal/providers/npm"
+	"github.com/starpoint/starpoint/internal/providers/rustup"
 	"github.com/starpoint/starpoint/internal/providers/system"
 	"github.com/starpoint/starpoint/internal/providers/uv"
 	"github.com/starpoint/starpoint/internal/testsupport"
@@ -23,17 +26,18 @@ import (
 // fixture wires a document and engine against fake providers. Every test in this
 // file uses it so no test can touch the real machine.
 type fixture struct {
-	t     *testing.T
-	doc   *config.Document
-	eng   *Engine
-	reg   *provider.Registry
-	brew  *testsupport.FakeProvider
-	uv    *testsupport.FakeProvider
-	cargo *testsupport.FakeProvider
-	npm   *testsupport.FakeProvider
-	apt   *testsupport.FakeProvider
-	sys   *testsupport.FakeProvider
-	path  string
+	t      *testing.T
+	doc    *config.Document
+	eng    *Engine
+	reg    *provider.Registry
+	brew   *testsupport.FakeProvider
+	uv     *testsupport.FakeProvider
+	rustup *testsupport.FakeProvider
+	cargo  *testsupport.FakeProvider
+	npm    *testsupport.FakeProvider
+	apt    *testsupport.FakeProvider
+	sys    *testsupport.FakeProvider
+	path   string
 }
 
 func newFixture(t *testing.T, configBody string) *fixture {
@@ -51,10 +55,17 @@ func newFixture(t *testing.T, configBody string) *fixture {
 	aptP.UnavailableReason = "apt-get not found on PATH"
 
 	uvP := testsupport.NewFakeProvider(uv.Name, provider.KindPython)
+	// rustup is registered before Cargo, as in the production registry: the
+	// more specific owner of a toolchain has to be asked first.
+	rustupP := testsupport.NewFakeProvider(rustup.Name, provider.KindRust)
+	rustupP.Caps = provider.Capabilities{
+		Discover: true, Install: true, Remove: true, Update: true,
+		PinVersion: true, Channels: true, DefaultScope: model.ScopeUser,
+	}
 	cargoP := testsupport.NewFakeProvider(cargo.Name, provider.KindRust)
 	npmP := testsupport.NewFakeProvider(npm.Name, provider.KindNode)
 
-	for _, p := range []*testsupport.FakeProvider{sys, brewP, aptP, uvP, cargoP, npmP} {
+	for _, p := range []*testsupport.FakeProvider{sys, brewP, aptP, uvP, rustupP, cargoP, npmP} {
 		reg.Register(p)
 	}
 
@@ -66,13 +77,14 @@ func newFixture(t *testing.T, configBody string) *fixture {
 	}
 	return &fixture{
 		t: t, doc: doc, reg: reg, path: path,
-		eng:   New(reg, nil),
-		brew:  brewP,
-		uv:    uvP,
-		cargo: cargoP,
-		npm:   npmP,
-		apt:   aptP,
-		sys:   sys,
+		eng:    New(reg, nil),
+		brew:   brewP,
+		uv:     uvP,
+		rustup: rustupP,
+		cargo:  cargoP,
+		npm:    npmP,
+		apt:    aptP,
+		sys:    sys,
 	}
 }
 
@@ -806,6 +818,200 @@ func TestDiscoveryFindsUnmanagedSoftware(t *testing.T) {
 	}
 }
 
+func TestRustToolchainBinaryIsOwnedByRustup(t *testing.T) {
+	// rustc is on PATH from rustup, not from Cargo. The engine asks providers in
+	// registration order, so a correct answer depends on rustup being asked first.
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"rustc\"\n")
+	f.rustup.With(model.Installation{
+		Name: "rustc", Version: "1.99.0", Path: "/home/u/.rustup/toolchains/stable/bin/rustc",
+		Scope: model.ScopeUser,
+	})
+
+	plan := f.plan(Options{})
+	st := f.state(plan, "rustc")
+	if st.Status != model.StatusCorrect {
+		t.Fatalf("an installed toolchain binary should be correct, got %q", st.Status)
+	}
+	if st.Res.Provider != rustup.Name {
+		t.Errorf("rustc belongs to rustup, got %q (%s)", st.Res.Provider, st.Res.Reason)
+	}
+	if !plan.Empty() {
+		t.Errorf("an already-installed toolchain needs no action: %+v", plan.Actions)
+	}
+}
+
+func TestRustToolchainBinaryIsAdoptedRatherThanReinstalled(t *testing.T) {
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"cargo\"\n")
+	f.rustup.With(model.Installation{
+		Name: "cargo", Version: "1.99.0", Path: "/home/u/.rustup/toolchains/stable/bin/cargo",
+		Scope: model.ScopeUser,
+	})
+
+	if _, err := f.eng.Add(context.Background(), f.doc, model.Package{Name: "cargo"}, Options{NoConfirm: true}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if len(f.rustup.InstallCalls) != 0 {
+		t.Error("adopting an existing toolchain must not reinstall Rust")
+	}
+	if len(f.cargo.InstallCalls) != 0 {
+		t.Error("Cargo must not be asked to install the cargo binary")
+	}
+	body := f.configBody()
+	if !strings.Contains(body, `provider = "rustup"`) {
+		t.Errorf("ownership should be recorded as rustup's:\n%s", body)
+	}
+}
+
+func TestRustupNeverClaimsACrate(t *testing.T) {
+	// A crate installed with `cargo install` must stay Cargo's even though rustup
+	// is present and registered first.
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"ripgrep\"\n")
+	f.rustup.With(model.Installation{Name: "stable"})
+	f.cargo.With(model.Installation{
+		Name: "ripgrep", Version: "14.1.0", Path: "/home/u/.cargo/bin/rg", Scope: model.ScopeUser,
+	})
+
+	plan := f.plan(Options{})
+	st := f.state(plan, "ripgrep")
+	if st.Res.Provider != cargo.Name {
+		t.Errorf("an installed crate keeps Cargo as its owner, got %q (%s)", st.Res.Provider, st.Res.Reason)
+	}
+	if !plan.Empty() {
+		t.Errorf("nothing to do for a crate already installed: %+v", plan.Actions)
+	}
+}
+
+func TestConfiguredCargoOwnershipOfAToolchainIsATransition(t *testing.T) {
+	// The user explicitly says Cargo owns rustc while rustup actually has it.
+	// That is a deliberate move, not something to resolve by reinstalling.
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"rustc\"\nprovider = \"cargo\"\n")
+	f.rustup.With(model.Installation{
+		Name: "rustc", Version: "1.99.0", Path: "/home/u/.rustup/toolchains/stable/bin/rustc",
+	})
+
+	plan := f.plan(Options{})
+	st := f.state(plan, "rustc")
+	if st.Status != model.StatusProviderDiffers {
+		t.Fatalf("expected provider-differs, got %q", st.Status)
+	}
+	if len(plan.Actions) != 1 || plan.Actions[0].Action != model.ActionRelocate {
+		t.Fatalf("expected one relocation, got %+v", plan.Actions)
+	}
+}
+
+func TestUnavailableResolvedProviderIsWarnedAbout(t *testing.T) {
+	// The configuration names no provider; rustup is the only known owner of
+	// rustc and it is absent. Starpoint must say so rather than quietly doing
+	// nothing.
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"rustc\"\n")
+	f.rustup.IsAvailable = false
+	f.rustup.UnavailableReason = "rustup not found on PATH"
+
+	plan := f.plan(Options{})
+	found := false
+	for _, w := range plan.Warnings {
+		if w.Package == "rustc" && strings.Contains(w.Message, "is unavailable") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a warning about the unavailable owner, got %+v", plan.Warnings)
+	}
+	if !plan.Empty() {
+		t.Errorf("no action is possible without the provider: %+v", plan.Actions)
+	}
+}
+
+func TestShadowedPackageIsReported(t *testing.T) {
+	// A Homebrew `rust` formula and a rustup toolchain both provide `rustc`, but
+	// only one of them is what a shell runs. Provider inventories answer "who
+	// installed this", which is the wrong question when a second copy sits
+	// earlier on PATH.
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"rustc\"\n")
+	f.rustup.With(model.Installation{
+		Name: "rustc", Version: "1.99.0", Path: "/rustup/toolchains/stable/bin/rustc",
+	})
+	f.eng = New(f.reg, &locator.Locator{
+		LookPath: func(name string) (string, error) {
+			if name == "rustc" {
+				return "/usr/local/bin/rustc", nil
+			}
+			return "", errors.New("not found")
+		},
+	})
+
+	got := f.eng.Shadowed(context.Background(), f.doc, Options{})
+	if len(got) != 1 {
+		t.Fatalf("expected one shadowing report, got %+v", got)
+	}
+	if got[0].Package != "rustc" {
+		t.Errorf("wrong package: %+v", got[0])
+	}
+	if got[0].OnPath != "/usr/local/bin/rustc" {
+		t.Errorf("the PATH resolution should be reported, got %q", got[0].OnPath)
+	}
+	if got[0].Managed.Provider != rustup.Name {
+		t.Errorf("the managed owner should be reported, got %q", got[0].Managed.Provider)
+	}
+}
+
+func TestUnshadowedPackageIsNotReported(t *testing.T) {
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"rustc\"\n")
+	f.rustup.With(model.Installation{Name: "rustc", Path: "/rustup/toolchains/stable/bin/rustc"})
+	f.eng = New(f.reg, &locator.Locator{
+		LookPath: func(name string) (string, error) {
+			if name == "rustc" {
+				return "/rustup/toolchains/stable/bin/rustc", nil
+			}
+			return "", errors.New("not found")
+		},
+	})
+	if got := f.eng.Shadowed(context.Background(), f.doc, Options{}); len(got) != 0 {
+		t.Errorf("a package that resolves to its own installation is not shadowed: %+v", got)
+	}
+}
+
+func TestShadowingNeedsAKnownInstallationPath(t *testing.T) {
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"rustc\"\n")
+	// The provider reports the software but not where it lives.
+	f.rustup.With(model.Installation{Name: "rustc", Version: "1.99.0"})
+	f.eng = New(f.reg, &locator.Locator{
+		LookPath: func(string) (string, error) { return "/usr/local/bin/rustc", nil },
+	})
+	if got := f.eng.Shadowed(context.Background(), f.doc, Options{}); len(got) != 0 {
+		t.Errorf("without a known managed path there is nothing to compare: %+v", got)
+	}
+}
+
+func TestShadowingIsSafeWithoutALocator(t *testing.T) {
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"rustc\"\n")
+	f.rustup.With(model.Installation{Name: "rustc", Path: "/rustup/bin/rustc"})
+	if got := f.eng.Shadowed(context.Background(), f.doc, Options{}); got != nil {
+		t.Errorf("a nil locator must not panic or invent reports: %+v", got)
+	}
+}
+
+func TestSamePathResolvesSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "rustc")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "rustc-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if !samePath(link, target) {
+		t.Error("a shim and its target are the same executable")
+	}
+	if samePath(link, filepath.Join(dir, "other")) {
+		t.Error("different files are not the same")
+	}
+	if !samePath(target, target) {
+		t.Error("an identical path is the same")
+	}
+}
+
 func warningsText(res *Result) string {
 	var b strings.Builder
 	for _, w := range res.Warnings {
@@ -871,3 +1077,80 @@ func TestEngineUsesRealProviderSetWithoutTouchingTheMachine(t *testing.T) {
 // defaultRegistryForTest builds the production registry without running any
 // provider command.
 func defaultRegistryForTest() *provider.Registry { return providers.DefaultRegistry() }
+
+func TestAddDoesNotAdoptAnInstallationThatMissesAPin(t *testing.T) {
+	// Adoption means "this is already what was asked for". Pinning ruff to a
+	// version that is not installed has to install it, not record a lie.
+	f := newFixture(t, "schema = 1\n")
+	f.uv.With(model.Installation{Name: "ruff", Version: "0.5.0", Scope: model.ScopeUser})
+
+	if _, err := f.eng.Add(context.Background(), f.doc,
+		model.Package{Name: "ruff", Version: "0.6.0"}, Options{NoConfirm: true}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if len(f.uv.InstallCalls) != 1 {
+		t.Fatalf("the pinned version should have been installed, calls=%d", len(f.uv.InstallCalls))
+	}
+	if got := f.uv.InstallCalls[0].Package.Version; got != "0.6.0" {
+		t.Errorf("the pin should reach the provider, got %q", got)
+	}
+	if !strings.Contains(f.configBody(), `version = "0.6.0"`) {
+		t.Errorf("the pin must be recorded:\n%s", f.configBody())
+	}
+}
+
+func TestAddAdoptsWhenThePinIsAlreadySatisfied(t *testing.T) {
+	f := newFixture(t, "schema = 1\n")
+	f.uv.With(model.Installation{Name: "ruff", Version: "0.6.0", Scope: model.ScopeUser})
+
+	if _, err := f.eng.Add(context.Background(), f.doc,
+		model.Package{Name: "ruff", Version: "0.6.0"}, Options{NoConfirm: true}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if len(f.uv.InstallCalls) != 0 {
+		t.Error("the pinned version is already installed and must not be reinstalled")
+	}
+}
+
+func TestAddAdoptsWithoutAPin(t *testing.T) {
+	f := newFixture(t, "schema = 1\n")
+	f.uv.With(model.Installation{Name: "ruff", Version: "0.5.0", Scope: model.ScopeUser})
+	if _, err := f.eng.Add(context.Background(), f.doc,
+		model.Package{Name: "ruff"}, Options{NoConfirm: true}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if len(f.uv.InstallCalls) != 0 {
+		t.Error("an unpinned package that is already installed must not be reinstalled")
+	}
+}
+
+func TestAddWithAPinAndUnknownInstalledVersionDoesNotClaimSuccess(t *testing.T) {
+	// The provider cannot report a version, so the pin cannot be confirmed.
+	f := newFixture(t, "schema = 1\n")
+	f.uv.With(model.Installation{Name: "something", Scope: model.ScopeUser})
+	if _, err := f.eng.Add(context.Background(), f.doc,
+		model.Package{Name: "something", Version: "2.0.0"}, Options{NoConfirm: true}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if len(f.uv.InstallCalls) != 1 {
+		t.Errorf("an unverifiable pin must be attempted, not assumed, calls=%d", len(f.uv.InstallCalls))
+	}
+}
+
+func TestAddToolchainPinInstallsThatToolchain(t *testing.T) {
+	// For rustup a concrete version names a different toolchain, so a pin that
+	// the installed channel does not satisfy has to be installed.
+	f := newFixture(t, "schema = 1\n")
+	f.rustup.With(model.Installation{Name: "stable", Version: "1.99.0", Scope: model.ScopeUser})
+
+	if _, err := f.eng.Add(context.Background(), f.doc,
+		model.Package{Name: "stable", Version: "1.50.0"}, Options{NoConfirm: true}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if len(f.rustup.InstallCalls) != 1 {
+		t.Fatalf("the pinned toolchain should have been installed, calls=%d", len(f.rustup.InstallCalls))
+	}
+	if got := f.rustup.InstallCalls[0].Package.Version; got != "1.50.0" {
+		t.Errorf("the concrete toolchain should be requested, got %q", got)
+	}
+}

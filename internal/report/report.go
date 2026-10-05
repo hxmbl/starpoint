@@ -362,11 +362,18 @@ func (w *Writer) Result(op string, res *engine.Result) error {
 		verb := op
 		switch a.Action {
 		case model.ActionAdopt:
-			verb = "recorded"
+			verb = "record"
 		case model.ActionRemove:
-			verb = "removed"
+			verb = "remove"
 		case model.ActionUpdate:
-			verb = "updated"
+			verb = "update"
+		}
+		if res.DryRun {
+			// "would installed" is not English, and "installed" would be a lie
+			// about the machine: nothing happened.
+			verb = "would " + verb
+		} else {
+			verb = pastTense(verb)
 		}
 		line := fmt.Sprintf("%s %s", verb, pkg)
 		if a.Note != "" && !strings.HasPrefix(a.Note, "provider ") {
@@ -462,6 +469,23 @@ func (w *Writer) table(rows [][]string) error {
 		}
 	}
 	return nil
+}
+
+// pastTense converts the base verb a command is named after ("install") into the
+// form a completed action reads in ("installed").
+func pastTense(op string) string {
+	switch op {
+	case "install":
+		return "installed"
+	case "remove":
+		return "removed"
+	case "update":
+		return "updated"
+	case "record":
+		return "recorded"
+	default:
+		return op
+	}
 }
 
 func dash(s string) string {

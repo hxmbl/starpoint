@@ -536,6 +536,16 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 					dup.Package, dup.Extra.Provider, dup.Extra.Path),
 			})
 		}
+		for _, shadow := range eng.Shadowed(ctx, doc, engine.Options{Dir: env.WorkDir}) {
+			rep.Problems = append(rep.Problems, model.Warning{
+				Severity: model.SeverityError,
+				Package:  shadow.Package,
+				Provider: shadow.Managed.Provider,
+				Message: fmt.Sprintf(
+					"%s resolves to %s on PATH, but the %s copy Starpoint manages is %s; running %s will use the other one",
+					shadow.Package, shadow.OnPath, shadow.Managed.Provider, shadow.Managed.Path, shadow.Package),
+			})
+		}
 		for _, st := range rep.Ownership {
 			switch st.Status {
 			case model.StatusMissing:
@@ -561,6 +571,26 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 		}
 	}
 	return w.Doctor(rep)
+}
+
+// looksLikeVersion reports whether a name is a bare version number such as
+// "1.50.0". No package manager has a package called that, and sending one to a
+// package manager produces a confusing failure instead of an obvious one.
+func looksLikeVersion(name string) bool {
+	if name == "" || strings.ContainsAny(name, "/-_@") {
+		return false
+	}
+	for _, part := range strings.Split(name, ".") {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // projectEcosystem maps a detected project to the provider ecosystem that owns
@@ -647,6 +677,13 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 
 	var results []*engine.Result
 	for _, name := range names {
+		if looksLikeVersion(name) {
+			return fmt.Errorf(
+				"%s looks like a version number, not a package name. "+
+					"Name the software and pin the version instead, for example: "+
+					"'starpoint install <package> --version %s', or 'starpoint install stable --version %s' "+
+					"for a release channel's toolchain", name, name, name)
+		}
 		// "starpoint install ." means "install what this project needs".
 		if name == "." || name == "./" {
 			res, err := installProject(ctx, env, eng, doc, opts, proj, version, channel)
@@ -688,7 +725,7 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		return w.Render(combined)
 	}
 	for _, r := range results {
-		if err := w.Result("installed", r); err != nil {
+		if err := w.Result("install", r); err != nil {
 			return err
 		}
 	}
@@ -860,7 +897,7 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		return w.Render(map[string]any{"operations": results})
 	}
 	for _, r := range results {
-		if err := w.Result("removed", r); err != nil {
+		if err := w.Result("remove", r); err != nil {
 			return err
 		}
 	}

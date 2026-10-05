@@ -25,6 +25,7 @@ import (
 	"github.com/starpoint/starpoint/internal/locator"
 	"github.com/starpoint/starpoint/internal/model"
 	"github.com/starpoint/starpoint/internal/provider"
+	"github.com/starpoint/starpoint/internal/providers/rustup"
 	"github.com/starpoint/starpoint/internal/providers/system"
 )
 
@@ -71,6 +72,9 @@ var systemManagers = []string{"brew", "apt", "dnf", "pacman", "nix", "winget", "
 // nameHints map well-known software names to the ecosystem that should own them.
 // This is intentionally small: it covers cases where the name itself implies a
 // language, not an attempt to catalogue every package.
+//
+// Names whose owner is a specific provider are deliberately absent: they belong in
+// ownerHints, which states the owner instead of hinting at an ecosystem.
 var nameHints = map[string]provider.Kind{
 	"python":  provider.KindPython,
 	"python3": provider.KindPython,
@@ -82,10 +86,11 @@ var nameHints = map[string]provider.Kind{
 	"poetry":  provider.KindPython,
 	"rye":     provider.KindPython,
 
-	"rustc":  provider.KindRust,
-	"cargo":  provider.KindRust,
-	"rustup": provider.KindRust,
-	"rg":     provider.KindRust,
+	// "rg" appears here because its name says "Rust binary". "ripgrep" does not,
+	// because `brew install ripgrep` is what almost everyone means and there is a
+	// better default available. An unrecognised name is asked about rather than
+	// guessed at.
+	"rg": provider.KindRust,
 
 	"node": provider.KindNode,
 	"npm":  provider.KindNode,
@@ -97,6 +102,23 @@ var nameHints = map[string]provider.Kind{
 	"go":            provider.KindGo,
 	"gopls":         provider.KindGo,
 	"golangci-lint": provider.KindGo,
+}
+
+// ownerHint returns the provider that definitively owns a name, if one does.
+//
+// This exists because "Rust" is two different jobs: rustup provides the
+// toolchain and `cargo install` provides crates, and treating them as one
+// provider is how a machine ends up with two compilers. The vocabulary comes from
+// the provider that owns it, so the two cannot drift apart.
+//
+// An owner is authoritative. If rustup owns a name and rustup is missing, the
+// answer is still rustup: falling through to the generic Rust provider would mean
+// running `cargo install rustc`, which is not a thing anyone wants.
+func ownerHint(name string) (string, bool) {
+	if rustup.IsToolchainBinary(name) || name == rustup.Name {
+		return rustup.Name, true
+	}
+	return "", false
 }
 
 // Resolver makes provider decisions.
@@ -141,13 +163,48 @@ func (r *Resolver) Resolve(in Input) model.Resolution {
 		// not manage the operating system's software, so a user asking to
 		// install python is asking for a managed copy, not to adopt
 		// /usr/bin/python3.
+		//
+		// The exception is a name with a single known owner. `rustc` is rustup's
+		// even when Homebrew also happens to ship one; adopting whichever copy
+		// was found first would silently record the wrong owner and bury a real
+		// duplicate behind a decision nobody made. The extra copy is reported
+		// by `doctor` instead.
 		if existing.Provider != system.Name {
-			res := model.Resolution{
-				Provider:   existing.Provider,
-				Reason:     fmt.Sprintf("already installed at %s", existing.Path),
-				Confidence: model.ConfidenceCertain,
+			if owner, known := ownerHint(strings.ToLower(in.Package.Name)); !known || owner == existing.Provider {
+				return model.Resolution{
+					Provider:   existing.Provider,
+					Reason:     fmt.Sprintf("already installed at %s", existing.Path),
+					Confidence: model.ConfidenceCertain,
+				}
 			}
-			return res
+		}
+	}
+
+	// allowedSet is empty when the user expressed no preference, in which case
+	// every available provider is a candidate. An explicit restriction is a
+	// decision, so it outranks every hint below.
+	allowedSet := map[string]bool{}
+	for _, n := range in.Allowed {
+		allowedSet[n] = true
+	}
+	allowed := func(name string) bool { return len(allowedSet) == 0 || allowedSet[name] }
+
+	// Rule 3: a name with a single known owner. Unlike the ecosystem rules below
+	// this does not require the provider to be available, because guessing a
+	// different owner for `rustc` would be worse than reporting that rustup is
+	// missing.
+	if owner, ok := ownerHint(strings.ToLower(in.Package.Name)); ok && allowed(owner) {
+		if !available(owner, in.Available) {
+			return model.Resolution{
+				Provider:   owner,
+				Reason:     fmt.Sprintf("%s is owned by %s, which is not available here", in.Package.Name, owner),
+				Confidence: model.ConfidenceHigh,
+			}
+		}
+		return model.Resolution{
+			Provider:   owner,
+			Reason:     fmt.Sprintf("%s is owned by %s", in.Package.Name, owner),
+			Confidence: model.ConfidenceCertain,
 		}
 	}
 
@@ -162,14 +219,6 @@ func (r *Resolver) Resolve(in Input) model.Resolution {
 			Confidence: model.ConfidenceSpeculat,
 		}
 	}
-
-	// allowedSet is empty when the user expressed no preference, in which case
-	// every available provider is a candidate.
-	allowedSet := map[string]bool{}
-	for _, n := range in.Allowed {
-		allowedSet[n] = true
-	}
-	allowed := func(name string) bool { return len(allowedSet) == 0 || allowedSet[name] }
 
 	kind := hintKind(in.Package.Name)
 	if kind != "" {
@@ -234,13 +283,24 @@ func (r *Resolver) Resolve(in Input) model.Resolution {
 		}
 	}
 
-	// Fall back to whatever is available at all.
+	// Nothing specific matched. Only language providers are left, and an
+	// unrecognised name says nothing about which ecosystem it belongs to. With
+	// more than one available the choice is a real coin flip, so it is asked
+	// about rather than settled by registration order — which would otherwise
+	// make the answer depend on an arbitrary detail of how providers are wired.
+	if len(candidates) > 1 {
+		return model.Resolution{
+			Provider:     candidates[0],
+			Reason:       "nothing identifies which ecosystem this software belongs to",
+			Confidence:   model.ConfidenceLow,
+			Ambiguous:    true,
+			Alternatives: r.others(candidates, candidates[0]),
+		}
+	}
 	return model.Resolution{
-		Provider:     candidates[0],
-		Reason:       "no package manager matched; using an available provider",
-		Confidence:   model.ConfidenceLow,
-		Ambiguous:    len(candidates) > 1,
-		Alternatives: r.others(candidates, candidates[0]),
+		Provider:   candidates[0],
+		Reason:     "only one available provider can install this software",
+		Confidence: model.ConfidenceLow,
 	}
 }
 

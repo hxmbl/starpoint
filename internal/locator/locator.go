@@ -27,21 +27,30 @@ import (
 
 // Locator inspects the host filesystem.
 type Locator struct {
-	// LookPath is overridable so tests do not depend on the host's PATH.
-	LookPath func(string) (string, error) //nolint:revive // nil selects the host implementation
+	// LookPath is overridable so tests do not depend on the host's PATH. A nil
+	// value means the host implementation.
+	LookPath func(string) (string, error)
 	// Stat is overridable for the same reason.
 	Stat func(string) (os.FileInfo, error)
-	// ReadDir is overridable for the same reason.
-	ReadDir func(string) ([]os.DirEntry, error)
 }
 
 // New builds a Locator backed by the real filesystem.
-func New() *Locator {
-	return &Locator{
-		LookPath: exec.LookPath,
-		Stat:     os.Stat,
-		ReadDir:  os.ReadDir,
+func New() *Locator { return &Locator{} }
+
+// lookPath resolves an executable, defaulting to the host.
+func (l *Locator) lookPath(name string) (string, error) {
+	if l.LookPath != nil {
+		return l.LookPath(name)
 	}
+	return exec.LookPath(name)
+}
+
+// stat inspects a path, defaulting to the host.
+func (l *Locator) stat(path string) (os.FileInfo, error) {
+	if l.Stat != nil {
+		return l.Stat(path)
+	}
+	return os.Stat(path)
 }
 
 // Found is the result of locating a single name.
@@ -66,7 +75,7 @@ func (l *Locator) Locate(name string) Found {
 	if name == "" {
 		return Found{Reason: "no name given"}
 	}
-	path, err := l.LookPath(name)
+	path, err := l.lookPath(name)
 	if err != nil {
 		return Found{Reason: "not on PATH"}
 	}
@@ -114,6 +123,11 @@ var attributionRules = []prefix{
 	{path: ".local/share/uv/tools", owner: uv.Name, scope: model.ScopeUser},
 	{path: ".local/share/uv/python", owner: uv.Name, scope: model.ScopeUser},
 	{path: ".local/share/uv/archive-v0", owner: uv.Name, scope: model.ScopeUser},
+
+	// A rustup toolchain is its own owner; ~/.cargo/bin only holds shims and
+	// cargo-installed crates, so the toolchain directory must be matched first or
+	// every rustc would look like it belonged to Cargo.
+	{path: ".rustup/toolchains", owner: "rustup", scope: model.ScopeUser},
 
 	{path: ".cargo/bin", owner: cargo.Name, scope: model.ScopeUser},
 	{path: "go/bin", owner: golang.Name, scope: model.ScopeUser},
@@ -199,7 +213,7 @@ func (l *Locator) npmPrefix() string {
 		filepath.Join(home, ".npm-global"),
 		filepath.Join(home, ".nvm", "versions", "node"),
 	} {
-		if _, err := l.Stat(filepath.Join(prefix, "bin")); err == nil {
+		if _, err := l.stat(filepath.Join(prefix, "bin")); err == nil {
 			return prefix
 		}
 	}

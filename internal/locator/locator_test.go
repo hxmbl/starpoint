@@ -3,6 +3,7 @@ package locator
 import (
 	"errors"
 	"os"
+	"runtime"
 	"testing"
 
 	"github.com/starpoint/starpoint/internal/model"
@@ -122,5 +123,46 @@ func TestLinuxHomebrewPrefix(t *testing.T) {
 	found := loc.Locate("rg")
 	if found.Installation == nil || found.Installation.Provider != "brew" {
 		t.Fatalf("Linuxbrew paths belong to brew, got %+v", found)
+	}
+}
+
+func TestRustupToolchainDirectoryIsOwnedByRustup(t *testing.T) {
+	// ~/.cargo/bin holds shims and cargo-installed crates; the toolchain itself
+	// lives under ~/.rustup. Getting this backwards would report rustc as
+	// Cargo's.
+	loc := pathLocator(map[string]string{
+		"rustc": "/Users/u/.rustup/toolchains/stable-x86_64-apple-darwin/bin/rustc",
+		"cargo": "/Users/u/.cargo/bin/cargo",
+		"rg":    "/Users/u/.cargo/bin/rg",
+	})
+	if got := loc.Locate("rustc"); got.Installation == nil || got.Installation.Provider != "rustup" {
+		t.Errorf("a toolchain binary belongs to rustup, got %+v", got)
+	}
+	if got := loc.Locate("cargo"); got.Installation == nil || got.Installation.Provider != "cargo" {
+		t.Errorf("~/.cargo/bin still belongs to cargo, got %+v", got)
+	}
+	if got := loc.Locate("rg"); got.Installation == nil || got.Installation.Provider != "cargo" {
+		t.Errorf("a cargo-installed crate belongs to cargo, got %+v", got)
+	}
+}
+
+func TestZeroValueLocatorUsesTheHost(t *testing.T) {
+	// A Locator with no hooks must still work rather than panicking: the engine
+	// and its tests construct one directly.
+	l := &Locator{}
+	if _, err := l.lookPath("sh"); err != nil && runtime.GOOS != "windows" {
+		t.Errorf("the host PATH should be used by default: %v", err)
+	}
+	if _, err := l.stat("/"); err != nil {
+		t.Errorf("the host filesystem should be used by default: %v", err)
+	}
+}
+
+func TestPartiallyConstructedLocatorDoesNotPanic(t *testing.T) {
+	// Only LookPath overridden: the other hooks must fall back, not nil-panic.
+	l := &Locator{LookPath: func(string) (string, error) { return "/usr/bin/git", nil }}
+	found := l.Locate("git")
+	if found.Installation == nil || found.Installation.Provider != "system" {
+		t.Errorf("attribution should still work, got %+v", found)
 	}
 }

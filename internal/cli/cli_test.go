@@ -15,6 +15,7 @@ import (
 	"github.com/starpoint/starpoint/internal/providers/brew"
 	"github.com/starpoint/starpoint/internal/providers/cargo"
 	"github.com/starpoint/starpoint/internal/providers/npm"
+	"github.com/starpoint/starpoint/internal/providers/rustup"
 	"github.com/starpoint/starpoint/internal/providers/system"
 	"github.com/starpoint/starpoint/internal/providers/uv"
 	"github.com/starpoint/starpoint/internal/testsupport"
@@ -29,6 +30,7 @@ type harness struct {
 	env    *Env
 	brew   *testsupport.FakeProvider
 	uv     *testsupport.FakeProvider
+	rustup *testsupport.FakeProvider
 	cargo  *testsupport.FakeProvider
 	npm    *testsupport.FakeProvider
 	sys    *testsupport.FakeProvider
@@ -49,10 +51,15 @@ func newHarness(t *testing.T, configBody string) *harness {
 	aptP.UnavailableReason = "apt-get not found on PATH"
 
 	uvP := testsupport.NewFakeProvider(uv.Name, provider.KindPython)
+	rustupP := testsupport.NewFakeProvider(rustup.Name, provider.KindRust)
+	rustupP.Caps = provider.Capabilities{
+		Discover: true, Install: true, Remove: true, Update: true,
+		PinVersion: true, Channels: true, DefaultScope: model.ScopeUser,
+	}
 	cargoP := testsupport.NewFakeProvider(cargo.Name, provider.KindRust)
 	npmP := testsupport.NewFakeProvider(npm.Name, provider.KindNode)
 
-	for _, p := range []*testsupport.FakeProvider{sys, brewP, aptP, uvP, cargoP, npmP} {
+	for _, p := range []*testsupport.FakeProvider{sys, brewP, aptP, uvP, rustupP, cargoP, npmP} {
 		reg.Register(p)
 	}
 
@@ -71,7 +78,7 @@ func newHarness(t *testing.T, configBody string) *harness {
 		Registry:     reg,
 	}
 	return &harness{t: t, stdout: out, stderr: errBuf, config: cfg, env: env,
-		brew: brewP, uv: uvP, cargo: cargoP, npm: npmP, sys: sys}
+		brew: brewP, uv: uvP, rustup: rustupP, cargo: cargoP, npm: npmP, sys: sys}
 }
 
 func (h *harness) run(args ...string) (int, string, string) {
@@ -801,4 +808,115 @@ func TestErrorsAreJSONInJSONMode(t *testing.T) {
 		t.Errorf("the error message should be present: %v", payload)
 	}
 	_ = out
+}
+
+func TestListShowsRustToolchainOwnership(t *testing.T) {
+	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"rustc\"\n")
+	h.rustup.With(model.Installation{
+		Name: "rustc", Version: "1.99.0", Path: "/home/u/.rustup/toolchains/stable/bin/rustc",
+		Scope: model.ScopeUser,
+	})
+	out := h.mustRun("list")
+	for _, want := range []string{"rustc", "rustup", "1.99.0", "correct",
+		"/home/u/.rustup/toolchains/stable/bin/rustc"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("list output should contain %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestInstallRustcGoesThroughRustup(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	h.rustup.With(model.Installation{
+		Name: "rustc", Version: "1.99.0", Path: "/home/u/.rustup/toolchains/stable/bin/rustc",
+		Scope: model.ScopeUser,
+	})
+	h.mustRun("install", "rustc")
+	if len(h.rustup.InstallCalls) != 0 {
+		t.Error("an already-installed toolchain must be adopted, not reinstalled")
+	}
+	if len(h.cargo.InstallCalls) != 0 {
+		t.Error("Cargo must never be asked to install a toolchain binary")
+	}
+	if !strings.Contains(h.configBody(), `provider = "rustup"`) {
+		t.Errorf("ownership should be recorded as rustup's:\n%s", h.configBody())
+	}
+}
+
+func TestInstallToolchainWithoutPinningRecordsRustup(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	h.mustRun("install", "rustc")
+	if len(h.rustup.InstallCalls) != 1 {
+		t.Fatalf("rustup should have installed the toolchain, calls=%d", len(h.rustup.InstallCalls))
+	}
+	if !strings.Contains(h.configBody(), `provider = "rustup"`) {
+		t.Errorf("ownership should be recorded as rustup's:\n%s", h.configBody())
+	}
+}
+
+func TestDoctorReportsDuplicateRustToolchains(t *testing.T) {
+	// rustc on PATH from Homebrew while rustup also has it: exactly the situation
+	// that leaves a developer unsure which compiler is in use.
+	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"rustc\"\n")
+	h.rustup.With(model.Installation{
+		Name: "rustc", Version: "1.99.0", Path: "/home/u/.rustup/toolchains/stable/bin/rustc",
+	})
+	h.brew.With(model.Installation{
+		Name: "rustc", Version: "1.98.1", Path: "/usr/local/bin/rustc", Scope: model.ScopeUser,
+	})
+	out := h.mustRun("doctor")
+	if !strings.Contains(out, "also provided by brew") {
+		t.Errorf("doctor should name the duplicate compiler:\n%s", out)
+	}
+	// rustup stays the recorded owner: a duplicate is a fact to report, not a
+	// reason to record a different owner.
+	if !strings.Contains(h.mustRun("info", "rustc"), "Desired provider:  rustup") {
+		t.Error("rustup should remain the desired owner of rustc")
+	}
+}
+
+func TestInstallRejectsABareVersionName(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	for _, name := range []string{"1.50.0", "3", "10.0"} {
+		code, _, errOut := h.run("install", name)
+		if code != 1 {
+			t.Errorf("%q should be rejected, exit %d", name, code)
+			continue
+		}
+		if !strings.Contains(errOut, "looks like a version number") {
+			t.Errorf("%q should be explained, got: %s", name, errOut)
+		}
+	}
+	// Nothing may have been planned or recorded.
+	if len(h.brew.InstallCalls) != 0 || len(h.cargo.InstallCalls) != 0 || len(h.rustup.InstallCalls) != 0 {
+		t.Error("a rejected name must not reach a provider")
+	}
+	if strings.Contains(h.configBody(), "1.50.0") {
+		t.Errorf("nothing should have been recorded:\n%s", h.configBody())
+	}
+}
+
+func TestInstallOfAToolchainWithAPinStillWorks(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	h.mustRun("install", "stable", "--provider", "rustup", "--version", "1.50.0")
+	if len(h.rustup.InstallCalls) != 1 {
+		t.Fatalf("expected rustup to install, calls=%d", len(h.rustup.InstallCalls))
+	}
+	if got := h.rustup.InstallCalls[0]; got.Package.Version != "1.50.0" {
+		t.Errorf("the pin should reach the provider, got %+v", got)
+	}
+}
+
+func TestLooksLikeVersion(t *testing.T) {
+	for _, name := range []string{"1", "1.2", "1.2.3", "10.0.0"} {
+		if !looksLikeVersion(name) {
+			t.Errorf("%q is a bare version", name)
+		}
+	}
+	for _, name := range []string{"", "v1.2.3", "node-1.2.3", "ripgrep", "pkg@1.2.3",
+		"golang.org/x/tools", "1.2.3-rc1", "1..2"} {
+		if looksLikeVersion(name) {
+			t.Errorf("%q is not a bare version", name)
+		}
+	}
 }

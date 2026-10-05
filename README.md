@@ -96,6 +96,7 @@ Implemented in this release:
 | `brew` | user | Formulae and casks. Cannot pin an arbitrary version, and says so. |
 | `apt` | global | dpkg inventory, `pkg=version` pins, archive channel. |
 | `uv` | user | Python tools and interpreters, `==` pins. |
+| `rustup` | user | Rust toolchains: `rustc`, `cargo`, `rustfmt` and friends, plus the toolchains themselves. |
 | `cargo` | user | Crates from `cargo install`, `--version` pins. |
 | `npm` | user | Global packages, `name@version` and dist-tags. |
 | `go` | user | `go install` binaries discovered in the Go bin directory. |
@@ -103,6 +104,29 @@ Implemented in this release:
 Each provider reports its own capabilities and its own typed errors. The core
 asks what a provider can do rather than branching on provider names, so adding
 an ecosystem does not mean touching the engine.
+
+### rustup and Cargo are different providers
+
+`cargo install` adds crates. `rustup toolchain install` provides the compiler.
+On a rustup machine `rustc` and `cargo` are rustup's, not Cargo's, and Starpoint
+says so:
+
+```toml
+[[package]]
+name = "rustc"          # owned by rustup, resolved through the default toolchain
+
+[[package]]
+name = "stable"         # the toolchain itself; version = "1.99.0" pins a release
+```
+
+`starpoint install rustc` installs the default channel. `starpoint remove rustc`
+is refused: it names the toolchain that provides it, and removing the default or
+active toolchain would leave no Rust compiler. Remove the toolchain by name
+instead, and only after choosing another default.
+
+A bare version is not a package name, so `starpoint install 1.50.0` is rejected
+with the two forms that do work: `starpoint install stable --version 1.50.0`, or
+`--channel nightly`.
 
 ## Architecture
 
@@ -162,6 +186,12 @@ suite substitutes a scripted command runner and in-memory providers.
   can install into. No provider advertises `ProjectInstall`.
 - Cross-provider ownership requires the filesystem. A package whose binary name
   differs from its package name and which no provider tracks is reported as
-  present but unattributed rather than guessed at.
+  present but unattributed rather than guessed at. Homebrew's `rust` formula
+  provides a `rustc` executable but has no package by that name, so Starpoint
+  cannot learn from Homebrew that a second `rustc` exists — it reports rustup as
+  the owner and, when the Homebrew copy shadows it on `PATH`, says so in `doctor`.
 - Version comparison is exact. `>=1.2` and `^2.0` are not understood; they belong
   to the provider that owns the versioning scheme.
+- `starpoint update` on a Rust toolchain runs `rustup toolchain install` for the
+  channel, which moves a channel forward. A concrete toolchain pinned in the
+  configuration is never moved.

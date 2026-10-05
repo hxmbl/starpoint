@@ -1,6 +1,7 @@
 package resolve
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/starpoint/starpoint/internal/model"
@@ -8,6 +9,7 @@ import (
 	"github.com/starpoint/starpoint/internal/providers/brew"
 	"github.com/starpoint/starpoint/internal/providers/cargo"
 	"github.com/starpoint/starpoint/internal/providers/npm"
+	"github.com/starpoint/starpoint/internal/providers/rustup"
 	"github.com/starpoint/starpoint/internal/providers/system"
 	"github.com/starpoint/starpoint/internal/providers/uv"
 	"github.com/starpoint/starpoint/internal/testsupport"
@@ -263,5 +265,226 @@ func TestReadOnlyProviderIsNotPreferredForNewInstalls(t *testing.T) {
 	})
 	if got.Provider != brew.Name {
 		t.Fatalf("a read-only provider cannot install; expected brew, got %q", got.Provider)
+	}
+}
+
+func TestToolchainBinaryBelongsToRustupNotCargo(t *testing.T) {
+	// "Rust" is two jobs. rustc and cargo are rustup's; `cargo install` is
+	// Cargo's. Conflating them is how a machine ends up with two compilers.
+	reg, health := buildRegistry(t,
+		spec{name: rustup.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: cargo.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+	)
+	r := New(reg)
+	for _, name := range []string{"rustc", "cargo", "rustfmt", "rust-analyzer", "clippy-driver", "rustup"} {
+		got := r.Resolve(Input{
+			Package:   model.Package{Name: name},
+			Available: health,
+			Locator:   nil,
+		})
+		if got.Provider != rustup.Name {
+			t.Errorf("%s belongs to rustup, got %q (%s)", name, got.Provider, got.Reason)
+		}
+		if got.Ambiguous {
+			t.Errorf("%s has one known owner and must not be ambiguous", name)
+		}
+	}
+}
+
+func TestOwnerHintSurvivesAnUnavailableProvider(t *testing.T) {
+	// Falling through to Cargo for rustc would mean running `cargo install rustc`.
+	reg, health := buildRegistry(t,
+		spec{name: rustup.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: false},
+		spec{name: cargo.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+	)
+	r := New(reg)
+	got := r.Resolve(Input{Package: model.Package{Name: "rustc"}, Available: health, Locator: nil})
+	if got.Provider != rustup.Name {
+		t.Fatalf("the owner must be reported even when missing, got %q (%s)", got.Provider, got.Reason)
+	}
+	if !strings.Contains(got.Reason, "not available") {
+		t.Errorf("the reason must say rustup is missing, got %q", got.Reason)
+	}
+}
+
+func TestExplicitRestrictionOverridesAnOwnerHint(t *testing.T) {
+	// --provider is a decision, so it outranks a built-in hint.
+	reg, health := buildRegistry(t,
+		spec{name: rustup.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: brew.Name, kind: provider.KindBrew, caps: fullCaps(model.ScopeUser), available: true},
+	)
+	r := New(reg)
+	got := r.Resolve(Input{
+		Package:   model.Package{Name: "rustc"},
+		Allowed:   []string{brew.Name},
+		Available: health,
+		Locator:   nil,
+	})
+	if got.Provider != brew.Name {
+		t.Fatalf("--provider must win over a built-in owner hint, got %q", got.Provider)
+	}
+}
+
+func TestExplicitProviderInConfigOverridesAnOwnerHint(t *testing.T) {
+	reg, health := buildRegistry(t,
+		spec{name: rustup.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: brew.Name, kind: provider.KindBrew, caps: fullCaps(model.ScopeUser), available: true},
+	)
+	r := New(reg)
+	got := r.Resolve(Input{
+		Package:   model.Package{Name: "rustc", Provider: brew.Name},
+		Available: health,
+		Locator:   nil,
+	})
+	if got.Provider != brew.Name || !got.Forced {
+		t.Fatalf("an explicit configuration must win, got %+v", got)
+	}
+}
+
+func TestRustToolchainOwnerDoesNotStealCratesFromCargo(t *testing.T) {
+	// The owner hints must not swallow Cargo's actual job.
+	reg, health := buildRegistry(t,
+		spec{name: rustup.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: cargo.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+	)
+	r := New(reg)
+	got := r.Resolve(Input{
+		Package:   model.Package{Name: "rg"},
+		Available: health,
+		Locator:   nil,
+	})
+	if got.Provider != cargo.Name {
+		t.Errorf("rg is a Rust binary and belongs to cargo, got %q (%s)", got.Provider, got.Reason)
+	}
+	if got.Ambiguous {
+		t.Errorf("rg has a known ecosystem and must not be ambiguous: %+v", got)
+	}
+}
+
+func TestToolchainOwnerDoesNotOverrideHomebrewForCommonRustBinaries(t *testing.T) {
+	// `brew install ripgrep` is what almost everyone means. Adding a rustup owner
+	// hint for it would quietly change that into `cargo install`, which compiles
+	// from source. The single available package manager should still win.
+	reg, health := buildRegistry(t,
+		spec{name: rustup.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: brew.Name, kind: provider.KindBrew, caps: fullCaps(model.ScopeUser), available: true},
+	)
+	r := New(reg)
+	got := r.Resolve(Input{
+		Package:   model.Package{Name: "ripgrep"},
+		Available: health,
+		Locator:   nil,
+	})
+	if got.Provider != brew.Name {
+		t.Errorf("ripgrep should stay with the only package manager available, got %q (%s)",
+			got.Provider, got.Reason)
+	}
+}
+
+func TestUnrecognisedCrateNameIsAmbiguousNotOrderedIntoRustup(t *testing.T) {
+	// An arbitrary crate name says nothing about its ecosystem. With rustup and
+	// cargo both available the answer must be asked for, not settled by the order
+	// providers happen to be registered in.
+	reg, health := buildRegistry(t,
+		spec{name: rustup.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: cargo.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+	)
+	r := New(reg)
+	got := r.Resolve(Input{
+		Package:   model.Package{Name: "cargo-edit"},
+		Available: health,
+		Locator:   nil,
+	})
+	if !got.Ambiguous {
+		t.Fatalf("an unrecognised name with two Rust providers must be ambiguous, got %+v", got)
+	}
+	found := false
+	for _, alt := range append([]string{got.Provider}, got.Alternatives...) {
+		if alt == cargo.Name {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("cargo must be offered as an option, got %+v", got)
+	}
+}
+
+func TestSingleAvailableProviderIsNotAmbiguous(t *testing.T) {
+	// One provider can act; there is nothing to choose between.
+	reg, health := buildRegistry(t,
+		spec{name: cargo.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+	)
+	r := New(reg)
+	got := r.Resolve(Input{
+		Package:   model.Package{Name: "some-unknown-crate"},
+		Available: health,
+		Locator:   nil,
+	})
+	if got.Ambiguous {
+		t.Errorf("a single candidate is not ambiguous: %+v", got)
+	}
+	if got.Provider != cargo.Name {
+		t.Errorf("expected cargo, got %q", got.Provider)
+	}
+}
+
+func TestExistingCargoOwnedCrateKeepsItsOwner(t *testing.T) {
+	reg, health := buildRegistry(t,
+		spec{name: rustup.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: cargo.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+	)
+	r := New(reg)
+	got := r.Resolve(Input{
+		Package: model.Package{Name: "cargo-edit"},
+		Existing: &model.Installation{
+			Name: "cargo-edit", Provider: cargo.Name, Path: "/home/u/.cargo/bin/cargo-add",
+		},
+		Available: health,
+		Locator:   nil,
+	})
+	if got.Provider != cargo.Name {
+		t.Errorf("existing ownership must be kept, got %q", got.Provider)
+	}
+}
+
+func TestKnownOwnerWinsOverAnIncumbentFromAnotherProvider(t *testing.T) {
+	// Homebrew also ships a rustc. That is a real duplicate, but it is not a
+	// reason to record Homebrew as the owner of `rustc`.
+	reg, health := buildRegistry(t,
+		spec{name: rustup.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: brew.Name, kind: provider.KindBrew, caps: fullCaps(model.ScopeUser), available: true},
+	)
+	r := New(reg)
+	got := r.Resolve(Input{
+		Package: model.Package{Name: "rustc"},
+		Existing: &model.Installation{
+			Name: "rustc", Provider: brew.Name, Path: "/usr/local/bin/rustc",
+		},
+		Available: health,
+		Locator:   nil,
+	})
+	if got.Provider != rustup.Name {
+		t.Errorf("the known owner must win over an incidental incumbent, got %q (%s)", got.Provider, got.Reason)
+	}
+}
+
+func TestIncumbentStillWinsForNamesWithoutAKnownOwner(t *testing.T) {
+	// The exception above must not become a general rule: for an unrecognised
+	// name, whoever already has it keeps it.
+	reg, health := buildRegistry(t,
+		spec{name: rustup.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: brew.Name, kind: provider.KindBrew, caps: fullCaps(model.ScopeUser), available: true},
+	)
+	r := New(reg)
+	got := r.Resolve(Input{
+		Package: model.Package{Name: "ripgrep"},
+		Existing: &model.Installation{
+			Name: "ripgrep", Provider: brew.Name, Path: "/usr/local/bin/rg",
+		},
+		Available: health,
+		Locator:   nil,
+	})
+	if got.Provider != brew.Name {
+		t.Errorf("existing ownership must be kept for an unrecognised name, got %q", got.Provider)
 	}
 }

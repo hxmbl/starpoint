@@ -348,7 +348,15 @@ func (e *Engine) Add(ctx context.Context, doc *config.Document, pkg model.Packag
 	if known && available[resolution.Provider].Available && p.Capabilities().Discover {
 		if inst, err := p.Installed(ctx, resolved); err == nil && inst != nil {
 			state.Desired = inst
-			adopted = true
+			// Adoption means "this is already what was asked for". With an
+			// explicit pin that is only true when the installed version is the
+			// pinned one: adopting a 0.5.0 install of something pinned to 0.6.0
+			// would record the pin as satisfied when it is not, and the next
+			// sync would be the first to notice.
+			adopted = model.VersionMatches(resolved.Version, inst.Version)
+			if !adopted {
+				state.Desired = nil
+			}
 		}
 	}
 

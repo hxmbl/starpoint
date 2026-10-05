@@ -15,14 +15,21 @@ import (
 	"github.com/starpoint/starpoint/internal/providers/cargo"
 	"github.com/starpoint/starpoint/internal/providers/golang"
 	"github.com/starpoint/starpoint/internal/providers/npm"
+	"github.com/starpoint/starpoint/internal/providers/rustup"
 	"github.com/starpoint/starpoint/internal/providers/system"
 	"github.com/starpoint/starpoint/internal/providers/uv"
 )
 
 // DefaultRegistry builds the registry of providers implemented in this release.
 // The set is chosen to be genuinely usable rather than exhaustive: the operating
-// system, the two dominant system package managers, and the four language
-// ecosystems with the clearest installation story on the host platforms.
+// system, the two dominant system package managers, and the language ecosystems
+// with the clearest installation story on the host platforms.
+//
+// Registration order is not cosmetic. The engine asks providers for an existing
+// installation before falling back to path attribution, so the more specific
+// owner of a piece of software has to come first: rustup is registered ahead of
+// Cargo because `rustc` and `cargo` are rustup's, while `cargo install` is
+// Cargo's.
 func DefaultRegistry() *provider.Registry {
 	r := exec.RealRunner{}
 	home, _ := os.UserHomeDir()
@@ -31,6 +38,7 @@ func DefaultRegistry() *provider.Registry {
 	reg.Register(brew.New(r))
 	reg.Register(apt.New(r))
 	reg.Register(uv.New(r, home))
+	reg.Register(rustup.New(r, home))
 	reg.Register(cargo.New(r, home))
 	reg.Register(npm.New(r))
 	reg.Register(golang.New(r, home))

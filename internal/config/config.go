@@ -379,6 +379,7 @@ Each entry describes WHAT you want, not HOW to get it:
   [[package]]
   name = "ripgrep"        # required
   version = "14.1.0"      # optional hard pin; omitted means "whatever is current"
+  channel = "nightly"     # optional: a release channel, a cask name, a dist-tag
 
 Starpoint fills in `+"`provider`"+` and `+"`reason`"+` once it decides who owns the package,
 and keeps them up to date. Set `+"`provider`"+` yourself to override that decision. Editing it
@@ -387,7 +388,8 @@ which Starpoint performs as a transition rather than installing a second copy.
 
 Available keys: name, version, provider, scope, channel, reason
   scope   global | user | project
-  channel an opaque provider hint: a Homebrew cask name, an npm dist-tag
+  channel an opaque provider hint: a Homebrew cask name, an npm dist-tag,
+          a Rust release channel (stable, beta, nightly)
 
 [settings]
   providers   restrict automatic provider choice to these providers

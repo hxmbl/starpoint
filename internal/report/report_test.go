@@ -294,3 +294,31 @@ func TestTableAligns(t *testing.T) {
 		t.Errorf("columns are not aligned: %d vs %d\n%s", col, col2, buf.String())
 	}
 }
+
+func TestResultDryRunUsesProspectiveVerbs(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, false)
+	res := &engine.Result{
+		DryRun: true,
+		Applied: []model.PlannedAction{
+			{
+				Action: model.ActionInstall,
+				State:  model.State{Package: model.Package{Name: "stable"}, Res: model.Resolution{Provider: "rustup"}},
+			},
+			{
+				Action: model.ActionAdopt,
+				State:  model.State{Package: model.Package{Name: "ruff"}, Res: model.Resolution{Provider: "uv"}},
+			},
+		},
+	}
+	if err := w.Result("install", res); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "would install stable via rustup") {
+		t.Errorf("a dry run must not claim software was installed:\n%s", out)
+	}
+	if !strings.Contains(out, "would record ruff via uv") {
+		t.Errorf("adoption must also be prospective:\n%s", out)
+	}
+}
