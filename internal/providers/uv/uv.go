@@ -1,0 +1,214 @@
+// Package uv implements the uv provider for Python CLI tools and interpreters.
+//
+// uv's model is "tools", each installed into its own isolated environment, with
+// executables exposed through a bin directory. Starpoint exposes that shape
+// honestly: Discover lists tools, Installed resolves the environment path, and
+// version pinning is supported through the PEP 440 requirement syntax uv
+// already understands.
+package uv
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/starpoint/starpoint/internal/exec"
+	"github.com/starpoint/starpoint/internal/model"
+	"github.com/starpoint/starpoint/internal/provider"
+	"github.com/starpoint/starpoint/internal/providers/shell"
+)
+
+// Name is the provider identifier persisted in configuration.
+const Name = "uv"
+
+// Provider implements provider.Provider for uv.
+type Provider struct {
+	runner exec.Runner
+	home   string
+}
+
+var _ provider.Provider = (*Provider)(nil)
+
+// New builds a uv provider. home is the user home directory used to locate uv's
+// managed directories; an empty home makes the provider report unavailable.
+func New(runner exec.Runner, home string) *Provider { return &Provider{runner: runner, home: home} }
+
+func (p *Provider) Name() string        { return Name }
+func (p *Provider) Description() string { return "uv (Python tools)" }
+func (p *Provider) Kind() provider.Kind { return provider.KindPython }
+
+func (p *Provider) Capabilities() provider.Capabilities {
+	return provider.Capabilities{
+		Discover:     true,
+		Install:      true,
+		Remove:       true,
+		Update:       true,
+		PinVersion:   true, // uv tool install pkg==x.y
+		DefaultScope: model.ScopeUser,
+	}
+}
+
+func (p *Provider) Health(ctx context.Context) provider.Health {
+	h := provider.Health{
+		Name:         p.Name(),
+		Description:  p.Description(),
+		Kind:         p.Kind(),
+		Capabilities: p.Capabilities(),
+	}
+	path, err := p.runner.LookPath("uv")
+	if err != nil {
+		h.Reason = "uv not found on PATH"
+		return h
+	}
+	h.Available = true
+	h.Binary = path
+	res, err := p.runner.Run(ctx, "uv", "--version")
+	if err != nil {
+		h.Reason = err.Error()
+		return h
+	}
+	h.Version = shell.VersionFromArgs(strings.Fields(res.Stdout)...)
+	return h
+}
+
+// Discover lists uv-managed tools.
+func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
+	res, err := p.runner.Run(ctx, "uv", "tool", "list")
+	if err != nil {
+		return nil, shell.Failure(p.Name(), "list", "could not list uv tools", err)
+	}
+	if res.Failed() {
+		return nil, shell.Failure(p.Name(), "list", shell.FirstLine(res.Field()), nil)
+	}
+	return p.parseToolList(res.Stdout), nil
+}
+
+// parseToolList reads the `uv tool list` output. Each tool occupies a header line
+// of the form "name v1.2.3" followed by indented "- executable" lines.
+func (p *Provider) parseToolList(out string) []model.Installation {
+	var res []model.Installation
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Executable lines are indented and start with a dash. Older and newer
+		// uv versions differ in the indentation, so the dash is the reliable
+		// marker.
+		if strings.HasPrefix(trimmed, "- ") {
+			if len(res) == 0 {
+				continue
+			}
+			res[len(res)-1].Path = strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
+			continue
+		}
+		fields := shell.Fields(trimmed)
+		name := fields[0]
+		version := ""
+		if len(fields) > 1 {
+			version = strings.TrimPrefix(fields[1], "v")
+		}
+		res = append(res, model.Installation{
+			Name:     name,
+			Version:  version,
+			Provider: p.Name(),
+			Scope:    model.ScopeUser,
+		})
+	}
+	return res
+}
+
+// Installed resolves a single uv tool.
+func (p *Provider) Installed(ctx context.Context, pkg model.Package) (*model.Installation, error) {
+	_ = ctx
+	res, err := p.runner.Run(ctx, "uv", "tool", "list")
+	if err != nil {
+		return nil, shell.Failure(p.Name(), "installed", "could not list uv tools", err)
+	}
+	if res.Failed() {
+		return nil, nil
+	}
+	for _, inst := range p.parseToolList(res.Stdout) {
+		if inst.Name == pkg.Name {
+			found := inst
+			found.Path = p.toolBinPath(pkg.Name)
+			return &found, nil
+		}
+	}
+	return nil, nil
+}
+
+// Install installs a uv tool, honouring a version pin.
+func (p *Provider) Install(ctx context.Context, req provider.Request) (*model.Installation, error) {
+	target := req.Package.Name
+	if req.Version() != "" {
+		target += "==" + strings.TrimPrefix(strings.TrimPrefix(req.Version(), "=="), "=")
+	}
+	if req.DryRun {
+		return &model.Installation{Name: req.Package.Name, Provider: p.Name(), Scope: model.ScopeUser}, nil
+	}
+	res, err := p.runner.Run(ctx, "uv", "tool", "install", target)
+	if err != nil {
+		return nil, shell.Failure(p.Name(), "install", "could not run uv tool install", err)
+	}
+	if res.Failed() {
+		return nil, classify("install", res)
+	}
+	return p.Installed(ctx, req.Package)
+}
+
+// Remove uninstalls a uv tool.
+func (p *Provider) Remove(ctx context.Context, pkg model.Package) error {
+	res, err := p.runner.Run(ctx, "uv", "tool", "uninstall", pkg.Name)
+	if err != nil {
+		return shell.Failure(p.Name(), "uninstall", "could not run uv tool uninstall", err)
+	}
+	if res.Failed() {
+		return classify("uninstall", res)
+	}
+	return nil
+}
+
+// Update upgrades a uv tool to its newest release.
+func (p *Provider) Update(ctx context.Context, pkg model.Package) (*model.Installation, error) {
+	res, err := p.runner.Run(ctx, "uv", "tool", "upgrade", pkg.Name)
+	if err != nil {
+		return nil, shell.Failure(p.Name(), "upgrade", "could not run uv tool upgrade", err)
+	}
+	if res.Failed() {
+		return nil, classify("upgrade", res)
+	}
+	return p.Installed(ctx, pkg)
+}
+
+// toolBinPath reports where uv exposes the tool's executable.
+func (p *Provider) toolBinPath(name string) string {
+	if p.home == "" {
+		return ""
+	}
+	candidate := filepath.Join(p.home, ".local", "bin", name)
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate
+	}
+	return ""
+}
+
+func classify(op string, res exec.Result) error {
+	text := strings.ToLower(res.Field())
+	switch {
+	case strings.Contains(text, "was not found in the registry"), strings.Contains(text, "no solution found"),
+		strings.Contains(text, "not found in a package registry"):
+		return shell.NotFound(Name, op, "uv could not resolve this tool from the package registry")
+	case strings.Contains(text, "already installed"), strings.Contains(text, "is already installed"):
+		return shell.Err(Name, op, provider.ErrConflict, "the tool is already installed through uv", nil)
+	case strings.Contains(text, "connection"), strings.Contains(text, "network"), strings.Contains(text, "dns"):
+		return shell.Err(Name, op, provider.ErrNetwork, "could not reach the package registry", nil)
+	default:
+		msg := shell.FirstLine(res.Field())
+		if msg == "" {
+			msg = "uv exited nonzero"
+		}
+		return shell.Failure(Name, op, msg, nil)
+	}
+}

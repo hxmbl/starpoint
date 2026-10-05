@@ -1,0 +1,296 @@
+package report
+
+import (
+	"bytes"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/starpoint/starpoint/internal/config"
+	"github.com/starpoint/starpoint/internal/engine"
+	"github.com/starpoint/starpoint/internal/model"
+	"github.com/starpoint/starpoint/internal/provider"
+)
+
+func TestListHumanOutputHasColumns(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, false)
+	states := []model.State{
+		{
+			Package: model.Package{Name: "ripgrep"},
+			Res:     model.Resolution{Provider: "brew"},
+			Desired: &model.Installation{Name: "ripgrep", Path: "/opt/homebrew/bin/rg", Provider: "brew", Scope: model.ScopeUser, Version: "14.1.0"},
+			Status:  model.StatusCorrect,
+		},
+		{
+			Package: model.Package{Name: "python3"},
+			Res:     model.Resolution{Provider: "uv"},
+			Current: &model.Installation{Name: "python3", Path: "/usr/bin/python3", Provider: "system", Scope: model.ScopeGlobal},
+			Status:  model.StatusProviderDiffers,
+		},
+	}
+	if err := w.List(states); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"PACKAGE", "LOCATION", "SCOPE", "PROVIDER", "VERSION", "STATUS",
+		"ripgrep", "/opt/homebrew/bin/rg", "14.1.0", "correct",
+		"python3", "/usr/bin/python3", "system", "provider-differs",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	// Columns must line up; a mangled table is worse than none.
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected a header and two rows, got %d lines:\n%s", len(lines), out)
+	}
+	if !strings.HasPrefix(lines[0], "PACKAGE") {
+		t.Errorf("header should start the table:\n%s", out)
+	}
+}
+
+func TestListRendersMissingValuesAsDashes(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, false)
+	if err := w.List([]model.State{{
+		Package: model.Package{Name: "x"},
+		Res:     model.Resolution{Provider: "brew"},
+		Status:  model.StatusMissing,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if strings.Count(out, "-") < 2 {
+		t.Errorf("absent values should render as dashes:\n%s", out)
+	}
+}
+
+func TestListJSONIsValidAndComplete(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, true)
+	if err := w.List([]model.State{{
+		Package: model.Package{Name: "git", Version: "2.43.0"},
+		Res:     model.Resolution{Provider: "brew", Reason: "only one package manager"},
+		Desired: &model.Installation{Name: "git", Path: "/usr/bin/git", Provider: "brew", Scope: model.ScopeGlobal, Version: "2.43.0"},
+		Status:  model.StatusCorrect,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Packages []ListItem `json:"packages"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, buf.String())
+	}
+	if len(payload.Packages) != 1 {
+		t.Fatalf("expected 1 row, got %+v", payload.Packages)
+	}
+	p := payload.Packages[0]
+	if p.Name != "git" || p.Provider != "brew" || !p.Pinned || p.Version != "2.43.0" {
+		t.Errorf("JSON row lost information: %+v", p)
+	}
+}
+
+func TestInfoShowsTheWholeRelationship(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, false)
+	err := w.Info(model.State{
+		Package: model.Package{
+			Name: "ruff", Version: "0.6.0",
+			Origin: model.Origin{Path: "/home/u/.starpoint.toml"},
+		},
+		Res:     model.Resolution{Provider: "uv", Reason: "Python software"},
+		Desired: &model.Installation{Name: "ruff", Path: "/home/u/.local/bin/ruff", Provider: "uv", Version: "0.6.0"},
+		Status:  model.StatusCorrect,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"Installed:", "/home/u/.local/bin/ruff",
+		"Version:", "0.6.0",
+		"Provider:", "uv",
+		"Desired provider:", "uv",
+		"Configured:", "global",
+		"Status:", "correct",
+		"Pinned version:", "0.6.0",
+		"Why this provider:", "Python software",
+		"Declared in:", "/home/u/.starpoint.toml",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("info output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestInfoSaysSoWhenNothingIsInstalled(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, false)
+	if err := w.Info(model.State{
+		Package: model.Package{Name: "nope"},
+		Res:     model.Resolution{Provider: "brew"},
+		Status:  model.StatusMissing,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "not installed") {
+		t.Errorf("absent software should say so:\n%s", out)
+	}
+}
+
+func TestSyncEmptyPlanSaysInSync(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, false)
+	plan := model.Plan{States: []model.State{{Package: model.Package{Name: "git"}}}}
+	res := &engine.Result{States: plan.States}
+	if err := w.Sync(res, plan, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "In sync") {
+		t.Errorf("expected an in-sync message:\n%s", buf.String())
+	}
+}
+
+func TestSyncDryRunSaysNothingChanged(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, false)
+	plan := model.Plan{
+		DryRun: true,
+		States: []model.State{{Package: model.Package{Name: "ripgrep"}, Res: model.Resolution{Provider: "brew"}}},
+		Actions: []model.PlannedAction{{
+			Action: model.ActionInstall,
+			State:  model.State{Package: model.Package{Name: "ripgrep"}, Res: model.Resolution{Provider: "brew"}},
+			Note:   "not recorded yet",
+		}},
+	}
+	if err := w.Sync(&engine.Result{DryRun: true, States: plan.States}, plan, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "would") || !strings.Contains(out, "Dry run") {
+		t.Errorf("a dry run must be explicit:\n%s", out)
+	}
+	if !strings.Contains(out, "not recorded yet") {
+		t.Errorf("plan notes must be shown:\n%s", out)
+	}
+}
+
+func TestDoctorJSONCarriesCapabilitiesAndProblems(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, true)
+	rep := DoctorReport{
+		Starpoint: StarpointInfo{Version: "0.1.0", Path: "/usr/local/bin/starpoint", Provider: "brew"},
+		Config:    ConfigInfo{Path: "/home/u/.starpoint.toml", Exists: true, Schema: 1, PackageCount: 2, Writable: true},
+		Providers: []ProviderHealth{{
+			Name: "apt", Description: "APT", Kind: provider.KindApt,
+			Available: false, Reason: "apt-get not found on PATH",
+			Capabilities: provider.Capabilities{Discover: true, PinVersion: true, DefaultScope: model.ScopeGlobal},
+		}},
+		Ownership: []model.State{{Package: model.Package{Name: "ripgrep"}, Res: model.Resolution{Provider: "brew"}, Status: model.StatusCorrect}},
+		Problems:  []model.Warning{{Severity: model.SeverityWarn, Package: "ripgrep", Message: "not installed"}},
+		Healthy:   false,
+	}
+	if err := w.Doctor(rep); err != nil {
+		t.Fatal(err)
+	}
+	var round map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &round); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, buf.String())
+	}
+	providers, ok := round["providers"].([]any)
+	if !ok || len(providers) != 1 {
+		t.Fatalf("providers missing from JSON: %s", buf.String())
+	}
+	caps := providers[0].(map[string]any)["capabilities"].(map[string]any)
+	if caps["PinVersion"] != true {
+		t.Errorf("capabilities must be exposed to machines, not just humans: %s", buf.String())
+	}
+	if round["healthy"] != false {
+		t.Error("a report with problems is not healthy")
+	}
+}
+
+func TestResultUsesTheActionVerb(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, false)
+	res := &engine.Result{
+		ConfigChanged: true,
+		ConfigPath:    "/home/u/.starpoint.toml",
+		Applied: []model.PlannedAction{{
+			Action: model.ActionAdopt,
+			State:  model.State{Package: model.Package{Name: "ruff"}, Res: model.Resolution{Provider: "uv"}},
+			Note:   "already installed",
+		}},
+	}
+	if err := w.Result("installed", res); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.HasPrefix(out, "recorded ruff via uv") {
+		t.Errorf("an adoption must not claim software was installed:\n%s", out)
+	}
+}
+
+func TestResultDryRunDoesNotClaimAConfigChange(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, true)
+	res := &engine.Result{DryRun: true, ConfigChanged: true, ConfigPath: "/x.toml"}
+	if err := w.Result("installed", res); err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["config_changed"] != false {
+		t.Errorf("a dry run cannot have changed anything: %s", buf.String())
+	}
+	if payload["dry_run"] != true {
+		t.Errorf("dry_run flag missing: %s", buf.String())
+	}
+}
+
+func TestDocumentInfo(t *testing.T) {
+	doc := &config.Document{
+		Global: config.File{Path: "/home/u/.starpoint.toml", Exists: true, Raw: config.Raw{Schema: 1}},
+	}
+	info := DocumentInfo(doc, "/home/u/.starpoint.toml", true)
+	if !info.Exists || info.Schema != 1 || !info.Writable {
+		t.Errorf("document info wrong: %+v", info)
+	}
+	if info.Path != "/home/u/.starpoint.toml" {
+		t.Errorf("path wrong: %+v", info)
+	}
+}
+
+func TestTableAligns(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, false)
+	plan := model.Plan{
+		States: []model.State{
+			{Package: model.Package{Name: "a"}, Status: model.StatusCorrect, Res: model.Resolution{Provider: "brew"}},
+		},
+	}
+	_ = plan
+	if err := w.List([]model.State{
+		{Package: model.Package{Name: "short"}, Res: model.Resolution{Provider: "brew"}, Status: model.StatusCorrect},
+		{Package: model.Package{Name: "muchlonger"}, Res: model.Resolution{Provider: "apt"}, Status: model.StatusMissing},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected three lines, got %d", len(lines))
+	}
+	// The second column must start at the same offset on every row.
+	col := strings.Index(lines[1], "brew")
+	col2 := strings.Index(lines[2], "apt")
+	if col != col2 {
+		t.Errorf("columns are not aligned: %d vs %d\n%s", col, col2, buf.String())
+	}
+}
