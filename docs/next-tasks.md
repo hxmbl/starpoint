@@ -21,13 +21,8 @@ here but deliberately has none, and why.
    manage containers, not software on the machine. If Starpoint ever grows
    container support it needs a new placement concept (`ScopeContainer`), not a
    provider.
-3. **pipx** — was named in the resolver's Python ecosystem table without a
-   provider behind it. Harmless at runtime, since resolution skips providers that
-   are not registered, and misleading on inspection, which implies a candidate
-   that does not exist. The table now names only real providers and a test keeps
-   it that way; if pipx is wanted, implement it. Note that it overlaps `uv tool`
-   closely enough that the honest question is whether it deserves a provider of
-   its own or should be documented as uv's job.
+3. **pipx** — removed from resolver table. `uv tool` provides equivalent functionality
+   for installing Python CLI tools in isolated environments. Use uv instead.
 
 4. **Nix** — not installed here, and deliberately last. Nix is a package
    *system*, not a package manager; pretending otherwise is how Starpoint would end

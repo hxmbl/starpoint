@@ -82,7 +82,6 @@ var nameHints = map[string]provider.Kind{
 	"python":  provider.KindPython,
 	"python3": provider.KindPython,
 	"pip":     provider.KindPython,
-	"pipx":    provider.KindPython,
 	"uv":      provider.KindPython,
 	"ruff":    provider.KindPython,
 	"black":   provider.KindPython,
