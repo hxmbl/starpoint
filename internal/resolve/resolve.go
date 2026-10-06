@@ -59,7 +59,7 @@ type ecosystem struct {
 // first. This is the table that keeps Homebrew from being treated as a Python
 // package manager.
 var ecosystems = map[provider.Kind]ecosystem{
-	provider.KindPython: {kind: provider.KindPython, preferred: []string{"uv", "pipx", "pip"}},
+	provider.KindPython: {kind: provider.KindPython, preferred: []string{"uv", "pip"}},
 	provider.KindRust:   {kind: provider.KindRust, preferred: []string{"cargo"}},
 	provider.KindNode:   {kind: provider.KindNode, preferred: []string{"npm", "pnpm", "yarn"}},
 	provider.KindGo:     {kind: provider.KindGo, preferred: []string{"go"}},
@@ -135,6 +135,32 @@ type Resolver struct {
 
 // New builds a Resolver over a registry.
 func New(reg *provider.Registry) *Resolver { return &Resolver{reg: reg} }
+
+// KnownProviders names every provider the resolver's own tables refer to.
+//
+// It exists so a table can be checked against the registry. Naming a provider
+// that does not exist produces a resolution Starpoint cannot carry out, and that
+// failure is silent until someone tries it.
+func (r *Resolver) KnownProviders() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(name string) {
+		if name != "" && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	for _, e := range ecosystems {
+		for _, name := range e.preferred {
+			add(name)
+		}
+	}
+	for _, name := range systemManagers {
+		add(name)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // Resolve decides who should own the package.
 func (r *Resolver) Resolve(in Input) model.Resolution {

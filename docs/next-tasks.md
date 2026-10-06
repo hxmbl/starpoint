@@ -21,21 +21,29 @@ here but deliberately has none, and why.
    manage containers, not software on the machine. If Starpoint ever grows
    container support it needs a new placement concept (`ScopeContainer`), not a
    provider.
-3. **Nix** — not installed here, and deliberately last. Nix is a package
+3. **pipx** — was named in the resolver's Python ecosystem table without a
+   provider behind it. Harmless at runtime, since resolution skips providers that
+   are not registered, and misleading on inspection, which implies a candidate
+   that does not exist. The table now names only real providers and a test keeps
+   it that way; if pipx is wanted, implement it. Note that it overlaps `uv tool`
+   closely enough that the honest question is whether it deserves a provider of
+   its own or should be documented as uv's job.
+
+4. **Nix** — not installed here, and deliberately last. Nix is a package
    *system*, not a package manager; pretending otherwise is how Starpoint would end
    up becoming a Nix clone.
-4. **dnf / pacman / apt-adjacent Linux managers** — needed before Starpoint can
+5. **dnf / pacman / apt-adjacent Linux managers** — needed before Starpoint can
    claim to be cross-platform in practice. Same shape as apt: the classification
    and the `=version`/`--needed` handling are the only differences.
-5. **winget / Chocolatey** — required for Windows, which is the other half of the
+6. **winget / Chocolatey** — required for Windows, which is the other half of the
    cross-platform claim.
-6. **Executable-to-package mapping** — Homebrew's `rust` formula provides `rustc`
+7. **Executable-to-package mapping** — Homebrew's `rust` formula provides `rustc`
    without having a package by that name, so a provider asked "do you have rustc"
    correctly answers no. Every ecosystem has this shape. Either give providers a way
    to declare the executables a package provides, or accept that ownership of a
    shadowing executable is only detectable by comparing paths — which `doctor` now
    does.
-7. **mise / asdf** — version managers are a category Starpoint does not model.
+8. **mise / asdf** — version managers are a category Starpoint does not model.
    rustup was added as a provider rather than as a placement concept, which is a
    precedent but not a settled answer.
 
