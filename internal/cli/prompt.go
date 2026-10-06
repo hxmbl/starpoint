@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"golang.org/x/term"
 	"strings"
 )
 
@@ -115,14 +117,17 @@ func isYes(answer string) bool {
 }
 
 // isTerminal reports whether in is an interactive terminal.
+//
+// It asks the operating system rather than guessing from the file mode, because
+// the guess is wrong in exactly the case that matters: /dev/null is a character
+// device, so `< /dev/null` would look like a terminal, Starpoint would print a
+// prompt into the void, read nothing, and treat end-of-input as an answer.
+// Distinguishing those requires an ioctl, so this uses the one library that does
+// it correctly on every platform rather than a darwin-only syscall.
 func isTerminal(in io.Reader) bool {
 	f, ok := in.(*os.File)
 	if !ok {
 		return false
 	}
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(f.Fd()))
 }

@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"sync"
+	"time"
 
 	"github.com/starpoint/starpoint/internal/config"
 	"github.com/starpoint/starpoint/internal/locator"
@@ -26,6 +28,16 @@ type Engine struct {
 	reg      *provider.Registry
 	locator  *locator.Locator
 	resolver *resolve.Resolver
+
+	// healthOnce and healthCache make provider probing happen once per Engine.
+	//
+	// Probing is the dominant cost of every command: it runs a subprocess per
+	// provider, and a single `starpoint install` reaches for the answer several
+	// times over. Memoising it turns three full sweeps into one and, more
+	// importantly, makes every step of a command reason about the same machine
+	// state rather than three slightly different samples of it.
+	healthOnce  sync.Once
+	healthCache map[string]provider.Health
 }
 
 // New builds an Engine.
@@ -52,6 +64,13 @@ type Options struct {
 	// own package database, and mistaking one for the other turns a no-op into a
 	// destructive install.
 	AdoptOnly bool
+	// SurveyTimeout bounds one round of concurrent provider lookups. Zero keeps
+	// the default.
+	SurveyTimeout time.Duration
+	// Quiet suppresses the extra reporting a command normally makes about how it
+	// looked. It exists for JSON consumers and for scripts, where a paragraph of
+	// provenance between the command and its output is noise.
+	Quiet bool
 }
 
 // Result is the outcome of an operation.
@@ -107,12 +126,19 @@ func (e *Engine) Plan(ctx context.Context, doc *config.Document, opts Options) (
 }
 
 // health probes every registered provider, tolerating individual failures.
+//
+// The result is memoised for the lifetime of the Engine. A caller that needs a
+// fresh look — a long-running process, or a test that changes the machine
+// mid-command — can build a new Engine.
 func (e *Engine) health(ctx context.Context) map[string]provider.Health {
-	out := map[string]provider.Health{}
-	for _, p := range e.reg.All() {
-		out[p.Name()] = p.Health(ctx)
-	}
-	return out
+	e.healthOnce.Do(func() {
+		out := map[string]provider.Health{}
+		for _, p := range e.reg.All() {
+			out[p.Name()] = p.Health(ctx)
+		}
+		e.healthCache = out
+	})
+	return e.healthCache
 }
 
 // evaluate builds the State for one desired package.

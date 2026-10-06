@@ -65,11 +65,21 @@ here but deliberately has none, and why.
 12. **Version constraint expressions** — `version` is currently an exact string.
     `>=1.2`, `^2.0` and `~1.4` are what people actually write. Parsing them
     belongs in the provider that owns the versioning scheme, not in the core.
-13. **Concurrency** — two `starpoint sync` runs can race on the same provider, and
-    now also on the same transition: both could install, verify and remove at once.
-    Needs a lock file with the provider identity in it, and a clear error rather
-    than a wait.
-14. **Project toolchain declarations** — a Rust project declares a toolchain in
+13. **Concurrency between processes** — the concurrent *provider lookup* is
+    internal and safe, but two `starpoint` processes can still race on the same
+    provider, and now also on the same transition: both could install, verify and
+    remove at once. Needs a lock file with the provider identity in it, and a clear
+    error rather than a wait.
+14. **One inventory pass** — `install` asks every provider for the survey and then
+    asks them again, in precedence order, inside `findExisting`. The two are merged
+    only on paper because `findExisting` encodes an order (managing providers
+    before the read-only system provider) that a flat survey does not. Merging them
+    for real means making the precedence explicit in the survey rather than
+    implicit in a loop, and is worth roughly a second per command.
+15. **Verification running the software** — see item 10; the survey already
+    collects provider-reported versions, so the remaining piece is asking the
+    software itself.
+16. **Project toolchain declarations** — a Rust project declares a toolchain in
     `rust-toolchain.toml`, a Go project in `go.mod`, and Starpoint currently
     ignores all of them. Reading them is a project-context feature, not a provider
     feature, and it needs a decision about whether a project may pin the machine's
@@ -77,14 +87,14 @@ here but deliberately has none, and why.
 
 ## CLI and API
 
-15. **`starpoint explain <package>`** — print the resolution reasoning chain: which
+17. **`starpoint explain <package>`** — print the resolution reasoning chain: which
     rules were considered and why the winner won. `info` shows the answer,
     `transition` shows the argument for a move; this would cover provider choice.
-16. **Stable JSON schema document** — the shapes are already emitted, and the
+18. **Stable JSON schema document** — the shapes are already emitted, and the
     transition record is the newest. They need a documented, versioned schema file
     before anyone depends on them.
-17. **`starpoint completions`** — shell completion for bash, zsh and fish.
-18. **Comment-preserving configuration writes** — Starpoint re-encodes the whole
+19. **`starpoint completions`** — shell completion for bash, zsh and fish.
+20. **Comment-preserving configuration writes** — Starpoint re-encodes the whole
     file when it records a provider decision, so hand-written comments are lost.
     Needs a position-preserving TOML editor, or an explicit `# starpoint:generated`
     region Starpoint may rewrite and a human region it never touches. The second is

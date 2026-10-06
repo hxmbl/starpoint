@@ -55,6 +55,10 @@ type Env struct {
 	// lastConfirm remembers the answer to the most recent Confirm call so a
 	// caller can honour a refusal without being handed it.
 	lastConfirm bool
+	// confirmAsked records whether a confirmation actually happened. Without it a
+	// command that was told not to ask would read as one that asked and was
+	// refused, and would then decline to do the work it was told to do.
+	confirmAsked bool
 }
 
 func (e *Env) registry() *provider.Registry {
@@ -224,6 +228,15 @@ Commands:
   transition [pkg...]  Move ownership between providers, or show pending moves
   update               Update managed software, respecting explicit pins
 
+A provider may be named after the package names, or with --provider:
+  starpoint install ripgrep brew
+  starpoint install brew ripgrep
+  starpoint install ripgrep --provider brew
+
+A version may be written inline, the way package managers write it:
+  starpoint install ripgrep@14.1.0 brew
+  starpoint install @types/node@5.0.0 npm
+
 Global options:
   --json               Machine-readable output
   --provider <name>    Restrict automatic provider choice (repeatable)
@@ -231,10 +244,14 @@ Global options:
   --version            Print the version
   --help               Show this help
 
+Anything that installs, removes or updates software asks first. Answer with
+--no-confirm to skip the question; a stream that provides no answer at all is
+refused rather than assumed.
+
 Examples:
   starpoint init
   starpoint install ruff
-  starpoint install ripgrep --provider brew
+  starpoint install ripgrep@14.1.0 brew
   starpoint sync --dry-run
   starpoint transition
   starpoint list --json
@@ -681,6 +698,14 @@ func isWritable(path string) bool {
 
 // cmdInstall installs software and records it.
 func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, allowed []string) error {
+	// A bare provider may sit at either end of the argument list; `--provider`
+	// remains the unambiguous spelling. This runs before the flag loop so the
+	// provider is never mistaken for a package name.
+	named, args, err := env.splitProviderArg(args, allowed)
+	if err != nil {
+		return err
+	}
+
 	var (
 		dryRun    bool
 		noConfirm bool
@@ -693,7 +718,7 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		switch args[i] {
 		case "--dry-run", "-n":
 			dryRun = true
-		case "--no-confirm", "-y":
+		case "--no-confirm", "-y", "--yes":
 			noConfirm = true
 		case "--version", "-V":
 			if i+1 >= len(args) {
@@ -713,6 +738,7 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 			names = append(names, args[i])
 		}
 	}
+
 	if len(names) == 0 {
 		return fmt.Errorf("%w: install needs a package name", ErrUsage)
 	}
@@ -722,36 +748,56 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		return err
 	}
 	opts.DryRun = dryRun
-	opts.NoConfirm = noConfirm
+	opts.NoConfirm = noConfirm || doc.Settings().NoConfirm
+	if named != "" {
+		opts.Allowed = append(opts.Allowed, named)
+	}
 
-	var results []*engine.Result
-	for _, name := range names {
-		if looksLikeVersion(name) {
+	// `starpoint install .` is "install what this project needs", and it has no
+	// package name to look up or ask about.
+	if len(names) == 1 && (names[0] == "." || names[0] == "./") && named == "" {
+		res, err := installProject(ctx, env, eng, doc, opts, proj, version, channel)
+		if err != nil {
+			return err
+		}
+		return reportInstall(w, []*engine.Result{res}, nil)
+	}
+
+	type job struct {
+		pkg    model.Package
+		change change
+		survey engine.Survey
+	}
+	var jobs []job
+
+	for _, raw := range names {
+		if looksLikeVersion(raw) {
 			return fmt.Errorf(
 				"%s looks like a version number, not a package name. "+
 					"Name the software and pin the version instead, for example: "+
 					"'starpoint install <package> --version %s', or 'starpoint install stable --version %s' "+
-					"for a release channel's toolchain", name, name, name)
+					"for a release channel's toolchain", raw, raw, raw)
 		}
-		// "starpoint install ." means "install what this project needs".
-		if name == "." || name == "./" {
-			res, err := installProject(ctx, env, eng, doc, opts, proj, version, channel)
-			if err != nil {
-				return err
-			}
-			results = append(results, res)
-			continue
+
+		// The inline form the package managers use: `fastfetch@1.2.3`, or
+		// `@types/node@5.0.0`. An explicit --version still wins.
+		pkg := model.ParseSpec(raw)
+		if version != "" {
+			pkg.Version = version
 		}
-		pkg := model.Package{Name: name, Version: version, Channel: channel}
-		if len(allowed) == 1 {
-			pkg.Provider = allowed[0]
-		}
+		pkg.Channel = channel
+		pkg.Provider = singleProvider(opts.Allowed)
 		if asProject {
 			pkg.Scope = model.ScopeProject
 		}
 
-		// An ambiguous provider choice is worth one question, not a guess. With
-		// no way to ask, the command fails rather than picking one silently.
+		// Ask everyone at once. The point is not speed: it is that "no provider
+		// claims this" and "one provider claims it" are different answers, and only
+		// asking everyone tells them apart.
+		survey := env.lookup(ctx, eng, pkg, opts, w.JSON())
+
+		// An ambiguous provider choice is worth one question, not a guess. With no
+		// way to ask, the command fails rather than picking one silently.
 		if pkg.Provider == "" {
 			chosen, err := env.askProvider(ctx, eng, doc, opts, pkg)
 			if err != nil {
@@ -762,16 +808,56 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 				pkg.Reason = "provider chosen interactively"
 			}
 		}
-		res, err := eng.Add(ctx, doc, pkg, opts)
+
+		resolution, adopted, err := eng.Preview(ctx, doc, pkg, opts)
+		if err != nil {
+			return err
+		}
+		jobs = append(jobs, job{pkg: pkg, change: installChange(pkg, resolution, adopted), survey: survey})
+	}
+
+	// One question for the whole command, describing every change it would make.
+	// Asking per package would make `install a b c` three interruptions.
+	changes := make([]change, 0, len(jobs))
+	for _, j := range jobs {
+		changes = append(changes, j.change)
+	}
+	if err := env.confirmChanges(changes, opts); err != nil {
+		return err
+	}
+	if env.declined() {
+		return nil
+	}
+
+	var results []*engine.Result
+	surveys := make([]engine.Survey, 0, len(jobs))
+	for _, j := range jobs {
+		surveys = append(surveys, j.survey)
+		res, err := eng.Add(ctx, doc, j.pkg, opts)
 		if err != nil {
 			return err
 		}
 		results = append(results, res)
 	}
+	return reportInstall(w, results, surveys)
+}
 
+// singleProvider returns the one provider an option set names, or empty when the
+// choice is still open.
+func singleProvider(allowed []string) string {
+	if len(allowed) == 1 {
+		return allowed[0]
+	}
+	return ""
+}
+
+// reportInstall renders install results, with the provider lookup that preceded
+// them. The lookup travels with the results because "which providers have this"
+// is the evidence behind the choice, and a JSON consumer has no other way to see
+// it.
+func reportInstall(w *report.Writer, results []*engine.Result, surveys []engine.Survey) error {
 	if w.JSON() {
-		combined := map[string]any{"operations": results}
-		return w.Render(combined)
+		return w.Render(map[string]any{"operations": results, "lookup": surveys})
 	}
 	for _, r := range results {
 		if err := w.Result("install", r); err != nil {
@@ -907,8 +993,12 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 	return result, nil
 }
 
-// cmdRemove removes software and its configuration entry.
 func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, allowed []string) error {
+	named, args, err := env.splitProviderArg(args, allowed)
+	if err != nil {
+		return err
+	}
+
 	var (
 		dryRun    bool
 		noConfirm bool
@@ -918,7 +1008,7 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		switch args[i] {
 		case "--dry-run", "-n":
 			dryRun = true
-		case "--no-confirm", "-y":
+		case "--no-confirm", "-y", "--yes":
 			noConfirm = true
 		default:
 			names = append(names, args[i])
@@ -932,11 +1022,29 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		return err
 	}
 	opts.DryRun = dryRun
-	opts.NoConfirm = noConfirm
+	opts.NoConfirm = noConfirm || doc.Settings().NoConfirm
+	if named != "" {
+		opts.Allowed = append(opts.Allowed, named)
+	}
+
+	// Removing uninstalls software. It is the one operation here that can take
+	// something away from the user, so it is described before it happens.
+	var changes []change
+	for _, raw := range names {
+		pkg := model.ParseSpec(raw)
+		resolution := env.planRemoval(ctx, eng, doc, opts, pkg)
+		changes = append(changes, removeChange(pkg, resolution))
+	}
+	if err := env.confirmChanges(changes, opts); err != nil {
+		return err
+	}
+	if env.declined() {
+		return nil
+	}
 
 	var results []*engine.Result
-	for _, name := range names {
-		res, err := eng.Remove(ctx, doc, name, opts)
+	for _, raw := range names {
+		res, err := eng.Remove(ctx, doc, raw, opts)
 		if err != nil {
 			return err
 		}
@@ -951,6 +1059,19 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		}
 	}
 	return nil
+}
+
+// planRemoval resolves who would be asked to uninstall a package, for the sake of
+// describing the change before it is made.
+func (e *Env) planRemoval(ctx context.Context, eng *engine.Engine, doc *config.Document,
+	opts engine.Options, pkg model.Package) model.Resolution {
+	resolution, _, err := eng.Preview(ctx, doc, pkg, opts)
+	if err != nil || resolution.Provider == "" {
+		// Remove also accepts software that is configured but not installed, in
+		// which case the provider is whatever the configuration recorded.
+		return model.Resolution{Provider: singleProvider(opts.Allowed)}
+	}
+	return resolution
 }
 
 // cmdTransition inspects and performs provider transitions.
@@ -1127,7 +1248,7 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		switch a {
 		case "--dry-run", "-n":
 			dryRun = true
-		case "--no-confirm", "-y":
+		case "--no-confirm", "-y", "--yes":
 			noConfirm = true
 		case "--self":
 			self = true
@@ -1140,7 +1261,37 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		return err
 	}
 	opts.DryRun = dryRun
-	opts.NoConfirm = noConfirm
+	opts.NoConfirm = noConfirm || doc.Settings().NoConfirm
+
+	// Updating changes the machine without being asked about a specific package,
+	// so the set of packages it would touch is shown first. A plan with nothing in
+	// it is not worth a question.
+	wouldUpdate, err := eng.UpdatePlan(ctx, doc, opts)
+	if err != nil {
+		return err
+	}
+	var preview []change
+	for _, a := range wouldUpdate {
+		preview = append(preview, change{
+			verb:   "Update",
+			target: a.State.Package.Spec(),
+			via:    a.State.Res.Provider,
+			detail: a.Note,
+		})
+	}
+	if self {
+		preview = append(preview, change{
+			verb:   "Update",
+			target: "Starpoint itself",
+			detail: "reinstalls the running version of Starpoint",
+		})
+	}
+	if err := env.confirmChanges(preview, opts); err != nil {
+		return err
+	}
+	if env.declined() {
+		return nil
+	}
 
 	res, updateErr := eng.Update(ctx, doc, opts)
 	if self {

@@ -286,3 +286,43 @@ func SortStates(states []State) {
 		return states[i].Package.Name < states[j].Package.Name
 	})
 }
+
+// ParseSpec reads a package written the way package managers write one:
+// `name`, `name@version`, or `@scope/name@version`.
+//
+// The version is split at the *last* `@`, because an npm scope also starts with
+// one. A leading `@` with nothing else is a scope, not an empty name with a
+// version.
+func ParseSpec(raw string) Package {
+	pkg := Package{Name: raw}
+	at := strings.LastIndex(raw, "@")
+	if at <= 0 {
+		// No version, or a scoped name like "@types/node" whose only @ is first.
+		return pkg
+	}
+	name, version := raw[:at], raw[at+1:]
+	if name == "" || version == "" {
+		return pkg
+	}
+	pkg.Name = name
+	pkg.Version = version
+	return pkg
+}
+
+// HasExplicitVersion reports whether a name carries an inline version.
+func HasExplicitVersion(raw string) bool {
+	return ParseSpec(raw).Version != ""
+}
+
+// RawVersionSeparator is the character package managers use between a name and a
+// version. It is a constant so the parser and the providers cannot drift.
+const RawVersionSeparator = "@"
+
+// Spec renders a package the way a user would type it. Providers that want the
+// package-manager form are handed this rather than a reconstructed guess.
+func (p Package) Spec() string {
+	if p.Version == "" {
+		return p.Name
+	}
+	return p.Name + RawVersionSeparator + p.Version
+}

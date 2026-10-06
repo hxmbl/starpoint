@@ -303,11 +303,13 @@ func (e *Engine) Add(ctx context.Context, doc *config.Document, pkg model.Packag
 	if pkg.Name == "" {
 		return nil, fmt.Errorf("a package name is required")
 	}
-	available := e.health(ctx)
-	existing := e.findExisting(ctx, pkg, available)
-	resolution := e.resolver.Resolve(e.resolveInput(pkg, existing, available, opts))
-
-	resolved := pkg
+	plan, err := e.plan(ctx, pkg, opts)
+	if err != nil {
+		return nil, err
+	}
+	available := plan.available
+	resolution := plan.resolution
+	resolved := plan.resolved
 	resolved.Provider = resolution.Provider
 	// A reason supplied by the caller (an interactive choice, for example) is a
 	// human decision and outranks the resolver's summary.
@@ -319,23 +321,9 @@ func (e *Engine) Add(ctx context.Context, doc *config.Document, pkg model.Packag
 	state := model.State{Package: resolved, Res: resolution, Status: model.StatusCorrect}
 	// adopted records that the software was already there. Recording ownership
 	// is not the same act as installing, and the output should not claim it was.
-	adopted := false
-
-	p, known := e.reg.Get(resolution.Provider)
-	if known && available[resolution.Provider].Available && p.Capabilities().Discover {
-		if inst, err := p.Installed(ctx, resolved); err == nil && inst != nil {
-			state.Desired = inst
-			// Adoption means "this is already what was asked for". With an
-			// explicit pin that is only true when the installed version is the
-			// pinned one: adopting a 0.5.0 install of something pinned to 0.6.0
-			// would record the pin as satisfied when it is not, and the next
-			// sync would be the first to notice.
-			adopted = model.VersionMatches(resolved.Version, inst.Version)
-			if !adopted {
-				state.Desired = nil
-			}
-		}
-	}
+	adopted := plan.adopted
+	p, known := plan.provider, plan.known
+	state.Desired = plan.desired
 
 	if state.Desired == nil {
 		switch {
@@ -358,7 +346,7 @@ func (e *Engine) Add(ctx context.Context, doc *config.Document, pkg model.Packag
 				Package:  pkg.Name,
 				Provider: resolution.Provider,
 				Message: "recorded in the configuration but not installed: " +
-					adoptionReason(existing, opts),
+					adoptionReason(plan.existing, opts),
 			})
 		default:
 			state.Status = model.StatusMissing
@@ -552,4 +540,96 @@ func versionOf(i *model.Installation) string {
 		return ""
 	}
 	return i.Version
+}
+
+// addPlan is everything Add decides before it changes anything.
+type addPlan struct {
+	available  map[string]provider.Health
+	existing   *model.Installation
+	resolution model.Resolution
+	resolved   model.Package
+	provider   provider.Provider
+	known      bool
+	desired    *model.Installation
+	adopted    bool
+}
+
+// plan resolves a package and works out whether recording it would install
+// anything, without installing anything.
+//
+// Preview and Add share this so the question asked before a change and the change
+// itself can never disagree. Two separate derivations would be two chances to
+// describe an operation that then did something else.
+func (e *Engine) plan(ctx context.Context, pkg model.Package, opts Options) (*addPlan, error) {
+	available := e.health(ctx)
+	existing := e.findExisting(ctx, pkg, available)
+	resolution := e.resolver.Resolve(e.resolveInput(pkg, existing, available, opts))
+
+	resolved := pkg
+	resolved.Provider = resolution.Provider
+	// A reason supplied by the caller (an interactive choice, for example) is a
+	// human decision and outranks the resolver's summary.
+	if resolved.Reason == "" {
+		resolved.Reason = resolution.Reason
+	}
+
+	p, known := e.reg.Get(resolution.Provider)
+	out := &addPlan{
+		available:  available,
+		existing:   existing,
+		resolution: resolution,
+		resolved:   resolved,
+		provider:   p,
+		known:      known,
+	}
+
+	if known && available[resolution.Provider].Available && p.Capabilities().Discover {
+		if inst, err := p.Installed(ctx, resolved); err == nil && inst != nil {
+			out.desired = inst
+			// Adoption means "this is already what was asked for". With an
+			// explicit pin that is only true when the installed version is the
+			// pinned one: adopting a 0.5.0 install of something pinned to 0.6.0
+			// would record the pin as satisfied when it is not, and the next
+			// sync would be the first to notice.
+			out.adopted = model.VersionMatches(resolved.Version, inst.Version)
+			if !out.adopted {
+				out.desired = nil
+			}
+		}
+	}
+	return out, nil
+}
+
+// Preview reports what recording a package would do, without doing it.
+//
+// It returns the provider that would be used and the installation that would be
+// adopted, if any. A non-nil installation means nothing on the machine changes —
+// the software is already there and only the configuration would be written —
+// which is a materially different thing to ask about and deserves to be shown
+// before the question rather than discovered after it.
+func (e *Engine) Preview(ctx context.Context, doc *config.Document, pkg model.Package, opts Options) (model.Resolution, *model.Installation, error) {
+	if pkg.Name == "" {
+		return model.Resolution{}, nil, fmt.Errorf("a package name is required")
+	}
+	plan, err := e.plan(ctx, pkg, opts)
+	if err != nil {
+		return model.Resolution{}, nil, err
+	}
+	var adopted *model.Installation
+	if plan.adopted {
+		adopted = plan.desired
+	}
+	return plan.resolution, adopted, nil
+}
+
+// UpdatePlan reports what Update would do, without doing it.
+//
+// It is Update with dry-run forced on, rather than a second derivation. The two
+// would otherwise be free to disagree, and a preview that lists one set of
+// packages while the command updates another is worse than no preview at all.
+func (e *Engine) UpdatePlan(ctx context.Context, doc *config.Document, opts Options) ([]model.PlannedAction, error) {
+	preview := opts
+	preview.DryRun = true
+	res, _ := e.Update(ctx, doc, preview)
+	return res.Applied, nil
 }

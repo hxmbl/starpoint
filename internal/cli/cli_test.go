@@ -36,7 +36,30 @@ type harness struct {
 	cargo  *testsupport.FakeProvider
 	npm    *testsupport.FakeProvider
 	sys    *testsupport.FakeProvider
+	apt    *testsupport.FakeProvider
+	// questions records every confirmation the harness was asked.
+	questions []string
+	// confirm overrides the answer given to confirmations.
+	confirm *bool
 }
+
+// ask makes the harness answer every confirmation with the given answer.
+func (h *harness) ask(answer bool) {
+	h.confirm = &answer
+	h.env.Confirm = func(question string) (bool, error) {
+		h.questions = append(h.questions, question)
+		if h.confirm != nil {
+			return *h.confirm, nil
+		}
+		return true, nil
+	}
+}
+
+// unattended removes the terminal, so the command has no way to ask.
+func (h *harness) unattended() { h.env.Confirm = nil }
+
+// asked reports whether any confirmation was requested.
+func (h *harness) asked() bool { return len(h.questions) > 0 }
 
 func newHarness(t *testing.T, configBody string) *harness {
 	t.Helper()
@@ -71,6 +94,7 @@ func newHarness(t *testing.T, configBody string) *harness {
 
 	out := &bytes.Buffer{}
 	errBuf := &bytes.Buffer{}
+	h := &harness{t: t, stdout: out, stderr: errBuf}
 	env := &Env{
 		Stdout:       out,
 		Stderr:       errBuf,
@@ -78,9 +102,24 @@ func newHarness(t *testing.T, configBody string) *harness {
 		WorkDir:      dir,
 		GlobalConfig: cfg,
 		Registry:     reg,
+		// A scripted, empty PATH. Without this a test silently depends on whatever
+		// is installed on the machine running it, which is how "installed at
+		// /Users/..." turns up in a test about fake providers.
+		Locator: &locator.Locator{
+			LookPath: func(string) (string, error) { return "", errNotOnPath },
+		},
+		// The default is a user at a terminal who types yes. Tests that care about
+		// the question itself override this; tests that do not should not have to
+		// spell out an approval for a command the harness is pretending is
+		// interactive.
+		Confirm: func(question string) (bool, error) {
+			h.questions = append(h.questions, question)
+			return true, nil
+		},
 	}
 	return &harness{t: t, stdout: out, stderr: errBuf, config: cfg, env: env,
-		brew: brewP, uv: uvP, rustup: rustupP, cargo: cargoP, npm: npmP, sys: sys}
+		brew: brewP, uv: uvP, rustup: rustupP, cargo: cargoP, npm: npmP, sys: sys,
+		apt: aptP}
 }
 
 // setLocator installs a scripted PATH resolution so tests do not depend on the
@@ -303,6 +342,9 @@ func TestInstallAmbiguityPromptsAndHonoursTheAnswer(t *testing.T) {
 			asked = options
 			return "apt", nil
 		},
+		// This test is about which provider gets chosen, not about whether the
+		// change is confirmed; that has its own tests.
+		Confirm: func(string) (bool, error) { return true, nil },
 	}
 	if code := Run(context.Background(), env, []string{"install", "ripgrep"}); code != 0 {
 		t.Fatalf("install failed: %s", out.String())

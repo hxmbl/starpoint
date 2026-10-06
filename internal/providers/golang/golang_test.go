@@ -247,3 +247,18 @@ func writeFile(t *testing.T, path, body string) {
 		t.Fatalf("writing %s: %v", path, err)
 	}
 }
+
+func TestGoVersionDoesNotDoubleThePrefix(t *testing.T) {
+	cases := map[string]string{
+		"0.16.1":  "0.16.1",
+		"v0.16.1": "0.16.1",
+		"==v0.16": "0.16",
+		"vendor":  "vendor",
+		"":        "",
+	}
+	for in, want := range cases {
+		if got := goVersion(in); got != want {
+			t.Errorf("goVersion(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

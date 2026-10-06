@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -152,5 +153,56 @@ func TestChooseWithNoOptionsIsAnError(t *testing.T) {
 	var out bytes.Buffer
 	if _, err := PromptChoose(bytes.NewReader([]byte("1\n")), &out)("Which?", nil); err == nil {
 		t.Error("an empty option list cannot be answered")
+	}
+}
+
+// /dev/null is a character device, so a mode-based check calls it a terminal. It
+// is not one, and treating it as one makes Starpoint print a prompt into the void
+// and read the resulting end-of-input as an answer.
+func TestDevNullIsNotATerminal(t *testing.T) {
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Skipf("cannot open %s: %v", os.DevNull, err)
+	}
+	defer devNull.Close()
+	if isTerminal(devNull) {
+		t.Errorf("%s must not be reported as a terminal", os.DevNull)
+	}
+	info, statErr := devNull.Stat()
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if info.Mode()&os.ModeCharDevice == 0 {
+		t.Skipf("%s is not a character device here, so this bug cannot occur", os.DevNull)
+	}
+}
+
+func TestAPipeIsNotATerminal(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	if isTerminal(r) {
+		t.Error("a pipe is not a terminal")
+	}
+}
+
+func TestANonFileReaderIsNotATerminal(t *testing.T) {
+	if isTerminal(strings.NewReader("y")) {
+		t.Error("a buffer is not a terminal")
+	}
+}
+
+// An absent answer is an error, never an implicit yes and never an implicit no.
+func TestNoAnswerIsAnErrorRatherThanAnAssumption(t *testing.T) {
+	confirm := PromptConfirm(strings.NewReader(""), io.Discard)
+	_, err := confirm("Proceed?")
+	if err == nil {
+		t.Fatal("an empty stream must not answer the question")
+	}
+	if !strings.Contains(err.Error(), "--no-confirm") {
+		t.Errorf("the error should say how to proceed: %v", err)
 	}
 }

@@ -73,10 +73,32 @@ editing the configuration to make the problem go away.
 | `starpoint doctor` | Inspect Starpoint, config, providers, ownership, inconsistencies |
 | `starpoint list [--json]` | Show managed software, its location, scope and provider |
 | `starpoint info <package>` | Show one package's state in detail |
-| `starpoint install <package>` | Install and record (alias: `add`) |
+| `starpoint install <package> [provider]` | Install and record (alias: `add`) |
 | `starpoint install .` | Handle the current project |
 | `starpoint remove <package>` | Uninstall and delete from config (alias: `uninstall`) |
 | `starpoint update [--self]` | Update managed software, respecting pins |
+
+A provider may be named after the package names, before them, or with
+`--provider`, and a version may be written inline:
+
+```
+starpoint install ripgrep brew
+starpoint install brew ripgrep
+starpoint install ripgrep --provider brew
+starpoint install ripgrep@14.1.0 brew
+starpoint install @types/node@5.0.0 npm
+```
+
+A single token is always a package name — `starpoint install brew` installs the
+software called brew — and naming two providers is an error rather than a guess.
+
+**Confirmation.** Anything that installs, removes or updates software describes
+what it is about to do and waits for an answer: which packages, through which
+provider, and whether anything is going to be installed at all. Recording
+software that is already present is shown as a *record* rather than an install,
+because no mutation happens. `--no-confirm` (or `no_confirm = true` in the
+configuration) skips the question; a stream that provides no answer at all is
+refused rather than assumed.
 
 Global options work anywhere on the line: `--json`, `--provider <name>`
 (repeatable, restricts automatic resolution), `--force`, `--version`, `--help`.
@@ -116,6 +138,33 @@ deliberately *not* providers: Docker and Podman manage containers rather than
 software on the machine, and Bun and Deno cannot enumerate what they have
 installed — a provider that cannot answer "what do you own?" would make
 Starpoint's central promise false. Both are recorded in `docs/next-tasks.md`.
+
+### Asking every provider at once
+
+Before resolving a package, `install` asks **every** provider concurrently
+whether it has that software, and says what it found:
+
+```
+$ starpoint install rake gem
+rake: also present via system
+About to change your machine:
+  Record rake (gem)
+      already installed at /Library/Ruby/Gems/2.6.0
+      then: no software is installed or removed; the existing copy is recorded as owned by gem
+```
+
+`none found on installed providers` is not an error — a package can perfectly well
+be installable by a provider that does not have it yet — but it is stated plainly,
+and qualified when a provider is installed yet unable to enumerate its inventory,
+because that weakens the claim.
+
+The point is not speed. Resolution otherwise proceeds one provider at a time and
+stops at the first hit, which cannot tell "the only provider that has this" from
+"several providers have this and the configuration picks one of them".
+
+The cost is real: this is one extra round of subprocesses per provider, bounded by
+a 20-second timeout so a hung package manager cannot hang Starpoint. `--json`
+reports the survey and how long it took.
 
 ### Provider transitions
 
@@ -246,6 +295,16 @@ suite substitutes a scripted command runner and in-memory providers.
   cannot manage globals. A real yarn 1.x install has not been exercised.
 - pnpm's global bin directory is outside `PATH` on a default macOS install, so
   `doctor` says so rather than letting a pnpm-installed command look missing.
+- Provider health is probed once per command and memoised. A single `install`
+  previously swept every provider three times over; it now sweeps once, and every
+  step of a command reasons about one sample of the machine rather than three.
+- The concurrent lookup is bounded by a timeout, and its result channel is buffered
+  to the number of providers, so a provider that answers late can always deliver
+  and exit. Nothing in it can leak a goroutine or block on a send.
+- Whether there is a terminal is decided by asking the operating system, not by
+  inspecting the file mode. `/dev/null` is a character device, so a mode-based check
+  calls it a terminal, prints a prompt into the void, and reads the resulting
+  end-of-input as an answer.
 - `starpoint update` on a Rust toolchain runs `rustup toolchain install` for the
   channel, which moves a channel forward. A concrete toolchain pinned in the
   configuration is never moved.

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/starpoint/starpoint/internal/config"
 	"github.com/starpoint/starpoint/internal/exec"
@@ -138,6 +139,15 @@ type FakeProvider struct {
 	// whenever a test is exercising verification.
 	InstallPath string
 
+	// InstalledDelay makes Installed take this long, honouring context
+	// cancellation. Tests use it to prove a slow provider cannot hang a command,
+	// which is the one property concurrency can quietly lose.
+	InstalledDelay time.Duration
+
+	// InstalledHook runs before Installed answers, for tests that need to observe
+	// or steer a concurrent lookup.
+	InstalledHook func(ctx context.Context, pkg model.Package)
+
 	// Recorded operations.
 	InstallCalls []provider.Request
 	RemoveCalls  []model.Package
@@ -212,7 +222,25 @@ func (f *FakeProvider) Discover(context.Context) ([]model.Installation, error) {
 }
 
 // Installed reports one item.
-func (f *FakeProvider) Installed(_ context.Context, pkg model.Package) (*model.Installation, error) {
+func (f *FakeProvider) Installed(ctx context.Context, pkg model.Package) (*model.Installation, error) {
+	// A slow provider must be able to notice cancellation, and the wait must not
+	// hold the lock: a serialised fake would make a concurrent caller look
+	// synchronised when it is not.
+	if f.InstalledDelay > 0 || f.InstalledHook != nil {
+		if f.InstalledHook != nil {
+			f.InstalledHook(ctx, pkg)
+		}
+		if f.InstalledDelay > 0 {
+			timer := time.NewTimer(f.InstalledDelay)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.InstalledError != nil {

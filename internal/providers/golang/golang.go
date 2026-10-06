@@ -167,6 +167,24 @@ func IsModulePath(name string) bool {
 	return strings.Contains(name, "/") || strings.Contains(name, ".")
 }
 
+// goVersion normalises a requested version into the form Go modules use.
+//
+// `go install` wants `path@v1.2.3`, but a user who wrote `gopls@v0.16.1` has
+// already supplied the prefix. Blindly adding "v" would produce "@vv0.16.1", so
+// an existing prefix is kept rather than doubled.
+func goVersion(requested string) string {
+	v := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(requested, "=="), "="), "v")
+	if v == "" {
+		return v
+	}
+	// Only strip a "v" that is actually part of a version number, so a branch
+	// name or channel is left alone.
+	if v[0] < '0' || v[0] > '9' {
+		return requested
+	}
+	return v
+}
+
 // Install installs a module, honouring an explicit version pin.
 func (p *Provider) Install(ctx context.Context, req provider.Request) (*model.Installation, error) {
 	if !IsModulePath(req.Package.Name) {
