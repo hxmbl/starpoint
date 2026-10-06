@@ -700,3 +700,36 @@ func DocumentInfo(doc *config.Document, globalPath string, writable bool) Config
 	}
 	return info
 }
+
+// Lookup renders a provider survey: what has the software, what was asked, and
+// what could not be.
+//
+// The last part is the reason this exists. "No provider has it" and "no provider
+// *was able to say*" are different claims, and a report that conflates them
+// teaches the user to trust a weaker guarantee than the one being offered.
+func (w *Writer) Lookup(s engine.Survey) error {
+	if w.asJSON {
+		return w.Render(map[string]any{"lookup": s})
+	}
+	fmt.Fprintln(w.out, "\n  Provider lookup")
+	owners := s.Owners()
+	if len(owners) > 0 {
+		for _, o := range owners {
+			version := ""
+			if o.Installation != nil && o.Installation.Version != "" {
+				version = " " + o.Installation.Version
+			}
+			fmt.Fprintf(w.out, "    %s%s\n", o.Provider, version)
+		}
+	} else {
+		fmt.Fprintln(w.out, "    none found on installed providers")
+	}
+	if unaskable := s.Unaskable(); len(unaskable) > 0 {
+		fmt.Fprintf(w.out, "    not asked: %s\n", strings.Join(unaskable, ", "))
+	}
+	if absent := s.NotInstalled(); len(absent) > 0 {
+		fmt.Fprintf(w.out, "    not installed: %s\n", strings.Join(absent, ", "))
+	}
+	fmt.Fprintf(w.out, "    (%d provider(s) asked in %.0fms)\n", len(s.Findings), s.DurationMS)
+	return nil
+}

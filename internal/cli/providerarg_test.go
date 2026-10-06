@@ -128,7 +128,7 @@ func TestNamingTheProviderTwiceIsAnError(t *testing.T) {
 	if code == 0 {
 		t.Fatal("the same provider twice in different spellings must not be accepted")
 	}
-	if !strings.Contains(errOut, "already given") {
+	if !strings.Contains(errOut, "given twice") {
 		t.Errorf("the conflict should be explained: %s", errOut)
 	}
 }

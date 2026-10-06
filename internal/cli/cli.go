@@ -445,28 +445,42 @@ func cmdInfo(ctx context.Context, env *Env, w *report.Writer, args []string) err
 	}
 	// The software may be on the machine without being in the configuration.
 	// Answering that is more useful than failing.
-	managed := eng.Discovery(ctx, name, opts)
-	if managed != nil {
-		return w.Info(model.State{
+	//
+	// Every provider is asked, not just the first one to answer. A sequential
+	// lookup that stops at the first hit would name one owner of software that
+	// two providers have, which is the same blindness `install` used to have and
+	// is exactly what a user asking "where did this come from?" needs to avoid.
+	survey := eng.Survey(ctx, model.Package{Name: name}, opts)
+	owners := survey.Owners()
+	if len(owners) > 0 {
+		st := model.State{
 			Package: model.Package{Name: name},
 			Res: model.Resolution{
-				Provider:   managed.Provider,
+				Provider:   owners[0].Provider,
 				Reason:     "found on this machine",
 				Confidence: model.ConfidenceCertain,
 			},
-			Current: managed,
-			Desired: managed,
+			Current: owners[0].Installation,
+			Desired: owners[0].Installation,
 			Status:  model.StatusMissing,
 			Notes: []string{
 				"installed but not managed by Starpoint",
 				"run 'starpoint add " + name + "' to record it",
 			},
-		})
+		}
+		if len(owners) > 1 {
+			st.Notes = append(st.Notes, "also present via "+joinProviders(owners[1:]))
+		}
+		if err := w.Info(st); err != nil {
+			return err
+		}
+		return w.Lookup(survey)
 	}
+
 	// A provider inventory came up empty; path attribution is the last word.
 	found := env.loc().Locate(name)
 	if found.Path != "" {
-		return w.Info(model.State{
+		if err := w.Info(model.State{
 			Package: model.Package{Name: name},
 			Res:     model.Resolution{Provider: "", Reason: "found on PATH", Confidence: model.ConfidenceSpeculat},
 			Current: &model.Installation{Name: name, Path: found.Path},
@@ -475,9 +489,26 @@ func cmdInfo(ctx context.Context, env *Env, w *report.Writer, args []string) err
 				"present at " + found.Path + " but Starpoint cannot tell which provider installed it",
 				"run 'starpoint add " + name + " --provider <name>' to record ownership",
 			},
-		})
+		}); err != nil {
+			return err
+		}
+		return w.Lookup(survey)
 	}
-	return fmt.Errorf("%s is not in the configuration and not found on this machine", name)
+
+	// Nothing anywhere. The refusal says which providers were asked, because
+	// "not found" from a tool that could not ask some of its own providers is a
+	// different claim from "not found".
+	line, _ := surveyNote(survey)
+	return fmt.Errorf("%s is not in the configuration and %s", name, line)
+}
+
+// joinProviders names a run of providers.
+func joinProviders(fs []engine.Finding) string {
+	names := make([]string, 0, len(fs))
+	for _, f := range fs {
+		names = append(names, f.Provider)
+	}
+	return strings.Join(names, ", ")
 }
 
 // cmdDoctor inspects everything.

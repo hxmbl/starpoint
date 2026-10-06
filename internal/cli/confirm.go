@@ -62,8 +62,8 @@ func (e *Env) confirmChanges(changes []change, opts engine.Options) error {
 			fmt.Fprintf(e.Stdout, " (%s)", c.via)
 		}
 		fmt.Fprintln(e.Stdout, "")
-		for _, line := range c.detailLines() {
-			fmt.Fprintf(e.Stdout, "      %s\n", line)
+		if c.detail != "" {
+			fmt.Fprintf(e.Stdout, "      %s\n", c.detail)
 		}
 		if c.after != "" {
 			fmt.Fprintf(e.Stdout, "      then: %s\n", c.after)
@@ -81,15 +81,6 @@ func (e *Env) confirmChanges(changes []change, opts engine.Options) error {
 		fmt.Fprintln(e.Stdout, "Nothing was changed.")
 	}
 	return nil
-}
-
-// detailLines renders the detail and consequence of a change.
-func (c change) detailLines() []string {
-	var out []string
-	if c.detail != "" {
-		out = append(out, c.detail)
-	}
-	return out
 }
 
 // declined reports whether the user was asked and said no.
@@ -194,7 +185,7 @@ func surveyDuplicates(s engine.Survey, chosen string) (string, bool) {
 // that without waiting for each in turn.
 func (e *Env) lookup(ctx context.Context, eng *engine.Engine, pkg model.Package, opts engine.Options, jsonMode bool) engine.Survey {
 	s := eng.Survey(ctx, pkg, opts)
-	if opts.Quiet || jsonMode {
+	if jsonMode {
 		// A JSON consumer reads the survey from the payload; prose above it would
 		// just be noise in the middle of a document.
 		return s

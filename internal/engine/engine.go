@@ -67,10 +67,6 @@ type Options struct {
 	// SurveyTimeout bounds one round of concurrent provider lookups. Zero keeps
 	// the default.
 	SurveyTimeout time.Duration
-	// Quiet suppresses the extra reporting a command normally makes about how it
-	// looked. It exists for JSON consumers and for scripts, where a paragraph of
-	// provenance between the command and its output is noise.
-	Quiet bool
 }
 
 // Result is the outcome of an operation.

@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -229,12 +228,4 @@ func (o Options) Timeout(def time.Duration) time.Duration {
 		return o.SurveyTimeout
 	}
 	return def
-}
-
-// sortFindingsByDuration puts the slowest providers first, which is how one
-// usually reads a survey when the point is what to make faster.
-func sortFindingsByDuration(findings []Finding) {
-	sort.SliceStable(findings, func(i, j int) bool {
-		return findings[i].DurationMS > findings[j].DurationMS
-	})
 }

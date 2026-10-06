@@ -296,15 +296,3 @@ func TestSurveyNamesProvidersThatCannotBeAsked(t *testing.T) {
 		t.Errorf("the full summary must say so: %v", s.Summary())
 	}
 }
-
-func TestSortFindingsByDuration(t *testing.T) {
-	findings := []Finding{
-		{Provider: "fast", DurationMS: durationMS(time.Millisecond)},
-		{Provider: "slow", DurationMS: durationMS(time.Second)},
-		{Provider: "medium", DurationMS: durationMS(time.Millisecond * 10)},
-	}
-	sortFindingsByDuration(findings)
-	if findings[0].Provider != "slow" || findings[2].Provider != "fast" {
-		t.Errorf("unexpected order: %+v", findings)
-	}
-}

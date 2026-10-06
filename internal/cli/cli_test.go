@@ -624,8 +624,44 @@ func TestInfoForUnmanagedButInstalledSoftware(t *testing.T) {
 	if code == 0 {
 		t.Fatal("info for software that is neither configured nor present should fail")
 	}
-	if !strings.Contains(errOut, "not found on this machine") {
-		t.Errorf("the error should explain both possibilities, got: %s", errOut)
+	if !strings.Contains(errOut, "none found on installed providers") {
+		t.Errorf("the refusal should say what was asked, got: %s", errOut)
+	}
+}
+
+// "No provider has it" is only as strong as the set of providers that answered.
+// The refusal has to admit the ones that could not.
+func TestInfoRefusalNamesProvidersItCouldNotAsk(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	h.apt.IsAvailable = true
+	h.apt.Caps.Discover = false
+
+	_, _, errOut := h.run("info", "definitely-not-on-this-machine-xyz")
+	if !strings.Contains(errOut, "not asked: apt") {
+		t.Errorf("the refusal should qualify its claim: %s", errOut)
+	}
+}
+
+// info must ask everyone, not stop at the first provider that answers. Stopping
+// there hides the second owner, which is the whole question a user is asking.
+func TestInfoNamesEveryProviderThatHasTheSoftware(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	h.uv.With(model.Installation{Name: "ruff", Version: "0.6.0", Path: "/uv/bin/ruff"})
+	h.brew.With(model.Installation{Name: "ruff", Version: "0.5.0", Path: "/brew/bin/ruff"})
+
+	out := h.mustRun("info", "ruff")
+	if !strings.Contains(out, "Provider lookup") {
+		t.Fatalf("the lookup should be shown:\n%s", out)
+	}
+	// Which provider is presented as primary follows registry order, so neither
+	// is asserted as "the" one. Both must appear, each with its version.
+	for _, want := range []string{"brew 0.5.0", "uv 0.6.0"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q should be in the lookup:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "also present via") {
+		t.Errorf("the second owner should be named in the notes:\n%s", out)
 	}
 }
 

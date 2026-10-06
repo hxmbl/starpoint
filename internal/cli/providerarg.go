@@ -46,35 +46,20 @@ func (e *Env) splitProviderArg(args []string, alreadyRestricted []string) (strin
 			ErrUsage, first, last)
 	}
 	if firstIsProvider || lastIsProvider {
-		named := firstOrLast(first, last, firstIsProvider, lastIsProvider)
+		named, index := last, len(bare)-1
+		if firstIsProvider {
+			named, index = first, 0
+		}
 		for _, given := range alreadyRestricted {
 			if given == named {
 				return "", nil, fmt.Errorf(
-					"%w: %q is already given as --provider, so %q must be a package name",
-					ErrUsage, named, firstOrLast(first, last, !firstIsProvider, !lastIsProvider))
+					"%w: %q is given twice, as --provider and as an argument; name the provider once",
+					ErrUsage, named)
 			}
-		}
-		index := len(bare) - 1
-		if firstIsProvider {
-			index = 0
 		}
 		return named, removeBareToken(args, named, index), nil
 	}
 	return "", args, nil
-}
-
-// firstOrLast picks whichever end actually named a provider. When neither did,
-// it returns the far end, which is only ever used in an error message that both
-// are providers.
-func firstOrLast(first, last string, firstIs, lastIs bool) string {
-	switch {
-	case firstIs:
-		return first
-	case lastIs:
-		return last
-	default:
-		return first
-	}
 }
 
 // isProviderName reports whether a token names a provider this build implements.

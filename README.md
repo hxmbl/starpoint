@@ -158,6 +158,11 @@ be installable by a provider that does not have it yet — but it is stated plai
 and qualified when a provider is installed yet unable to enumerate its inventory,
 because that weakens the claim.
 
+`starpoint info <package>` uses the same lookup for software it does not manage,
+so it names *every* provider that has it rather than the first one that answered.
+On this machine, `starpoint info rake` reports that `system` provides it and that
+`gem` also has 12.3.3 — the duplicate a sequential lookup would have hidden.
+
 The point is not speed. Resolution otherwise proceeds one provider at a time and
 stops at the first hit, which cannot tell "the only provider that has this" from
 "several providers have this and the configuration picks one of them".
@@ -305,6 +310,15 @@ suite substitutes a scripted command runner and in-memory providers.
   inspecting the file mode. `/dev/null` is a character device, so a mode-based check
   calls it a terminal, prints a prompt into the void, and reads the resulting
   end-of-input as an answer.
+- A cancelled provider command is reported as a cancellation. A killed process
+  yields "signal: killed", which is an ordinary nonzero exit; without checking the
+  context first, a lookup that timed out looked like a provider that merely failed
+  and every provider then classified the silence as its own kind of problem.
+- Commands run in their own process group and are cancelled as a group. Package
+  managers are rarely one process — `brew` is a Ruby script that shells out to git
+  and curl — so killing only the direct child would leave those grandchildren
+  writing to the filesystem after Starpoint had moved on. On platforms without
+  process groups, cancellation stops at the direct child.
 - `starpoint update` on a Rust toolchain runs `rustup toolchain install` for the
   channel, which moves a channel forward. A concrete toolchain pinned in the
   configuration is never moved.

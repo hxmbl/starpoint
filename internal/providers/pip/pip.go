@@ -115,9 +115,6 @@ func (p *Provider) interpreterFrom(out string) string {
 	return strings.TrimSpace(rest)
 }
 
-// PipExecutable returns the pip executable this provider will invoke.
-func (p *Provider) PipExecutable() string { return p.binary }
-
 // Discover parses `pip list --format=freeze`, whose lines are `name==version`.
 func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 	if _, _, err := p.locate(); err != nil {
