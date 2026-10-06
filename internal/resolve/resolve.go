@@ -59,15 +59,18 @@ type ecosystem struct {
 // first. This is the table that keeps Homebrew from being treated as a Python
 // package manager.
 var ecosystems = map[provider.Kind]ecosystem{
-	provider.KindPython: {kind: provider.KindPython, preferred: []string{"uv", "pipx"}},
+	provider.KindPython: {kind: provider.KindPython, preferred: []string{"uv", "pipx", "pip"}},
 	provider.KindRust:   {kind: provider.KindRust, preferred: []string{"cargo"}},
-	provider.KindNode:   {kind: provider.KindNode, preferred: []string{"npm"}},
+	provider.KindNode:   {kind: provider.KindNode, preferred: []string{"npm", "pnpm", "yarn"}},
 	provider.KindGo:     {kind: provider.KindGo, preferred: []string{"go"}},
+	provider.KindRuby:   {kind: provider.KindRuby, preferred: []string{"gem"}},
 }
 
 // systemManagers are general-purpose providers, used as a fallback when no
-// ecosystem-specific provider claims the software.
-var systemManagers = []string{"brew", "apt", "dnf", "pacman", "nix", "winget", "choco"}
+// ecosystem-specific provider claims the software. Only providers Starpoint
+// actually implements belong here: naming one it does not have would produce a
+// resolution it cannot carry out.
+var systemManagers = []string{"brew", "apt"}
 
 // nameHints map well-known software names to the ecosystem that should own them.
 // This is intentionally small: it covers cases where the name itself implies a
@@ -102,6 +105,10 @@ var nameHints = map[string]provider.Kind{
 	"go":            provider.KindGo,
 	"gopls":         provider.KindGo,
 	"golangci-lint": provider.KindGo,
+
+	"ruby":   provider.KindRuby,
+	"bundle": provider.KindRuby,
+	"rake":   provider.KindRuby,
 }
 
 // ownerHint returns the provider that definitively owns a name, if one does.
@@ -173,7 +180,7 @@ func (r *Resolver) Resolve(in Input) model.Resolution {
 			if owner, known := ownerHint(strings.ToLower(in.Package.Name)); !known || owner == existing.Provider {
 				return model.Resolution{
 					Provider:   existing.Provider,
-					Reason:     fmt.Sprintf("already installed at %s", existing.Path),
+					Reason:     existingReason(existing),
 					Confidence: model.ConfidenceCertain,
 				}
 			}
@@ -330,6 +337,16 @@ func (r *Resolver) candidates(in Input) []string {
 		return installable
 	}
 	return other
+}
+
+// existingReason explains who already has the software. Some providers report a
+// name and version but no location, and a reason that trails off into a bare
+// "installed at " says nothing.
+func existingReason(existing *model.Installation) string {
+	if existing.Path != "" {
+		return "already installed at " + existing.Path
+	}
+	return "already installed through " + existing.Provider
 }
 
 // available reports whether a provider is usable on this machine.

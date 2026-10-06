@@ -194,6 +194,10 @@ const (
 type Plan struct {
 	States  []State         `json:"states"`
 	Actions []PlannedAction `json:"actions"`
+	// Transitions are the provider moves among the actions, promoted to
+	// first-class records because they are the one operation that touches two
+	// providers at once and can therefore leave the machine mid-way.
+	Transitions []Transition `json:"transitions,omitempty"`
 	// Warnings are conditions Starpoint will not resolve on its own.
 	Warnings []Warning `json:"warnings,omitempty"`
 	// DryRun records whether the plan was produced without applying it.
@@ -211,7 +215,9 @@ type PlannedAction struct {
 	// ConfigChange describes the edit Starpoint intends to persist. Nil means
 	// the action leaves the configuration alone.
 	ConfigChange *ConfigEdit `json:"config_change,omitempty"`
-	Note         string      `json:"note,omitempty"`
+	// Transition is the provider move this action performs, when it is one.
+	Transition *Transition `json:"transition,omitempty"`
+	Note       string      `json:"note,omitempty"`
 }
 
 // ConfigEdit describes a pending mutation of the source of truth. Starpoint

@@ -133,6 +133,10 @@ type FakeProvider struct {
 	UpdateError  error
 	// InstalledError makes Installed fail.
 	InstalledError error
+	// InstallPath is where Install puts the software. Tests set it so the paths a
+	// fake reports line up with the PATH a fake locator resolves, which matters
+	// whenever a test is exercising verification.
+	InstallPath string
 
 	// Recorded operations.
 	InstallCalls []provider.Request
@@ -235,7 +239,7 @@ func (f *FakeProvider) Install(_ context.Context, req provider.Request) (*model.
 		Version:  req.Package.Version,
 		Provider: f.ProviderName,
 		Scope:    f.Caps.DefaultScope,
-		Path:     "/fake/" + req.Package.Name,
+		Path:     f.installPath(req.Package.Name),
 	}
 	if inst.Version == "" {
 		inst.Version = "1.0.0"
@@ -273,6 +277,17 @@ func (f *FakeProvider) Update(_ context.Context, pkg model.Package) (*model.Inst
 	f.Items[pkg.Name] = inst
 	copied := inst
 	return &copied, nil
+}
+
+// installPath returns where this fake installs a package.
+func (f *FakeProvider) installPath(name string) string {
+	if f.InstallPath != "" {
+		if strings.HasSuffix(f.InstallPath, "/") {
+			return f.InstallPath + name
+		}
+		return f.InstallPath + "/" + name
+	}
+	return "/fake/" + name
 }
 
 // bump increments a dotted version, defaulting to 2.0.0.

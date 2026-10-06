@@ -140,15 +140,16 @@ func (w *Writer) Info(st model.State) error {
 
 // SyncResult is the machine-readable shape of `starpoint sync`.
 type SyncResult struct {
-	DryRun        bool            `json:"dry_run"`
-	Converged     bool            `json:"converged"`
-	ConfigChanged bool            `json:"config_changed"`
-	ConfigPath    string          `json:"config_path,omitempty"`
-	Actions       []ActionResult  `json:"actions"`
-	States        []model.State   `json:"states"`
-	Warnings      []model.Warning `json:"warnings,omitempty"`
-	Problems      []string        `json:"problems,omitempty"`
-	Project       *project.Info   `json:"project,omitempty"`
+	DryRun        bool               `json:"dry_run"`
+	Converged     bool               `json:"converged"`
+	ConfigChanged bool               `json:"config_changed"`
+	ConfigPath    string             `json:"config_path,omitempty"`
+	Actions       []ActionResult     `json:"actions"`
+	Transitions   []model.Transition `json:"transitions,omitempty"`
+	States        []model.State      `json:"states"`
+	Warnings      []model.Warning    `json:"warnings,omitempty"`
+	Problems      []string           `json:"problems,omitempty"`
+	Project       *project.Info      `json:"project,omitempty"`
 }
 
 // ActionResult is one applied or planned action.
@@ -174,23 +175,47 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 		}
 		actions = append(actions, actionResult(a))
 	}
+	transitions := append(append([]model.Transition{}, plan.Transitions...), res.Transitions...)
 	out := SyncResult{
 		DryRun:        res.DryRun,
 		ConfigChanged: res.ConfigChanged,
 		ConfigPath:    res.ConfigPath,
 		Actions:       actions,
+		Transitions:   dedupeTransitions(transitions),
 		States:        plan.States,
 		Warnings:      res.Warnings,
 		Project:       proj,
 	}
+	// Converged means every desired package is actually satisfied, which is
+	// stricter than having produced no actions.
 	out.Converged = plan.Empty()
+	for _, st := range plan.States {
+		if !st.Status.Healthy() {
+			out.Converged = false
+		}
+	}
 
 	if w.asJSON {
 		return w.emit(out)
 	}
 
 	if len(actions) == 0 {
-		fmt.Fprintf(w.out, "In sync. %d package(s) match the configuration.\n", len(plan.States))
+		// "No actions" is not the same claim as "everything is right". A package
+		// whose provider cannot install it produces no action and is still not
+		// converged, so the message has to tell those apart.
+		unhealthy := 0
+		for _, st := range plan.States {
+			if !st.Status.Healthy() {
+				unhealthy++
+			}
+		}
+		if unhealthy == 0 {
+			fmt.Fprintf(w.out, "In sync. %d package(s) match the configuration.\n", len(plan.States))
+		} else {
+			fmt.Fprintf(w.out,
+				"Nothing to do. %d of %d package(s) match the configuration, and Starpoint has no way to change the rest.\n",
+				len(plan.States)-unhealthy, len(plan.States))
+		}
 		w.writeWarnings(res.Warnings)
 		return nil
 	}
@@ -213,11 +238,122 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 	if res.DryRun {
 		fmt.Fprintln(w.out, "\nDry run: nothing was changed.")
 	}
+	if len(out.Transitions) > 0 {
+		w.writeTransitions(out.Transitions)
+	}
 	if res.ConfigChanged {
 		fmt.Fprintf(w.out, "\nConfiguration updated: %s\n", res.ConfigPath)
 	}
 	w.writeWarnings(res.Warnings)
 	return nil
+}
+
+// dedupeTransitions keeps one record per package, preferring the later phase. The
+// plan describes what is about to happen and the result describes what did, so a
+// package that was transitioned appears once, in its final state.
+func dedupeTransitions(in []model.Transition) []model.Transition {
+	index := map[string]int{}
+	var out []model.Transition
+	for _, t := range in {
+		if i, ok := index[t.Package.Name]; ok {
+			out[i] = t
+			continue
+		}
+		index[t.Package.Name] = len(out)
+		out = append(out, t)
+	}
+	return out
+}
+
+// Transitions renders `starpoint transition`.
+func (w *Writer) Transitions(ts []model.Transition, dryRun bool) error {
+	if w.asJSON {
+		return w.emit(map[string]any{
+			"dry_run":     dryRun,
+			"transitions": ts,
+			"pending":     countPending(ts),
+		})
+	}
+	if len(ts) == 0 {
+		fmt.Fprintln(w.out, "No provider transitions are pending.")
+		return nil
+	}
+	w.writeTransitions(ts)
+	return nil
+}
+
+func countPending(ts []model.Transition) int {
+	n := 0
+	for _, t := range ts {
+		if t.NeedsWork() {
+			n++
+		}
+	}
+	return n
+}
+
+// writeTransitions prints transitions with the evidence behind each decision. The
+// phase and the verification are the point: a user deciding whether to trust a
+// change of ownership needs to see why Starpoint believes it worked.
+func (w *Writer) writeTransitions(ts []model.Transition) {
+	fmt.Fprintln(w.out, "\nTransitions")
+	for _, t := range ts {
+		from := t.From.Name
+		if from == "" {
+			from = "nothing"
+		}
+		fmt.Fprintf(w.out, "  %s: %s -> %s [%s]\n",
+			t.Package.Name, from, t.To.Name, t.Phase)
+		if t.Note != "" {
+			fmt.Fprintf(w.out, "      %s\n", t.Note)
+		}
+		// The note often already states the verification outcome; printing the
+		// reason again would just repeat it.
+		if reason := t.Verification.Reason(); reason != "" && !strings.Contains(t.Note, reason) {
+			fmt.Fprintf(w.out, "      %s\n", reason)
+		}
+		if t.LeftBehindReason != "" {
+			fmt.Fprintf(w.out, "      left behind: %s\n", t.LeftBehindReason)
+		}
+		if t.Advice != "" {
+			fmt.Fprintf(w.out, "      next: %s\n", t.Advice)
+		}
+	}
+}
+
+// TransitionDetail renders `starpoint info <package>` when a transition applies,
+// showing the phases and the evidence rather than a bare status.
+func (w *Writer) TransitionDetail(t model.Transition) error {
+	if w.asJSON {
+		return w.Render(map[string]any{"transition": t})
+	}
+	from := t.From.Name
+	if from == "" {
+		from = "nothing"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n  Transition:     %s -> %s\n", from, t.To.Name)
+	fmt.Fprintf(&b, "  Phase:          %s\n", t.Phase)
+	if t.Previous != nil {
+		fmt.Fprintf(&b, "  Previous:       %s at %s\n", t.Previous.Provider, dash(t.Previous.Path))
+	}
+	if t.Installed != nil {
+		fmt.Fprintf(&b, "  New copy:       %s\n", dash(t.Installed.Path))
+	}
+	fmt.Fprintf(&b, "  Verified:       %s\n", t.Verification.Reason())
+	if t.OldRemoved {
+		fmt.Fprintf(&b, "  Previous copy:  removed\n")
+	} else if t.LeftBehindReason != "" {
+		fmt.Fprintf(&b, "  Previous copy:  still present (%s)\n", t.LeftBehindReason)
+	}
+	if t.Recoverable {
+		fmt.Fprintf(&b, "  Recoverable:    yes\n")
+	}
+	if t.Advice != "" {
+		fmt.Fprintf(&b, "  Next:           %s\n", t.Advice)
+	}
+	_, err := io.WriteString(w.out, b.String())
+	return err
 }
 
 func actionResult(a model.PlannedAction) ActionResult {

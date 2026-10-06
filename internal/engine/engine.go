@@ -60,6 +60,9 @@ type Result struct {
 	States []model.State `json:"states"`
 	// Applied lists actions that were carried out.
 	Applied []model.PlannedAction `json:"applied,omitempty"`
+	// Transitions are the provider moves that were carried out, with their final
+	// phase and the evidence behind it.
+	Transitions []model.Transition `json:"transitions,omitempty"`
 	// ConfigChanged reports whether the source of truth was written.
 	ConfigChanged bool `json:"config_changed"`
 	// ConfigPath is the file that was written, when one was.
@@ -86,9 +89,19 @@ func (e *Engine) Plan(ctx context.Context, doc *config.Document, opts Options) (
 
 	plan := model.Plan{States: states, Warnings: warnings, DryRun: opts.DryRun}
 	for _, st := range states {
-		if action, ok := e.actionFor(st, available); ok {
-			plan.Actions = append(plan.Actions, action)
+		action, ok := e.actionFor(st, available)
+		if !ok {
+			continue
 		}
+		if action.Action == model.ActionRelocate {
+			// A provider move is a transition, and a transition has phases and
+			// evidence. Attaching the record here keeps `sync --dry-run` showing
+			// the same object the transition command and JSON consumers see.
+			t := e.TransitionFor(ctx, st, opts)
+			action.Transition = &t
+			plan.Transitions = append(plan.Transitions, t)
+		}
+		plan.Actions = append(plan.Actions, action)
 	}
 	return plan, warnings, nil
 }

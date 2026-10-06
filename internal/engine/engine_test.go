@@ -304,8 +304,23 @@ func TestRelocationLeavesOldCopyWhenProviderCannotRemove(t *testing.T) {
 	if len(f.brew.RemoveCalls) != 0 {
 		t.Error("a provider that cannot remove must not be asked to")
 	}
-	if len(res.Applied) != 1 || !strings.Contains(res.Applied[0].Note, "cannot remove") {
-		t.Errorf("the user must be told the old copy remains: %+v", res.Applied)
+	if len(res.Applied) != 1 {
+		t.Fatalf("expected one applied action, got %+v", res.Applied)
+	}
+	// The leftover is now reported as a transition rather than a flat note, which
+	// is what `doctor` and JSON consumers read.
+	tr := res.Applied[0].Transition
+	if tr == nil {
+		t.Fatalf("a relocation must carry its transition record: %+v", res.Applied[0])
+	}
+	if tr.Phase != model.TransitionCompleted {
+		t.Errorf("ownership did move, so the phase should be completed, got %q", tr.Phase)
+	}
+	if !strings.Contains(tr.LeftBehindReason, "cannot remove") {
+		t.Errorf("the leftover reason should name the limitation, got %q", tr.LeftBehindReason)
+	}
+	if !strings.Contains(tr.Note, "still there") {
+		t.Errorf("the note should say the old copy remains, got %q", tr.Note)
 	}
 }
 

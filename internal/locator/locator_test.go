@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/starpoint/starpoint/internal/model"
+	"github.com/starpoint/starpoint/internal/providers/npm"
 )
 
 // pathLocator builds a locator with a scripted PATH lookup and no filesystem
@@ -164,5 +165,40 @@ func TestPartiallyConstructedLocatorDoesNotPanic(t *testing.T) {
 	found := l.Locate("git")
 	if found.Installation == nil || found.Installation.Provider != "system" {
 		t.Errorf("attribution should still work, got %+v", found)
+	}
+}
+
+func TestHostProviderLocationsAreAttributed(t *testing.T) {
+	// Every package manager on the host has to be attributable, or Starpoint
+	// cannot say where software came from.
+	cases := map[string]string{
+		"/Users/u/Library/Python/3.14/lib/python/site-packages/pillow": "pip",
+		"/Users/u/.local/lib/python3.12/site-packages/pillow":          "pip",
+		"/Users/u/Library/pnpm/global/v11/node_modules/vite":           "pnpm",
+		"/Users/u/.local/share/pnpm/store/v3/files/x":                  "pnpm",
+		"/Users/u/.config/yarn/global/node_modules/tsc":                "yarn",
+		"/Library/Ruby/Gems/2.6.0/gems/minitest-5.11.3":                "gem",
+		"/Users/u/.gem/ruby/3.2.0/gems/rake-13.0.6":                    "gem",
+	}
+	for path, want := range cases {
+		loc := pathLocator(map[string]string{"tool": path})
+		found := loc.Locate("tool")
+		if found.Installation == nil {
+			t.Errorf("%s was not attributed at all", path)
+			continue
+		}
+		if found.Installation.Provider != want {
+			t.Errorf("%s attributed to %q, want %q", path, found.Installation.Provider, want)
+		}
+	}
+}
+
+func TestNpmGlobalStillAttributed(t *testing.T) {
+	loc := pathLocator(map[string]string{
+		"tsc": "/Users/u/.nvm/versions/node/v22.0.0/lib/node_modules/typescript/bin/tsc",
+	})
+	found := loc.Locate("tsc")
+	if found.Installation == nil || found.Installation.Provider != npm.Name {
+		t.Errorf("npm's global packages must still be attributed to npm, got %+v", found)
 	}
 }

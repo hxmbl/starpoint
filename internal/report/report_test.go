@@ -146,7 +146,7 @@ func TestInfoSaysSoWhenNothingIsInstalled(t *testing.T) {
 func TestSyncEmptyPlanSaysInSync(t *testing.T) {
 	var buf bytes.Buffer
 	w := New(&buf, false)
-	plan := model.Plan{States: []model.State{{Package: model.Package{Name: "git"}}}}
+	plan := model.Plan{States: []model.State{{Package: model.Package{Name: "git"}, Status: model.StatusCorrect}}}
 	res := &engine.Result{States: plan.States}
 	if err := w.Sync(res, plan, nil); err != nil {
 		t.Fatal(err)
@@ -320,5 +320,48 @@ func TestResultDryRunUsesProspectiveVerbs(t *testing.T) {
 	}
 	if !strings.Contains(out, "would record ruff via uv") {
 		t.Errorf("adoption must also be prospective:\n%s", out)
+	}
+}
+
+func TestSyncDoesNotClaimConvergenceItDidNotReach(t *testing.T) {
+	// A package whose provider cannot install it produces no action and is still
+	// not converged. Saying "In sync" there would be a false claim.
+	var buf bytes.Buffer
+	w := New(&buf, false)
+	plan := model.Plan{
+		States: []model.State{
+			{Package: model.Package{Name: "ruff"}, Res: model.Resolution{Provider: "uv"}, Status: model.StatusCorrect},
+			{Package: model.Package{Name: "typescript"}, Res: model.Resolution{Provider: "yarn"}, Status: model.StatusMissing},
+		},
+	}
+	if err := w.Sync(&engine.Result{States: plan.States}, plan, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "In sync") {
+		t.Errorf("a missing package must not be reported as in sync:\n%s", out)
+	}
+	if !strings.Contains(out, "no way to change") {
+		t.Errorf("the reason should be stated:\n%s", out)
+	}
+}
+
+func TestSyncConvergenceRequiresHealthyStates(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, true)
+	plan := model.Plan{
+		States: []model.State{
+			{Package: model.Package{Name: "x"}, Status: model.StatusMissing},
+		},
+	}
+	if err := w.Sync(&engine.Result{States: plan.States}, plan, nil); err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["converged"] != false {
+		t.Errorf("converged must be false while a package is unsatisfied: %s", buf.String())
 	}
 }

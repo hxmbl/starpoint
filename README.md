@@ -69,6 +69,7 @@ editing the configuration to make the problem go away.
 | --- | --- |
 | `starpoint init [--force]` | Create `~/.starpoint.toml` |
 | `starpoint sync [--dry-run] [--no-confirm]` | Converge the machine onto the configuration |
+| `starpoint transition [pkg...]` | Show or perform provider transitions (alias: `move`) |
 | `starpoint doctor` | Inspect Starpoint, config, providers, ownership, inconsistencies |
 | `starpoint list [--json]` | Show managed software, its location, scope and provider |
 | `starpoint info <package>` | Show one package's state in detail |
@@ -96,14 +97,59 @@ Implemented in this release:
 | `brew` | user | Formulae and casks. Cannot pin an arbitrary version, and says so. |
 | `apt` | global | dpkg inventory, `pkg=version` pins, archive channel. |
 | `uv` | user | Python tools and interpreters, `==` pins. |
+| `pip` | user | Python packages, installed with `--user` so pip never needs root. |
 | `rustup` | user | Rust toolchains: `rustc`, `cargo`, `rustfmt` and friends, plus the toolchains themselves. |
 | `cargo` | user | Crates from `cargo install`, `--version` pins. |
 | `npm` | user | Global packages, `name@version` and dist-tags. |
+| `pnpm` | user | pnpm globals. Own store and bin directory, and reports when that bin directory is not on PATH. |
+| `yarn` | user | Yarn **classic** globals only. Berry has no global package manager and says so. |
+| `gem` | global | RubyGems, including bundled gems marked `default:`. |
 | `go` | user | `go install` binaries discovered in the Go bin directory. |
 
 Each provider reports its own capabilities and its own typed errors. The core
 asks what a provider can do rather than branching on provider names, so adding
 an ecosystem does not mean touching the engine.
+
+**The compatibility target is the machine.** Every package manager installed on
+this project's development host is implemented. Two tools that are installed are
+deliberately *not* providers: Docker and Podman manage containers rather than
+software on the machine, and Bun and Deno cannot enumerate what they have
+installed — a provider that cannot answer "what do you own?" would make
+Starpoint's central promise false. Both are recorded in `docs/next-tasks.md`.
+
+### Provider transitions
+
+When software is installed through one provider and the configuration says it
+should come from another, that is a transition — a first-class operation with its
+own phases, its own command and its own evidence, not an install followed by a
+remove.
+
+```
+starpoint transition                 # what would move, and how far each has got
+starpoint transition ruff             # move it, with confirmation
+starpoint transition --dry-run ruff   # describe it, change nothing
+```
+
+The ordering is the safety property. The phases are `planned` → `installed` →
+`verified` → `completed`, and the incumbent copy is removed **only** after the new
+one is confirmed working:
+
+- **Confirmed** means two things agree: the target provider reports the software,
+  and the command on `PATH` resolves to that provider's copy. A provider that
+  says it installed something while a different provider still owns the command is
+  treated as *not* installed, because it is not.
+- **Every early exit leaves the old command working.** A failed install, a failed
+  verification and a failed removal all leave the incumbent in place, so the worst
+  outcome of a transition is a duplicate rather than a hole.
+- **Recovery needs no journal.** The phase is derived from what is on the machine:
+  both copies present means the old one still needs removing, only the new one means
+  it is done, only the old one means nothing happened. Running `starpoint transition`
+  again finishes an interrupted transition instead of starting over.
+- **A provider that cannot remove** gets a completed transition with the leftover
+  named, not a failure. Ownership did move; `doctor` reports the duplicate.
+
+`sync` performs transitions too, and `sync --dry-run` shows them with their phase
+and evidence. `--json` exposes the whole record for other tools.
 
 ### rustup and Cargo are different providers
 
@@ -192,6 +238,14 @@ suite substitutes a scripted command runner and in-memory providers.
   the owner and, when the Homebrew copy shadows it on `PATH`, says so in `doctor`.
 - Version comparison is exact. `>=1.2` and `^2.0` are not understood; they belong
   to the provider that owns the versioning scheme.
+- `gem list --local` does not say which installation home a gem is in, so `gem`
+  reports the placement that applies by default. `gem list -d <name>` is the way to
+  tell two homes apart.
+- The yarn classic command surface is implemented from its documented behaviour;
+  only Yarn Berry could be verified on the host, which correctly reports that it
+  cannot manage globals. A real yarn 1.x install has not been exercised.
+- pnpm's global bin directory is outside `PATH` on a default macOS install, so
+  `doctor` says so rather than letting a pnpm-installed command look missing.
 - `starpoint update` on a Rust toolchain runs `rustup toolchain install` for the
   channel, which moves a channel forward. A concrete toolchain pinned in the
   configuration is never moved.

@@ -13,23 +13,34 @@ import (
 	"github.com/starpoint/starpoint/internal/providers/apt"
 	"github.com/starpoint/starpoint/internal/providers/brew"
 	"github.com/starpoint/starpoint/internal/providers/cargo"
+	"github.com/starpoint/starpoint/internal/providers/gem"
 	"github.com/starpoint/starpoint/internal/providers/golang"
 	"github.com/starpoint/starpoint/internal/providers/npm"
+	"github.com/starpoint/starpoint/internal/providers/pip"
+	"github.com/starpoint/starpoint/internal/providers/pnpm"
 	"github.com/starpoint/starpoint/internal/providers/rustup"
 	"github.com/starpoint/starpoint/internal/providers/system"
 	"github.com/starpoint/starpoint/internal/providers/uv"
+	"github.com/starpoint/starpoint/internal/providers/yarn"
 )
 
 // DefaultRegistry builds the registry of providers implemented in this release.
-// The set is chosen to be genuinely usable rather than exhaustive: the operating
-// system, the two dominant system package managers, and the language ecosystems
-// with the clearest installation story on the host platforms.
+//
+// The set covers every package manager this project's own development host has
+// installed. That is the compatibility target: a provider Starpoint cannot see is
+// worse than one it cannot manage, because the resolver will hand software to the
+// wrong ecosystem while the user watches.
 //
 // Registration order is not cosmetic. The engine asks providers for an existing
 // installation before falling back to path attribution, so the more specific
 // owner of a piece of software has to come first: rustup is registered ahead of
 // Cargo because `rustc` and `cargo` are rustup's, while `cargo install` is
 // Cargo's.
+//
+// Two present tools are deliberately absent. Docker and Podman manage containers,
+// not software on this machine, and Bun and Deno cannot enumerate what they have
+// installed — a provider that cannot answer "what do you own?" would make
+// Starpoint's central promise false. Both are recorded in docs/next-tasks.md.
 func DefaultRegistry() *provider.Registry {
 	r := exec.RealRunner{}
 	home, _ := os.UserHomeDir()
@@ -38,9 +49,13 @@ func DefaultRegistry() *provider.Registry {
 	reg.Register(brew.New(r))
 	reg.Register(apt.New(r))
 	reg.Register(uv.New(r, home))
+	reg.Register(pip.New(r))
 	reg.Register(rustup.New(r, home))
 	reg.Register(cargo.New(r, home))
 	reg.Register(npm.New(r))
+	reg.Register(pnpm.New(r))
+	reg.Register(yarn.New(r))
+	reg.Register(gem.New(r))
 	reg.Register(golang.New(r, home))
 	return reg
 }

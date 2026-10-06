@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/starpoint/starpoint/internal/locator"
 	"github.com/starpoint/starpoint/internal/model"
 	"github.com/starpoint/starpoint/internal/provider"
 	"github.com/starpoint/starpoint/internal/providers/apt"
@@ -80,6 +82,21 @@ func newHarness(t *testing.T, configBody string) *harness {
 	return &harness{t: t, stdout: out, stderr: errBuf, config: cfg, env: env,
 		brew: brewP, uv: uvP, rustup: rustupP, cargo: cargoP, npm: npmP, sys: sys}
 }
+
+// setLocator installs a scripted PATH resolution so tests do not depend on the
+// host's PATH. Verification and transitions both consult it.
+func (h *harness) setLocator(paths map[string]string) {
+	h.env.Locator = &locator.Locator{
+		LookPath: func(name string) (string, error) {
+			if p, ok := paths[name]; ok {
+				return p, nil
+			}
+			return "", errNotOnPath
+		},
+	}
+}
+
+var errNotOnPath = errors.New("not on PATH")
 
 func (h *harness) run(args ...string) (int, string, string) {
 	h.t.Helper()

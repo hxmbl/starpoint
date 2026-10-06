@@ -52,6 +52,9 @@ type Env struct {
 	Choose func(question string, options []string) (string, error)
 	// restrict narrows provider resolution, set from --provider.
 	restrict []string
+	// lastConfirm remembers the answer to the most recent Confirm call so a
+	// caller can honour a refusal without being handed it.
+	lastConfirm bool
 }
 
 func (e *Env) registry() *provider.Registry {
@@ -136,6 +139,8 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		err = cmdInstall(ctx, env, w, cmdArgs, providers)
 	case "remove", "uninstall", "rm":
 		err = cmdRemove(ctx, env, w, cmdArgs, providers)
+	case "transition", "move":
+		err = cmdTransition(ctx, env, w, cmdArgs, providers)
 	case "update", "upgrade":
 		err = cmdUpdate(ctx, env, w, cmdArgs, providers)
 	case "help":
@@ -216,6 +221,7 @@ Commands:
   doctor               Inspect Starpoint, configuration, providers and ownership
   install <package>    Install software and record it in the configuration
   remove <package>     Remove software and delete it from the configuration
+  transition [pkg...]  Move ownership between providers, or show pending moves
   update               Update managed software, respecting explicit pins
 
 Global options:
@@ -230,6 +236,7 @@ Examples:
   starpoint install ruff
   starpoint install ripgrep --provider brew
   starpoint sync --dry-run
+  starpoint transition
   starpoint list --json
 `)
 }
@@ -406,9 +413,18 @@ func cmdInfo(ctx context.Context, env *Env, w *report.Writer, args []string) err
 		return err
 	}
 	for _, st := range plan.States {
-		if st.Package.Name == name {
-			return w.Info(st)
+		if st.Package.Name != name {
+			continue
 		}
+		if st.Status == model.StatusProviderDiffers {
+			// A pending move of ownership is the most important thing to know
+			// about a package, so it is shown rather than hidden behind a status.
+			if err := w.Info(st); err != nil {
+				return err
+			}
+			return w.TransitionDetail(eng.TransitionFor(ctx, st, opts))
+		}
+		return w.Info(st)
 	}
 	// The software may be on the machine without being in the configuration.
 	// Answering that is more useful than failing.
@@ -536,6 +552,31 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 					dup.Package, dup.Extra.Provider, dup.Extra.Path),
 			})
 		}
+		for _, t := range eng.IncompleteTransitions(ctx, doc, engine.Options{Dir: env.WorkDir}) {
+			severity := model.SeverityWarn
+			if t.Phase == model.TransitionFailed {
+				severity = model.SeverityError
+			}
+			rep.Problems = append(rep.Problems, model.Warning{
+				Severity: severity,
+				Package:  t.Package.Name,
+				Provider: t.To.Name,
+				Message: fmt.Sprintf("provider transition is %s: %s. %s%s",
+					t.Phase, t.Package.Name, t.Note, nextClause(t.Advice)),
+			})
+		}
+		for _, t := range eng.Transitions(ctx, doc, engine.Options{Dir: env.WorkDir}) {
+			if t.Phase != model.TransitionCompleted || t.LeftBehindReason == "" {
+				continue
+			}
+			rep.Problems = append(rep.Problems, model.Warning{
+				Severity: model.SeverityWarn,
+				Package:  t.Package.Name,
+				Provider: t.From.Name,
+				Message: fmt.Sprintf("ownership moved to %s but the %s copy was left in place (%s). %s",
+					t.To.Name, t.From.Name, t.LeftBehindReason, nextClause(t.Advice)),
+			})
+		}
 		for _, shadow := range eng.Shadowed(ctx, doc, engine.Options{Dir: env.WorkDir}) {
 			rep.Problems = append(rep.Problems, model.Warning{
 				Severity: model.SeverityError,
@@ -591,6 +632,14 @@ func looksLikeVersion(name string) bool {
 		}
 	}
 	return true
+}
+
+// nextClause turns advice into a sentence fragment, or nothing.
+func nextClause(advice string) string {
+	if advice == "" {
+		return ""
+	}
+	return "Next: " + advice + "."
 }
 
 // projectEcosystem maps a detected project to the provider ecosystem that owns
@@ -902,6 +951,169 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		}
 	}
 	return nil
+}
+
+// cmdTransition inspects and performs provider transitions.
+//
+// With no arguments it is a read-only report of every pending move, because a
+// user deciding whether to trust a change of ownership should be able to see the
+// phases and the evidence before anything happens. With package names it performs
+// those moves, one phase at a time, and stops at the first phase that is not
+// justified.
+func cmdTransition(ctx context.Context, env *Env, w *report.Writer, args []string, allowed []string) error {
+	var (
+		dryRun    bool
+		noConfirm bool
+		all       bool
+	)
+	var names []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--dry-run", "-n":
+			dryRun = true
+		case "--no-confirm", "-y":
+			noConfirm = true
+		case "--all", "-a":
+			all = true
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return fmt.Errorf("%w: unknown option %q for transition", ErrUsage, args[i])
+			}
+			names = append(names, args[i])
+		}
+	}
+
+	doc, eng, opts, _, err := env.setup(ctx, allowed)
+	if err != nil {
+		return err
+	}
+	opts.DryRun = dryRun
+	opts.NoConfirm = noConfirm
+
+	plan, _, err := eng.Plan(ctx, doc, opts)
+	if err != nil {
+		return err
+	}
+	transitions := eng.Transitions(ctx, doc, opts)
+	if len(names) == 0 {
+		if !all {
+			// Inspection shows every move that needs work plus any left behind, so
+			// a completed-but-messy transition stays visible.
+			transitions = visibleTransitions(transitions)
+		}
+		return w.Transitions(transitions, dryRun)
+	}
+
+	selected := selectTransitions(plan.States, transitions, names)
+	if len(selected.states) == 0 {
+		return fmt.Errorf("no pending provider transition for %s", strings.Join(names, ", "))
+	}
+
+	if !dryRun && !noConfirm && env.Confirm != nil {
+		if err := confirmTransitions(env, selected); err != nil {
+			return err
+		}
+		if !env.lastConfirm {
+			// A refusal is a decision to change nothing. Falling through here
+			// would perform the very work the user just declined.
+			fmt.Fprintln(env.Stdout, "Nothing was changed.")
+			return w.Transitions(selected.transitions, true)
+		}
+		opts.NoConfirm = true
+	}
+
+	var applied []model.Transition
+	var failures []string
+	for _, st := range selected.states {
+		t, err := eng.ExecuteTransition(ctx, st, opts)
+		applied = append(applied, t)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %s", t.Package.Name, err))
+		}
+	}
+	if w.JSON() {
+		if err := w.Render(map[string]any{
+			"operation":   "transition",
+			"dry_run":     dryRun,
+			"transitions": applied,
+		}); err != nil {
+			return err
+		}
+	} else {
+		w.Transitions(applied, dryRun)
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("transitions did not complete:\n  %s", strings.Join(failures, "\n  "))
+	}
+	return nil
+}
+
+// transitionSelection pairs the transitions to perform with the states they come
+// from, so execution needs no second lookup.
+type transitionSelection struct {
+	transitions []model.Transition
+	states      []model.State
+}
+
+// selectTransitions resolves package names to the states a transition would act
+// on, in configuration order.
+func selectTransitions(states []model.State, transitions []model.Transition, names []string) transitionSelection {
+	byName := map[string]model.State{}
+	for _, st := range states {
+		byName[st.Package.Name] = st
+	}
+	known := map[string]bool{}
+	for _, t := range transitions {
+		known[t.Package.Name] = true
+	}
+	var sel transitionSelection
+	seen := map[string]bool{}
+	for _, name := range names {
+		st, ok := byName[name]
+		if !ok || !known[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		sel.states = append(sel.states, st)
+		for _, t := range transitions {
+			if t.Package.Name == name {
+				sel.transitions = append(sel.transitions, t)
+			}
+		}
+	}
+	return sel
+}
+
+// visibleTransitions keeps the transitions a user still cares about: anything
+// unfinished, and anything that left a duplicate behind.
+func visibleTransitions(ts []model.Transition) []model.Transition {
+	var out []model.Transition
+	for _, t := range ts {
+		if t.NeedsWork() || t.LeftBehindReason != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// confirmTransitions shows exactly what a transition will do and whether it is
+// still recoverable.
+func confirmTransitions(env *Env, sel transitionSelection) error {
+	fmt.Fprintln(env.Stdout, "These provider transitions will be performed:")
+	for _, t := range sel.transitions {
+		from := t.From.Name
+		if from == "" {
+			from = "nothing"
+		}
+		fmt.Fprintf(env.Stdout, "  %s: %s -> %s (currently %s)\n", t.Package.Name, from, t.To.Name, t.Phase)
+		if t.Advice != "" {
+			fmt.Fprintf(env.Stdout, "      %s\n", t.Advice)
+		}
+	}
+	fmt.Fprintln(env.Stdout, "\nThe previous installation is only removed once the new one is confirmed working.")
+	ok, err := env.Confirm("Proceed?")
+	env.lastConfirm = ok
+	return err
 }
 
 // cmdUpdate upgrades managed software.

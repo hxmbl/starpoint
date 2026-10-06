@@ -84,11 +84,24 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 		if action.Action != model.ActionRelocate {
 			continue
 		}
-		if done, err := e.relocate(ctx, action, opts); err != nil {
-			res.Applied = append(res.Applied, annotate(action, err.Error()))
+		// A transition installs, verifies, and only then removes the incumbent,
+		// stopping at the first phase that is not justified. Its record replaces
+		// the flat note so the caller can see the phase and the evidence.
+		t, err := e.ExecuteTransition(ctx, action.State, opts)
+		action.Transition = &t
+		switch {
+		case t.Note != "":
+			action.Note = t.Note
+		case err != nil:
+			action.Note = err.Error()
+		}
+		if t.Advice != "" {
+			action.Note = strings.TrimSpace(action.Note + "; " + t.Advice)
+		}
+		res.Applied = append(res.Applied, action)
+		res.Transitions = append(res.Transitions, t)
+		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %s", action.State.Package.Name, err.Error()))
-		} else {
-			res.Applied = append(res.Applied, annotate(action, done))
 		}
 	}
 
@@ -135,42 +148,6 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 		return res, fmt.Errorf("some operations did not complete:\n  %s", strings.Join(failures, "\n  "))
 	}
 	return res, nil
-}
-
-// relocate moves a package from one owning provider to another.
-func (e *Engine) relocate(ctx context.Context, action model.PlannedAction, opts Options) (string, error) {
-	pkg := action.State.Package
-	target, ok := e.reg.Get(action.State.Res.Provider)
-	if !ok {
-		return "", fmt.Errorf("provider %q is unknown", action.State.Res.Provider)
-	}
-	inst, err := target.Install(ctx, provider.Request{Package: pkg, Dir: opts.Dir})
-	if err != nil {
-		return "", err
-	}
-	// Only remove the old copy once the new one is verifiably present.
-	verify, err := target.Installed(ctx, pkg)
-	if err != nil || verify == nil {
-		if inst != nil {
-			return installPath(inst), nil
-		}
-		return "", fmt.Errorf("could not verify the new installation before removing the old one")
-	}
-
-	var notes []string
-	notes = append(notes, "now at "+installPath(inst))
-	if old := action.State.Current; old != nil && old.Provider != "" && old.Provider != target.Name() {
-		if oldProv, ok := e.reg.Get(old.Provider); ok && oldProv.Capabilities().Remove {
-			if err := oldProv.Remove(ctx, pkg); err != nil {
-				notes = append(notes, "could not remove the "+old.Provider+" copy: "+err.Error())
-			} else {
-				notes = append(notes, "removed the "+old.Provider+" copy")
-			}
-		} else {
-			notes = append(notes, "left the "+old.Provider+" copy in place: that provider cannot remove it")
-		}
-	}
-	return strings.Join(notes, "; "), nil
 }
 
 // applyEdit mutates a document to match a planned configuration edit.

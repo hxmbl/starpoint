@@ -108,6 +108,9 @@ type prefix struct {
 	scope model.Scope
 	// goos restricts the rule to one platform.
 	goos string
+	// partial makes the last segment a prefix match, for directories whose name
+	// carries a version: python3.12 matches a rule for python.
+	partial bool
 }
 
 // attributionRules maps install locations to their owners. Order matters: the
@@ -129,9 +132,25 @@ var attributionRules = []prefix{
 	// every rustc would look like it belonged to Cargo.
 	{path: ".rustup/toolchains", owner: "rustup", scope: model.ScopeUser},
 
+	// pip's user site, as macOS and Linux lay it out.
+	{path: "Library/Python", owner: "pip", scope: model.ScopeUser},
+	{path: ".local/lib/python", owner: "pip", scope: model.ScopeUser, partial: true},
+
+	// pnpm keeps its global project in a versioned directory beside its bin.
+	{path: "pnpm/global", owner: "pnpm", scope: model.ScopeUser},
+	{path: ".local/share/pnpm", owner: "pnpm", scope: model.ScopeUser},
+	{path: ".pnpm-store", owner: "pnpm", scope: model.ScopeUser},
+
+	// yarn classic's global project.
+	{path: "yarn/global", owner: "yarn", scope: model.ScopeUser},
+	{path: ".config/yarn/global", owner: "yarn", scope: model.ScopeUser},
+
+	// RubyGems' two homes.
+	{path: "Ruby/Gems", owner: "gem", scope: model.ScopeGlobal},
+	{path: ".gem/ruby", owner: "gem", scope: model.ScopeUser},
+
 	{path: ".cargo/bin", owner: cargo.Name, scope: model.ScopeUser},
 	{path: "go/bin", owner: golang.Name, scope: model.ScopeUser},
-	{path: ".local/share/gem", owner: "gem", scope: model.ScopeUser},
 
 	{path: ".npm-global/bin", owner: npm.Name, scope: model.ScopeUser},
 	{path: ".nvm/versions/node", owner: npm.Name, scope: model.ScopeUser},
@@ -150,7 +169,7 @@ func (l *Locator) Attribute(path string) (model.Scope, string, bool) {
 			}
 			continue
 		}
-		if hasPathSegments(clean, r.path) {
+		if hasPathSegments(clean, r.path, r.partial) {
 			return r.scope, r.owner, true
 		}
 	}
@@ -186,14 +205,22 @@ func hasPathPrefix(path, dir string) bool {
 // contiguous run anywhere in the path. It lets a rule like ".cargo/bin" match a
 // home-relative location on any machine while still comparing whole components,
 // so ".car" never matches ".cargo".
-func hasPathSegments(path, segments string) bool {
+func hasPathSegments(path, segments string, partial bool) bool {
 	want := strings.Split(filepath.ToSlash(segments), "/")
 	parts := strings.Split(filepath.ToSlash(path), "/")
+	last := len(want) - 1
 	for start := 0; start+len(want) <= len(parts); start++ {
 		match := true
 		for i, seg := range want {
-			if parts[start+i] != seg {
+			got := parts[start+i]
+			if i == last && partial {
+				if !strings.HasPrefix(got, seg) {
+					match = false
+				}
+			} else if got != seg {
 				match = false
+			}
+			if !match {
 				break
 			}
 		}
