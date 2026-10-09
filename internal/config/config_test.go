@@ -310,3 +310,6 @@ func mustProjectFile(t *testing.T, path string) File {
 	}
 	return f
 }
+
+// Execution tracking is now handled by the tracking package, not config.
+// See internal/tracking for execution record tests.

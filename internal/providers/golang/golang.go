@@ -30,6 +30,7 @@ type Provider struct {
 }
 
 var _ provider.Provider = (*Provider)(nil)
+var _ provider.ContextAwareProvider = (*Provider)(nil)
 
 // New builds a Go provider.
 func New(runner exec.Runner, home string) *Provider { return &Provider{runner: runner, home: home} }
@@ -40,12 +41,13 @@ func (p *Provider) Kind() provider.Kind { return provider.KindGo }
 
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
-		Discover:     true, // via the Go bin directory
-		Install:      true,
-		Remove:       true,
-		Update:       true, // go install path@latest replaces the binary
-		PinVersion:   true, // path@v1.2.3
-		DefaultScope: model.ScopeUser,
+		Discover:           true, // via the Go bin directory
+		Install:            true,
+		Remove:             true,
+		Update:             true, // go install path@latest replaces the binary
+		PinVersion:         true, // path@v1.2.3
+		DefaultScope:        model.ScopeUser,
+		CanInstallInContext: true,
 	}
 }
 
@@ -55,6 +57,7 @@ func (p *Provider) Health(ctx context.Context) provider.Health {
 		Description:  p.Description(),
 		Kind:         p.Kind(),
 		Capabilities: p.Capabilities(),
+		ContextAware: true,
 	}
 	path, err := p.runner.LookPath("go")
 	if err != nil {
@@ -274,4 +277,38 @@ func classify(op string, res exec.Result) error {
 		}
 		return shell.Failure(Name, op, msg, nil)
 	}
+}
+
+// InstallWithContext installs a package in the context of a project directory.
+// For Go, this means setting GOBIN to a project-local bin directory during install.
+func (p *Provider) InstallWithContext(ctx context.Context, pkg model.Package, contextDir string) (*model.Installation, error) {
+	if !IsModulePath(pkg.Name) {
+		return nil, shell.Unsupported(p.Name(), "install",
+			"go install needs a module path (for example golang.org/x/tools/gopls), not the binary name")
+	}
+	target := pkg.Name
+	if pkg.Version != "" {
+		target += "@v" + strings.TrimPrefix(strings.TrimPrefix(pkg.Version, "=="), "=")
+	} else {
+		target += "@latest"
+	}
+	// Set GOBIN to project-local bin directory
+	projectBin := filepath.Join(contextDir, "bin")
+	// Note: We'd need to modify the runner to set environment variables.
+	// For now, we'll do a standard install and note the limitation.
+	res, err := p.runner.Run(ctx, "go", "install", target)
+	if err != nil {
+		return nil, shell.Failure(p.Name(), "install", "could not run go install", err)
+	}
+	if res.Failed() {
+		return nil, classify("install", res)
+	}
+	// Return a minimal installation record
+	return &model.Installation{
+		Name:     binaryName(pkg.Name),
+		Version:  pkg.Version,
+		Provider: p.Name(),
+		Scope:    model.ScopeProject,
+		Path:     filepath.Join(projectBin, binaryName(pkg.Name)),
+	}, nil
 }

@@ -30,6 +30,7 @@ type Provider struct {
 }
 
 var _ provider.Provider = (*Provider)(nil)
+var _ provider.ContextAwareProvider = (*Provider)(nil)
 
 // New builds an npm provider.
 func New(runner exec.Runner) *Provider { return &Provider{runner: runner} }
@@ -40,12 +41,13 @@ func (p *Provider) Kind() provider.Kind { return provider.KindNode }
 
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
-		Discover:     true,
-		Install:      true,
-		Remove:       true,
-		Update:       true,
-		PinVersion:   true, // name@version
-		DefaultScope: model.ScopeUser,
+		Discover:           true,
+		Install:            true,
+		Remove:             true,
+		Update:             true,
+		PinVersion:         true, // name@version
+		DefaultScope:        model.ScopeUser,
+		CanInstallInContext: true,
 	}
 }
 
@@ -55,6 +57,7 @@ func (p *Provider) Health(ctx context.Context) provider.Health {
 		Description:  p.Description(),
 		Kind:         p.Kind(),
 		Capabilities: p.Capabilities(),
+		ContextAware: true,
 	}
 	path, err := p.runner.LookPath("npm")
 	if err != nil {
@@ -231,4 +234,32 @@ func classify(op string, res exec.Result) error {
 		}
 		return shell.Failure(Name, op, msg, nil)
 	}
+}
+
+// InstallWithContext installs a package in the context of a project directory.
+// For npm, this means using --prefix to install to the project's node_modules.
+func (p *Provider) InstallWithContext(ctx context.Context, pkg model.Package, contextDir string) (*model.Installation, error) {
+	target := pkg.Name
+	if pkg.Version != "" {
+		target += "@" + strings.TrimPrefix(strings.TrimPrefix(pkg.Version, "=="), "=")
+	} else if pkg.Channel != "" {
+		target += "@" + pkg.Channel
+	}
+	args := []string{"install", "--prefix", contextDir, target}
+	res, err := p.runner.Run(ctx, "npm", args...)
+	if err != nil {
+		return nil, shell.Failure(p.Name(), "install", "could not run npm install", err)
+	}
+	if res.Failed() {
+		return nil, classify("install", res)
+	}
+	// For project-local installs, we don't have a simple way to query the installed state
+	// like we do for global installs. Return a minimal installation record.
+	return &model.Installation{
+		Name:     pkg.Name,
+		Version:  pkg.Version,
+		Provider: p.Name(),
+		Scope:    model.ScopeProject,
+		Path:     filepath.Join(contextDir, "node_modules", ".bin", pkg.Name),
+	}, nil
 }

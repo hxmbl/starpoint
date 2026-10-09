@@ -21,6 +21,7 @@ import (
 	"github.com/starpoint/starpoint/internal/provider"
 	"github.com/starpoint/starpoint/internal/providers/system"
 	"github.com/starpoint/starpoint/internal/resolve"
+	"github.com/starpoint/starpoint/internal/tracking"
 )
 
 // Engine computes and applies convergence.
@@ -28,6 +29,7 @@ type Engine struct {
 	reg      *provider.Registry
 	locator  *locator.Locator
 	resolver *resolve.Resolver
+	tracker  *tracking.Tracker
 
 	// healthOnce and healthCache make provider probing happen once per Engine.
 	//
@@ -42,7 +44,13 @@ type Engine struct {
 
 // New builds an Engine.
 func New(reg *provider.Registry, loc *locator.Locator) *Engine {
-	return &Engine{reg: reg, locator: loc, resolver: resolve.New(reg)}
+	tracker, _ := tracking.New("")
+	return &Engine{reg: reg, locator: loc, resolver: resolve.New(reg), tracker: tracker}
+}
+
+// SetTracker sets the execution tracker. This is primarily for testing.
+func (e *Engine) SetTracker(t *tracking.Tracker) {
+	e.tracker = t
 }
 
 // Options configures a single operation.

@@ -29,6 +29,7 @@ type Provider struct {
 }
 
 var _ provider.Provider = (*Provider)(nil)
+var _ provider.ContextAwareProvider = (*Provider)(nil)
 
 // New builds a Cargo provider.
 func New(runner exec.Runner, home string) *Provider { return &Provider{runner: runner, home: home} }
@@ -39,12 +40,13 @@ func (p *Provider) Kind() provider.Kind { return provider.KindRust }
 
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
-		Discover:     true,
-		Install:      true,
-		Remove:       true,
-		Update:       true, // `cargo install` over an existing crate is an upgrade.
-		PinVersion:   true, // --version x.y.z
-		DefaultScope: model.ScopeUser,
+		Discover:           true,
+		Install:            true,
+		Remove:             true,
+		Update:             true, // `cargo install` over an existing crate is an upgrade.
+		PinVersion:         true, // --version x.y.z
+		DefaultScope:        model.ScopeUser,
+		CanInstallInContext: true,
 	}
 }
 
@@ -54,6 +56,7 @@ func (p *Provider) Health(ctx context.Context) provider.Health {
 		Description:  p.Description(),
 		Kind:         p.Kind(),
 		Capabilities: p.Capabilities(),
+		ContextAware: true,
 	}
 	path, err := p.runner.LookPath("cargo")
 	if err != nil {
@@ -216,4 +219,33 @@ func classify(op string, res exec.Result) error {
 		}
 		return shell.Failure(Name, op, msg, nil)
 	}
+}
+
+// InstallWithContext installs a package in the context of a project directory.
+// For cargo, this means using --manifest-path to install to the project's context.
+func (p *Provider) InstallWithContext(ctx context.Context, pkg model.Package, contextDir string) (*model.Installation, error) {
+	args := []string{"install", pkg.Name}
+	if pkg.Version != "" {
+		args = append(args, "--version", strings.TrimPrefix(strings.TrimPrefix(pkg.Version, "=="), "="))
+	}
+	// Use --manifest-path if Cargo.toml exists in the context directory
+	manifestPath := filepath.Join(contextDir, "Cargo.toml")
+	if _, err := os.Stat(manifestPath); err == nil {
+		args = append(args, "--manifest-path", manifestPath)
+	}
+	res, err := p.runner.Run(ctx, "cargo", args...)
+	if err != nil {
+		return nil, shell.Failure(p.Name(), "install", "could not run cargo install", err)
+	}
+	if res.Failed() {
+		return nil, classify("install", res)
+	}
+	// For project-local installs, return a minimal installation record
+	return &model.Installation{
+		Name:     pkg.Name,
+		Version:  pkg.Version,
+		Provider: p.Name(),
+		Scope:    model.ScopeProject,
+		Path:     filepath.Join(contextDir, "target", "debug", pkg.Name),
+	}, nil
 }

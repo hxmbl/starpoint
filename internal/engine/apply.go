@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/starpoint/starpoint/internal/config"
 	"github.com/starpoint/starpoint/internal/model"
@@ -76,6 +77,10 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 			continue
 		}
 		res.Applied = append(res.Applied, annotate(action, installPath(inst)))
+		// Record execution in tracking system
+		if e.tracker != nil {
+			_ = e.tracker.Record(action.State.Package.Name, opts.Dir, time.Now())
+		}
 	}
 
 	// Phase 3: relocations. Install the wanted copy first, verify, then remove
@@ -134,6 +139,10 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 			continue
 		}
 		res.Applied = append(res.Applied, annotate(action, installPath(inst)))
+		// Record execution in tracking system
+		if e.tracker != nil {
+			_ = e.tracker.Record(action.State.Package.Name, opts.Dir, time.Now())
+		}
 	}
 
 	// Phase 5: conflicts are reported, never resolved by editing the source of
@@ -357,6 +366,10 @@ func (e *Engine) Add(ctx context.Context, doc *config.Document, pkg model.Packag
 				}
 				state.Desired = inst
 				state.Status = model.StatusCorrect
+				// Record execution in tracking system
+				if e.tracker != nil {
+					_ = e.tracker.Record(pkg.Name, opts.Dir, time.Now())
+				}
 			}
 		}
 	}
@@ -517,6 +530,10 @@ func (e *Engine) Update(ctx context.Context, doc *config.Document, opts Options)
 			State:  state,
 			Note:   fmt.Sprintf("%s -> %s", from, to),
 		})
+		// Record execution in tracking system
+		if e.tracker != nil {
+			_ = e.tracker.Record(pkg.Name, opts.Dir, time.Now())
+		}
 	}
 
 	for _, u := range unchanged {

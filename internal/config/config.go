@@ -39,6 +39,8 @@ type File struct {
 	Raw Raw `json:"config"`
 	// Exists reports whether the file was present on disk at load time.
 	Exists bool `json:"exists"`
+	// LastUsedInDir tracks the last time this config was used in a particular directory.
+	LastUsedInDir string `json:"last_used_in_dir,omitempty"`
 }
 
 // Raw is the on-disk TOML shape. It is intentionally close to what users type.

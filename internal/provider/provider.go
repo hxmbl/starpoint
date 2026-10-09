@@ -63,6 +63,9 @@ type Capabilities struct {
 	Search bool
 	// ProjectInstall means the provider can install relative to a directory.
 	ProjectInstall bool
+	// CanInstallInContext means the provider supports context-aware installation,
+	// i.e., it can install packages scoped to a specific project directory.
+	CanInstallInContext bool
 	// DefaultScope is where this provider places software when the user does
 	// not care.
 	DefaultScope model.Scope
@@ -192,6 +195,20 @@ type Provider interface {
 	Update(ctx context.Context, pkg model.Package) (*model.Installation, error)
 }
 
+// ContextAwareProvider is an optional interface that providers can implement
+// to support context-aware installation. When a provider implements this
+// interface, the core can install packages scoped to a specific project
+// directory (e.g., npm for node_modules, cargo for target, go for go.mod).
+type ContextAwareProvider interface {
+	Provider
+	// InstallWithContext installs the package in the context of the given
+	// directory. The contextDir is typically a project root where the provider
+	// should scope its installation (e.g., npm install in a node project).
+	// Providers that do not support context-aware installation should return
+	// an unsupported error.
+	InstallWithContext(ctx context.Context, pkg model.Package, contextDir string) (*model.Installation, error)
+}
+
 // Health is the result of probing a provider.
 type Health struct {
 	// Name is the provider name.
@@ -211,6 +228,8 @@ type Health struct {
 	// Capabilities is included so doctor and JSON consumers see the same
 	// information the resolver used.
 	Capabilities Capabilities `json:"capabilities"`
+	// ContextAware is true when the provider implements ContextAwareProvider.
+	ContextAware bool `json:"contextAware,omitempty"`
 }
 
 // Registry holds the known providers.

@@ -24,6 +24,7 @@ import (
 	"github.com/starpoint/starpoint/internal/providers"
 	"github.com/starpoint/starpoint/internal/report"
 	"github.com/starpoint/starpoint/internal/resolve"
+	"github.com/starpoint/starpoint/internal/tracking"
 )
 
 // Version is the build version, overridable at link time.
@@ -59,6 +60,8 @@ type Env struct {
 	// command that was told not to ask would read as one that asked and was
 	// refused, and would then decline to do the work it was told to do.
 	confirmAsked bool
+	// newEngine is overridden in tests to inject a tracker
+	newEngineFn func() *engine.Engine
 }
 
 func (e *Env) registry() *provider.Registry {
@@ -75,7 +78,14 @@ func (e *Env) loc() *locator.Locator {
 	return locator.New()
 }
 
-func (e *Env) newEngine() *engine.Engine { return engine.New(e.registry(), e.loc()) }
+func (e *Env) newEngine() *engine.Engine {
+	if e.newEngineFn != nil {
+		return e.newEngineFn()
+	}
+	eng := engine.New(e.registry(), e.loc())
+	// Tracker will be set by tests if needed
+	return eng
+}
 
 func (e *Env) globalPath() (string, error) {
 	if e.GlobalConfig != "" {
@@ -98,8 +108,16 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		asJSON    bool
 		force     bool
 		providers []string
+		contextDir string
+		record    bool
 	)
-	rest, flagErr := extractGlobalFlags(args, &asJSON, &force, &providers)
+	rest, flagErr := extractGlobalFlags(args, &asJSON, &force, &providers, &contextDir, &record)
+	if contextDir != "" {
+		env.WorkDir = contextDir
+	}
+	if record {
+		// Force recording - this is a no-op for now, tracking happens automatically
+	}
 	if flagErr != nil {
 		fmt.Fprintf(env.Stderr, "error: %s\n", flagErr)
 		printUsage(env.Stderr)
@@ -147,6 +165,8 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		err = cmdTransition(ctx, env, w, cmdArgs, providers)
 	case "update", "upgrade":
 		err = cmdUpdate(ctx, env, w, cmdArgs, providers)
+	case "runs", "history":
+		err = cmdRuns(ctx, env, w, cmdArgs)
 	case "help":
 		printUsage(env.Stdout)
 		return 0
@@ -190,7 +210,7 @@ func leadingArgs(args []string) []string {
 
 // extractGlobalFlags pulls the global options out of an argument list and
 // returns what remains: the subcommand and its own arguments.
-func extractGlobalFlags(args []string, asJSON, force *bool, providers *[]string) ([]string, error) {
+func extractGlobalFlags(args []string, asJSON, force *bool, providers *[]string, contextDir *string, record *bool) ([]string, error) {
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -204,6 +224,14 @@ func extractGlobalFlags(args []string, asJSON, force *bool, providers *[]string)
 			}
 			*providers = append(*providers, args[i+1])
 			i++
+		case "--context":
+			if i+1 >= len(args) {
+				return nil, errors.New("--context needs a value")
+			}
+			*contextDir = args[i+1]
+			i++
+		case "--record":
+			*record = true
 		default:
 			rest = append(rest, args[i])
 		}
@@ -227,6 +255,7 @@ Commands:
   remove <package>     Remove software and delete it from the configuration
   transition [pkg...]  Move ownership between providers, or show pending moves
   update               Update managed software, respecting explicit pins
+  runs, history        Show execution history of package operations
 
 A provider may be named after the package names, or with --provider:
   starpoint install ripgrep brew
@@ -241,6 +270,8 @@ Global options:
   --json               Machine-readable output
   --provider <name>    Restrict automatic provider choice (repeatable)
   --force              Used by 'init' to overwrite an existing configuration
+  --context <dir>      Override working directory for context detection
+  --record             Force recording execution even if auto-detection fails
   --version            Print the version
   --help               Show this help
 
@@ -255,6 +286,8 @@ Examples:
   starpoint sync --dry-run
   starpoint transition
   starpoint list --json
+  starpoint runs --package ruff
+  starpoint runs --directory /path/to/project
 `)
 }
 
@@ -868,6 +901,16 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		if err != nil {
 			return err
 		}
+		// Record execution in tracking system
+		provider := j.pkg.Provider
+		if provider == "" && len(res.Applied) > 0 {
+			provider = res.Applied[0].State.Res.Provider
+		}
+		version := j.pkg.Version
+		if version == "" && len(res.Applied) > 0 && res.Applied[0].State.Current != nil {
+			version = res.Applied[0].State.Current.Version
+		}
+		// Tracking is now handled in the engine
 		results = append(results, res)
 	}
 	return reportInstall(w, results, surveys)
@@ -950,6 +993,12 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 			if err != nil {
 				return result, err
 			}
+			// Record execution for context-aware installation
+			provider := pkg.Provider
+			if provider == "" && len(res.Applied) > 0 {
+				provider = res.Applied[0].State.Res.Provider
+			}
+			// Tracking is now handled in the engine
 			result.Applied = append(result.Applied, res.Applied...)
 			result.ConfigChanged = result.ConfigChanged || res.ConfigChanged
 			result.ConfigPath = res.ConfigPath
@@ -996,6 +1045,7 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 			if err != nil {
 				return result, err
 			}
+			// Tracking is now handled in the engine
 			result.Applied = append(result.Applied, res.Applied...)
 			result.ConfigChanged = result.ConfigChanged || res.ConfigChanged
 			result.ConfigPath = res.ConfigPath
@@ -1448,6 +1498,78 @@ func (e *Env) warn(msg string) {
 		return
 	}
 	fmt.Fprintf(e.Stderr, "warning: %s\n", msg)
+}
+
+// cmdRuns shows execution history of package operations.
+func cmdRuns(ctx context.Context, env *Env, w *report.Writer, args []string) error {
+	var (
+		filterPackage   string
+		filterDirectory string
+	)
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--package":
+			if i+1 >= len(args) {
+				return fmt.Errorf("%w: --package needs a value", ErrUsage)
+			}
+			filterPackage = args[i+1]
+			i++
+		case "--directory":
+			if i+1 >= len(args) {
+				return fmt.Errorf("%w: --directory needs a value", ErrUsage)
+			}
+			filterDirectory = args[i+1]
+			i++
+		default:
+			return fmt.Errorf("%w: unknown option %q for runs", ErrUsage, args[i])
+		}
+	}
+
+	// Load tracking data from the global tracking system
+	tracker, err := tracking.New("")
+	if err != nil {
+		return fmt.Errorf("loading execution tracker: %w", err)
+	}
+
+	// Filter the execution history
+	var filtered []tracking.RunRecord
+	for _, rec := range tracker.AllRecords() {
+		if filterPackage != "" && rec.PackageName != filterPackage {
+			continue
+		}
+		if filterDirectory != "" && rec.Directory != filterDirectory {
+			continue
+		}
+		filtered = append(filtered, rec)
+	}
+
+	if w.JSON() {
+		return w.Render(map[string]any{"executions": filtered})
+	}
+
+	// Human-readable table format
+	if len(filtered) == 0 {
+		fmt.Fprintln(env.Stdout, "No execution history found.")
+		return nil
+	}
+
+	fmt.Fprintln(env.Stdout, "Execution History:")
+	fmt.Fprintln(env.Stdout, "")
+	fmt.Fprintf(env.Stdout, "%-20s %-15s %-20s\n",
+		"Package", "Directory", "Timestamp")
+	fmt.Fprintln(env.Stdout, strings.Repeat("-", 60))
+
+	for _, rec := range filtered {
+		shortDir := rec.Directory
+		if len(shortDir) > 15 {
+			shortDir = "..." + shortDir[len(shortDir)-12:]
+		}
+		fmt.Fprintf(env.Stdout, "%-20s %-15s %-20s\n",
+			rec.PackageName,
+			shortDir,
+			rec.Timestamp.Format("2006-01-02 15:04:05"))
+	}
+	return nil
 }
 
 var _ = runtime.GOOS

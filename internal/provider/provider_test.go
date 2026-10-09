@@ -77,6 +77,20 @@ func (s *stubProvider) Update(context.Context, model.Package) (*model.Installati
 	return nil, nil
 }
 
+// contextAwareStub is a stub that implements ContextAwareProvider.
+type contextAwareStub struct {
+	stubProvider
+}
+
+func (c *contextAwareStub) InstallWithContext(ctx context.Context, pkg model.Package, contextDir string) (*model.Installation, error) {
+	return &model.Installation{
+		Name:     pkg.Name,
+		Version:  pkg.Version,
+		Path:     contextDir,
+		Provider: c.name,
+	}, nil
+}
+
 func TestRegistryPreservesRegistrationOrder(t *testing.T) {
 	r := NewRegistry()
 	r.Register(&stubProvider{name: "b", health: Health{Name: "b"}})
@@ -150,5 +164,72 @@ func TestKindValuesAreDistinct(t *testing.T) {
 			t.Errorf("duplicate kind %q", k)
 		}
 		seen[k] = true
+	}
+}
+
+func TestContextAwareProvider(t *testing.T) {
+	ctx := context.Background()
+	pkg := model.Package{Name: "express", Version: "4.18.0"}
+	contextDir := "/path/to/project"
+
+	stub := &contextAwareStub{
+		stubProvider: stubProvider{
+			name: "npm",
+			health: Health{
+				Name:          "npm",
+				ContextAware:  true,
+				Capabilities: Capabilities{
+					CanInstallInContext: true,
+				},
+			},
+		},
+	}
+
+	// Test that it implements ContextAwareProvider
+	var _ ContextAwareProvider = stub
+
+	// Test InstallWithContext
+	inst, err := stub.InstallWithContext(ctx, pkg, contextDir)
+	if err != nil {
+		t.Fatalf("InstallWithContext failed: %v", err)
+	}
+	if inst.Name != pkg.Name {
+		t.Errorf("package name mismatch: got %q, want %q", inst.Name, pkg.Name)
+	}
+	if inst.Path != contextDir {
+		t.Errorf("context path mismatch: got %q, want %q", inst.Path, contextDir)
+	}
+}
+
+func TestNonContextAwareProvider(t *testing.T) {
+	stub := &stubProvider{
+		name: "brew",
+		health: Health{
+			Name:         "brew",
+			ContextAware: false,
+			Capabilities: Capabilities{
+				CanInstallInContext: false,
+			},
+		},
+	}
+
+	// A non-context-aware provider should not have the method available
+	// This test verifies the interface separation is working correctly
+	if _, ok := interface{}(stub).(ContextAwareProvider); ok {
+		t.Error("stubProvider should not implement ContextAwareProvider")
+	}
+}
+
+func TestCapabilitiesContextAwareFlag(t *testing.T) {
+	caps := Capabilities{
+		CanInstallInContext: true,
+	}
+	if !caps.CanInstallInContext {
+		t.Error("CanInstallInContext flag should be true")
+	}
+
+	caps2 := Capabilities{}
+	if caps2.CanInstallInContext {
+		t.Error("default CanInstallInContext should be false")
 	}
 }
