@@ -322,3 +322,7 @@ suite substitutes a scripted command runner and in-memory providers.
 - `starpoint update` on a Rust toolchain runs `rustup toolchain install` for the
   channel, which moves a channel forward. A concrete toolchain pinned in the
   configuration is never moved.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
