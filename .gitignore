@@ -3,3 +3,6 @@ bin/
 *.out
 coverage.txt
 .DS_Store
+
+# Built binaries. `go build ./cmd/starpoint` writes one into the repo root.
+/starpoint

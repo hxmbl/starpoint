@@ -305,3 +305,33 @@ func (p *Provider) classify(op string, res exec.Result) error {
 		return shell.Failure(Name, op, msg, nil)
 	}
 }
+
+// Verify checks that an installed pnpm package is functional.
+func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
+	inst, err := p.Installed(ctx, pkg)
+	if err != nil || inst == nil {
+		return &provider.Error{
+			Provider: p.Name(),
+			Kind:     provider.ErrNotFound,
+			Message:  "package not installed",
+		}
+	}
+	binPath := p.binPath(pkg.Name)
+	if binPath == "" {
+		return &provider.Error{
+			Provider: p.Name(),
+			Kind:     provider.ErrFailed,
+			Message:  "cannot locate package executable",
+		}
+	}
+	_, err = p.runner.Run(ctx, binPath, "--version")
+	if err != nil {
+		return &provider.Error{
+			Provider: p.Name(),
+			Kind:     provider.ErrFailed,
+			Message:  "package verification failed",
+			Err:      err,
+		}
+	}
+	return nil
+}

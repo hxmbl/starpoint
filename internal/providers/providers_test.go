@@ -19,6 +19,7 @@ func TestDefaultRegistryCoversEveryPackageManagerOnTheHost(t *testing.T) {
 	// of these would mean the resolver can no longer see software it used to see.
 	want := []string{
 		"system", "brew", "apt",
+		"dnf", "pacman",
 		"uv", "pip",
 		"rustup", "cargo",
 		"npm", "pnpm", "yarn",

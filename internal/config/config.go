@@ -9,9 +9,11 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -39,6 +41,7 @@ type File struct {
 	Raw Raw `json:"config"`
 	// Exists reports whether the file was present on disk at load time.
 	Exists bool `json:"exists"`
+	source []byte
 	// LastUsedInDir tracks the last time this config was used in a particular directory.
 	LastUsedInDir string `json:"last_used_in_dir,omitempty"`
 }
@@ -203,40 +206,227 @@ func Write(path string, raw Raw) error {
 		return fmt.Errorf("encoding config: %w", err)
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(sb.String()), 0o644); err != nil {
-		return fmt.Errorf("writing config: %w", err)
+	if err := writeFileSync(tmp, []byte(sb.String())); err != nil {
+		os.Remove(tmp)
+		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("replacing config: %w", err)
 	}
+	syncDir(filepath.Dir(path))
 	return nil
+}
+
+// writeFileSync writes data to path and flushes it to disk before returning.
+//
+// A plain WriteFile only promises the bytes reached the kernel. The config file
+// is the source of truth for every later command, so a write that is still in
+// the page cache when the machine loses power must not be treated as committed.
+func writeFileSync(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return fmt.Errorf("writing config: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("syncing config: %w", err)
+	}
+	return f.Close()
+}
+
+// syncDir flushes a directory entry so a completed rename survives a crash.
+//
+// Renaming a file is atomic with respect to readers, but the new directory entry
+// itself is only durable once the containing directory has been synced.
+func syncDir(dir string) {
+	d, err := os.Open(dir)
+	if err != nil {
+		return
+	}
+	defer d.Close()
+	_ = d.Sync()
 }
 
 // Save writes the document back to disk.
 func (d *Document) Save() error {
 	files := d.Files()
 	for _, f := range files {
-		// Untouched project files that already exist on disk need no write.
-		if f.Project && f.Exists && unchangedFile(f) {
+		// Unchanged files of either scope need no write. This is important for global
+		// config too: a read-only operation must never normalize source formatting.
+		if f.Exists && unchangedFile(f) {
 			continue
 		}
-		if len(f.Raw.Packages) == 0 && len(f.Raw.Settings.Providers) == 0 && f.Project {
-			if err := os.Remove(f.Path); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("removing empty project config: %w", err)
-			}
-			continue
-		}
-		if err := Write(f.Path, f.Raw); err != nil {
+		if err := writeFile(f); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// unchangedFile is a placeholder for future dirty tracking. Currently every
-// known file is written, which is safe because encoding is deterministic.
-func unchangedFile(File) bool { return false }
+// writeFile modifies only package tables in an existing file. If the source
+// layout cannot be mapped unambiguously, it falls back to the standard encoder.
+func writeFile(f File) error {
+	if len(f.source) == 0 {
+		return Write(f.Path, f.Raw)
+	}
+	lines := strings.SplitAfter(string(f.source), "\n")
+	starts := make([]int, 0, len(f.Raw.Packages))
+	for i, line := range lines {
+		if strings.TrimSpace(beforeComment(line)) == "[[package]]" {
+			starts = append(starts, i)
+		}
+	}
+	wanted := make(map[string]model.Package, len(f.Raw.Packages))
+	for _, pkg := range f.Raw.Packages {
+		wanted[pkg.Name] = pkg
+	}
+	var out strings.Builder
+	last := 0
+	for _, start := range starts {
+		end := len(lines)
+		for j := start + 1; j < len(lines); j++ {
+			trimmed := strings.TrimSpace(beforeComment(lines[j]))
+			if strings.HasPrefix(trimmed, "[") {
+				end = j
+				break
+			}
+		}
+		for _, line := range lines[last:start] {
+			out.WriteString(line)
+		}
+		block := strings.Join(lines[start:end], "")
+		var parsed struct {
+			Packages []model.Package `toml:"package"`
+		}
+		if _, err := toml.Decode(block, &parsed); err != nil || len(parsed.Packages) != 1 {
+			return fmt.Errorf("updating %s safely: could not map a package table to its config entry", f.Path)
+		}
+		old := parsed.Packages[0]
+		pkg, keep := wanted[old.Name]
+		if keep {
+			delete(wanted, old.Name)
+			if reflect.DeepEqual(old, pkg) {
+				out.WriteString(block)
+			} else {
+				for _, line := range lines[start:end] {
+					if comment := trailingComment(line); comment != "" {
+						out.WriteString(strings.TrimSpace(comment))
+						out.WriteByte('\n')
+					}
+				}
+				row, err := encodePackage(pkg)
+				if err != nil {
+					return err
+				}
+				out.WriteString(row)
+			}
+		} else {
+			// Preserve annotations even when their package is removed. They no
+			// longer attach to a table, but remain available for the user to edit.
+			for _, line := range lines[start:end] {
+				if comment := trailingComment(line); comment != "" {
+					out.WriteString(strings.TrimSpace(comment))
+					out.WriteByte('\n')
+				}
+			}
+		}
+		last = end
+	}
+	for _, line := range lines[last:] {
+		out.WriteString(line)
+	}
+	for _, pkg := range f.Raw.Packages {
+		if _, exists := wanted[pkg.Name]; !exists {
+			continue
+		}
+		row, err := encodePackage(pkg)
+		if err != nil {
+			return err
+		}
+		if out.Len() > 0 {
+			if !strings.HasSuffix(out.String(), "\n") {
+				out.WriteByte('\n')
+			}
+			out.WriteByte('\n')
+		}
+		out.WriteString(row)
+		delete(wanted, pkg.Name)
+	}
+	if err := os.MkdirAll(filepath.Dir(f.Path), 0o755); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+	tmp := f.Path + ".tmp"
+	if err := writeFileSync(tmp, []byte(out.String())); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, f.Path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("replacing config: %w", err)
+	}
+	syncDir(filepath.Dir(f.Path))
+	return nil
+}
+
+func encodePackage(pkg model.Package) (string, error) {
+	var row strings.Builder
+	enc := toml.NewEncoder(&row)
+	enc.Indent = "  "
+	if err := enc.Encode(struct {
+		Packages []model.Package `toml:"package"`
+	}{Packages: []model.Package{pkg}}); err != nil {
+		return "", fmt.Errorf("encoding package: %w", err)
+	}
+	return row.String(), nil
+}
+
+func beforeComment(line string) string {
+	var quote rune
+	escaped := false
+	for i, r := range line {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if quote != 0 && r == '\\' {
+			escaped = true
+			continue
+		}
+		if (r == '"' || r == '\'') && (quote == 0 || quote == r) {
+			if quote == 0 {
+				quote = r
+			} else {
+				quote = 0
+			}
+			continue
+		}
+		if r == '#' && quote == 0 {
+			return line[:i]
+		}
+	}
+	return line
+}
+
+func trailingComment(line string) string {
+	content := beforeComment(line)
+	if content == line {
+		return ""
+	}
+	return strings.TrimRight(line[len(content):], "\r\n")
+}
+
+func unchangedFile(f File) bool {
+	if len(f.source) == 0 {
+		return false
+	}
+	original, err := parse(f.source)
+	return err == nil && reflect.DeepEqual(original, f.Raw)
+}
 
 // LoadOptions controls discovery.
 type LoadOptions struct {
@@ -306,7 +496,14 @@ func LoadFile(path string, project bool) (File, []string, error) {
 		}
 		return f, nil, fmt.Errorf("reading %s: %w", path, err)
 	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		f.Exists = true
+		f.source = append([]byte(nil), data...)
+		f.Raw.Schema = SchemaVersion
+		return f, nil, nil
+	}
 	f.Exists = true
+	f.source = append([]byte(nil), data...)
 	var warns []string
 	raw, err := parse(data)
 	if err != nil {

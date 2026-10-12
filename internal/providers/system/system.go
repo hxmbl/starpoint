@@ -144,6 +144,12 @@ func (p *Provider) Update(ctx context.Context, pkg model.Package) (*model.Instal
 		"the operating system provider is read-only; update the system through its own update mechanism")
 }
 
+// Verify is not supported by this provider.
+func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
+	return shell.Unsupported(p.Name(), "verify",
+		"the operating system provider is read-only; verification is not applicable")
+}
+
 // OwnsPath reports whether a filesystem path lies inside a system directory. It
 // is used to attribute an arbitrary executable to its true owner.
 func OwnsPath(path string) bool {

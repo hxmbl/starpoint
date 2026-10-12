@@ -361,6 +361,9 @@ func TestSyncConvergenceRequiresHealthyStates(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
+	if sync, ok := payload["sync"].(map[string]any); ok {
+		payload = sync
+	}
 	if payload["converged"] != false {
 		t.Errorf("converged must be false while a package is unsatisfied: %s", buf.String())
 	}

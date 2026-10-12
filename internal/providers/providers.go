@@ -13,9 +13,11 @@ import (
 	"github.com/starpoint/starpoint/internal/providers/apt"
 	"github.com/starpoint/starpoint/internal/providers/brew"
 	"github.com/starpoint/starpoint/internal/providers/cargo"
+	"github.com/starpoint/starpoint/internal/providers/dnf"
 	"github.com/starpoint/starpoint/internal/providers/gem"
 	"github.com/starpoint/starpoint/internal/providers/golang"
 	"github.com/starpoint/starpoint/internal/providers/npm"
+	"github.com/starpoint/starpoint/internal/providers/pacman"
 	"github.com/starpoint/starpoint/internal/providers/pip"
 	"github.com/starpoint/starpoint/internal/providers/pnpm"
 	"github.com/starpoint/starpoint/internal/providers/rustup"
@@ -26,10 +28,9 @@ import (
 
 // DefaultRegistry builds the registry of providers implemented in this release.
 //
-// The set covers every package manager this project's own development host has
-// installed. That is the compatibility target: a provider Starpoint cannot see is
-// worse than one it cannot manage, because the resolver will hand software to the
-// wrong ecosystem while the user watches.
+// The set covers providers implemented by this release. Platform-specific
+// providers remain registered everywhere; their health probes report unavailable
+// when their native package manager is not supported on the host.
 //
 // Registration order is not cosmetic. The engine asks providers for an existing
 // installation before falling back to path attribution, so the more specific
@@ -37,7 +38,7 @@ import (
 // Cargo because `rustc` and `cargo` are rustup's, while `cargo install` is
 // Cargo's.
 //
-// Two present tools are deliberately absent. Docker and Podman manage containers,
+// Two tools are deliberately absent. Docker and Podman manage containers,
 // not software on this machine, and Bun and Deno cannot enumerate what they have
 // installed — a provider that cannot answer "what do you own?" would make
 // Starpoint's central promise false. Both are recorded in docs/next-tasks.md.
@@ -48,6 +49,8 @@ func DefaultRegistry() *provider.Registry {
 	reg.Register(system.New(r))
 	reg.Register(brew.New(r))
 	reg.Register(apt.New(r))
+	reg.Register(dnf.New(r))
+	reg.Register(pacman.New(r))
 	reg.Register(uv.New(r, home))
 	reg.Register(pip.New(r))
 	reg.Register(rustup.New(r, home))

@@ -1,48 +1,45 @@
 # Next tasks
 
-Recorded, not implemented. Each entry is scoped so it can become a Linear issue.
+This file tracks work that remains after the current implementation. Completed items are recorded in the completion summary so this list stays actionable.
 
-## Core
+## Remaining core work
 
-1. **Concurrency protection** — prevent two Starpoint processes from modifying the same provider or transition simultaneously. Fail clearly when a conflicting operation is already running.
+1. **Recover interrupted package-manager operations.** Starpoint currently detects and safely cleans stale config-writer temporary files. Provider operations are still recovered by re-inspecting inventories and PATH when the command is rerun; Starpoint does not yet persist a journal for every provider subprocess. Add explicit operation records only where provider state alone cannot safely identify progress.
+2. **Expand executable-to-package mappings.** The locator supports provider mappings and uses them for ownership attribution, but only a subset of providers maps executable names back to package names. Add mappings as provider inventory semantics are confirmed, especially for multi-binary packages.
+3. **Improve project-context coverage.** Project detection reads Rust and Go toolchain declarations and contributes project ecosystem context to provider resolution. It does not yet consume dependency declarations from every ecosystem or automatically mutate project manifests. Add ecosystems with clear ownership and lockfile behavior.
 
-2. **`starpoint prune`** — explicitly remove orphaned software installed by Starpoint-managed providers. Refuse to prune software owned by system- or global-scoped providers.
+## Remaining CLI and API work
 
-3. **Transition history and reversal** — record the previous owner and enough context to support `starpoint transition --reverse`. Keep transition phases derived from the machine so interrupted transitions remain recoverable. <--- too hard to do?
+4. **Publish the JSON schema as a machine-readable artifact.** `docs/json-schema.md` documents schema version 1 and the command shapes. Generate or validate a formal JSON Schema document from the actual Go output types so external clients can validate payloads without duplicating the prose contract.
+5. **Expose shell completion installation guidance.** Bash, zsh, and fish completion scripts exist under `completions/`. Document installation paths and keep completions aligned with command aliases and flags.
+6. **Improve PATH inventory controls.** `doctor` inventories executable PATH entries and `list` shows unaccounted executables. Add filtering or limits for very large PATHs while preserving duplicate names and symlink targets in machine output.
 
-4. **Detect local binaries** — discover executables available on `PATH` that are not accounted for by known provider inventories. Report their paths and whether ownership is unknown, rather than incorrectly reporting them as missing or assuming they are unmanaged. Account for symlinks and multiple executables with the same name.
+## Provider coverage
 
-5. **Executable-to-package mapping** — let providers declare which executables their packages supply. Use this alongside inventory and PATH comparisons to resolve ownership accurately.
+7. **Add more providers when ownership is reliable.** Bun, Deno, Nix, mise, asdf, Flatpak, Snap, winget, Chocolatey, and additional language providers remain candidates. Each provider should support useful inventory and ownership reporting before it is used for automatic resolution.
+8. **Provider-specific version constraints.** Exact pins are supported where providers can honor them. Ranges and richer constraint syntax remain deferred until a concrete provider requires them; parsing must stay provider-specific.
+9. **Inventory pass consolidation.** Planning and ownership reporting may query provider inventories more than once. Revisit if profiling shows this is a material latency problem.
 
-6. **Project toolchain declarations** — read existing project declarations such as `rust-toolchain.toml` and `go.mod`. Define how these declarations interact with machine-wide toolchain configuration before implementing automatic changes.
+## Settled behavior
 
-## CLI and API
+- Project configuration is additive to global configuration. A project entry with the same package name overrides the global entry; other global packages remain desired.
+- `scope = "project"` is accepted as placement intent, but providers that cannot install into a project context report that limitation. Starpoint does not silently rewrite a project's manifest to manufacture support.
+- `sync` does not adopt an installation merely because it exists. `starpoint install` is the explicit adoption path and records the selected provider in the source of truth.
+- An explicit provider in configuration wins. Otherwise an existing non-system owner is retained, known executable ownership mappings are considered, then ecosystem and project context guide a choice. Starpoint asks when multiple viable general providers remain ambiguous.
+- Transition phases are reconstructed from provider inventory and executable resolution. Re-running a transition resumes based on observed machine state; the history store supports audit and explicit reversal.
+- Prune removes only orphaned user-scoped software that a provider can enumerate and remove. It excludes system/global scope and configured package names.
 
-7. **`starpoint explain <package>`** — show the provider-resolution reasoning chain, including the rules considered and why the selected provider won.
+## Completed in this implementation
 
-8. **Stable JSON schema** — document and version the JSON output already emitted by Starpoint, including transition records.
-
-9. **Shell completions** — provide completions for bash, zsh and fish.
-
-10. **Comment-preserving configuration writes** — stop provider decisions from destroying hand-written TOML comments. Prefer a generated region Starpoint can rewrite while preserving human-maintained configuration.
-
-## Providers
-
-11. **Linux package managers** — add dnf, pacman and other necessary Linux providers. Match existing apt behavior while accounting for each manager's package classification and install flags.
-
-12. **Provider self-verification** — optionally verify an installation by running the installed executable, such as `ruff --version`, in addition to checking provider inventory and PATH.
-
-## Design decisions
-
-- **Project configuration semantics** — decide whether a project-local `.starpoint.toml` can declare an exact, self-contained package set or only override global entries.
-- **Project-scoped installation** — define what `scope = "project"` means operationally before expanding support for project-local installations.
-- **Adoption during sync** — decide whether `sync` may adopt software that already exists without an explicit `starpoint add`. Preserve explicit adoption unless there's a compelling reason to change it.
-- **Ownership hints** — document when a known-owner hint takes precedence over other providers, particularly when package names overlap across ecosystems.
-
-## Deliberately deferred
-
-- **Bun and Deno providers** — reconsider when their installed software can be inventoried reliably enough for `list` and `info`.
-- **Nix support** — defer until Starpoint has a clear integration model that does not turn it into a Nix clone.
-- **mise and asdf** — defer until version-manager ownership and placement have a defined model.
-- **Version constraints** — keep exact version matching until there is a concrete need for ranges. Constraint parsing should remain provider-specific.
-- **Inventory-pass consolidation** — revisit if profiling shows the duplicate provider survey is a meaningful performance problem.
+- Crash recovery detection and safe cleanup for stale Starpoint TOML temporary files, with ambiguous or sole-copy data preserved. Config writes are flushed and renamed atomically, so an interrupted run cannot leave a half-written config; `starpoint recover` reports leftover files and `--discard` clears them.
+- Per-config mutation locks around state-changing CLI operations.
+- `starpoint prune`, with preview, confirmation, scope protections, and JSON output.
+- Transition history and `starpoint transition --reverse`.
+- PATH executable inventory with symlink/duplicate reporting in `list` and `doctor`.
+- Resolver explanation through `starpoint explain <package>`.
+- Versioned JSON output envelope and command-shape documentation.
+- Bash, zsh, and fish completion scripts.
+- TOML writes that preserve comments and unrelated file content while updating package entries.
+- DNF and Pacman providers alongside the existing APT and Homebrew integrations. Neither can honour an arbitrary version pin, and both report that rather than claiming a capability they lack.
+- Optional provider executable verification after install/update and during transitions.
+- Rust `rust-toolchain` / `rust-toolchain.toml` and Go `go.mod` toolchain declaration detection.

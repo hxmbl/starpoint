@@ -70,7 +70,7 @@ var ecosystems = map[provider.Kind]ecosystem{
 // ecosystem-specific provider claims the software. Only providers Starpoint
 // actually implements belong here: naming one it does not have would produce a
 // resolution it cannot carry out.
-var systemManagers = []string{"brew", "apt"}
+var systemManagers = []string{"brew", "apt", "dnf", "pacman"}
 
 // nameHints map well-known software names to the ecosystem that should own them.
 // This is intentionally small: it covers cases where the name itself implies a
@@ -135,6 +135,30 @@ type Resolver struct {
 // New builds a Resolver over a registry.
 func New(reg *provider.Registry) *Resolver { return &Resolver{reg: reg} }
 
+// Step is one rule the resolver evaluated.
+type Step struct {
+	// Rule is the name of the rule that was evaluated.
+	Rule string `json:"rule"`
+	// Outcome is what the rule concluded.
+	Outcome string `json:"outcome"`
+	// Provider is the provider the rule selected, if any.
+	Provider string `json:"provider,omitempty"`
+	// Reason explains the rule's decision.
+	Reason string `json:"reason,omitempty"`
+	// Applied is true when this rule's decision was used.
+	Applied bool `json:"applied"`
+}
+
+// Explanation is the full reasoning chain for a resolution.
+type Explanation struct {
+	// Package is the package being resolved.
+	Package model.Package `json:"package"`
+	// Final is the final resolution.
+	Final model.Resolution `json:"final"`
+	// Steps is the ordered list of rules evaluated.
+	Steps []Step `json:"steps"`
+}
+
 // KnownProviders names every provider the resolver's own tables refer to.
 //
 // It exists so a table can be checked against the registry. Naming a provider
@@ -163,23 +187,47 @@ func (r *Resolver) KnownProviders() []string {
 
 // Resolve decides who should own the package.
 func (r *Resolver) Resolve(in Input) model.Resolution {
+	expl := r.Explain(in)
+	return expl.Final
+}
+
+// Explain decides who should own the package and returns the full reasoning chain.
+func (r *Resolver) Explain(in Input) Explanation {
+	var steps []Step
+	var final model.Resolution
+
+	record := func(rule, outcome, provider, reason string, applied bool) {
+		steps = append(steps, Step{
+			Rule:     rule,
+			Outcome:  outcome,
+			Provider: provider,
+			Reason:   reason,
+			Applied:  applied,
+		})
+	}
+
 	// Rule 1: explicit configuration.
 	if name := in.Package.Provider; name != "" {
 		if _, ok := in.Available[name]; !ok {
-			return model.Resolution{
+			final = model.Resolution{
 				Provider:   name,
 				Reason:     "configuration requests this provider, but it is not available",
 				Confidence: model.ConfidenceCertain,
 				Forced:     true,
 			}
+			record("explicit configuration", "selected", name, final.Reason, true)
+		} else {
+			final = model.Resolution{
+				Provider:   name,
+				Reason:     "configuration explicitly selects this provider",
+				Confidence: model.ConfidenceCertain,
+				Forced:     true,
+			}
+			record("explicit configuration", "selected", name, final.Reason, true)
 		}
-		return model.Resolution{
-			Provider:   name,
-			Reason:     "configuration explicitly selects this provider",
-			Confidence: model.ConfidenceCertain,
-			Forced:     true,
-		}
+		return Explanation{Package: in.Package, Final: final, Steps: steps}
 	}
+	record("explicit configuration", "skipped", "", "no explicit provider in configuration", false)
 
 	existing := in.Existing
 	if existing == nil && in.Locator != nil && isExecutableName(in.Package.Name) {
@@ -203,13 +251,18 @@ func (r *Resolver) Resolve(in Input) model.Resolution {
 		// by `doctor` instead.
 		if existing.Provider != system.Name {
 			if owner, known := ownerHint(strings.ToLower(in.Package.Name)); !known || owner == existing.Provider {
-				return model.Resolution{
+				final = model.Resolution{
 					Provider:   existing.Provider,
 					Reason:     existingReason(existing),
 					Confidence: model.ConfidenceCertain,
 				}
+				record("existing ownership", "selected", existing.Provider, final.Reason, true)
+				return Explanation{Package: in.Package, Final: final, Steps: steps}
 			}
 		}
+		record("existing ownership", "skipped", "", "existing provider is system-owned or has known single owner", false)
+	} else {
+		record("existing ownership", "skipped", "", "no existing installation found", false)
 	}
 
 	// allowedSet is empty when the user expressed no preference, in which case
@@ -227,30 +280,38 @@ func (r *Resolver) Resolve(in Input) model.Resolution {
 	// missing.
 	if owner, ok := ownerHint(strings.ToLower(in.Package.Name)); ok && allowed(owner) {
 		if !available(owner, in.Available) {
-			return model.Resolution{
+			final = model.Resolution{
 				Provider:   owner,
 				Reason:     fmt.Sprintf("%s is owned by %s, which is not available here", in.Package.Name, owner),
 				Confidence: model.ConfidenceHigh,
 			}
+			record("known owner", "selected", owner, final.Reason, true)
+			return Explanation{Package: in.Package, Final: final, Steps: steps}
 		}
-		return model.Resolution{
+		final = model.Resolution{
 			Provider:   owner,
 			Reason:     fmt.Sprintf("%s is owned by %s", in.Package.Name, owner),
 			Confidence: model.ConfidenceCertain,
 		}
+		record("known owner", "selected", owner, final.Reason, true)
+		return Explanation{Package: in.Package, Final: final, Steps: steps}
 	}
+	record("known owner", "skipped", "", "no single known owner for this package name", false)
 
 	candidates := r.candidates(in)
 	if len(candidates) == 0 {
 		// Nothing is available. Report the system provider so the caller can
 		// still describe intent, and let the state comparison produce a clear
 		// "cannot install" message.
-		return model.Resolution{
+		final = model.Resolution{
 			Provider:   system.Name,
 			Reason:     "no available provider can install this software",
 			Confidence: model.ConfidenceSpeculat,
 		}
+		record("available providers", "selected", system.Name, final.Reason, true)
+		return Explanation{Package: in.Package, Final: final, Steps: steps}
 	}
+	record("available providers", "found", "", fmt.Sprintf("%d candidate(s): %s", len(candidates), strings.Join(candidates, ", ")), false)
 
 	kind := hintKind(in.Package.Name)
 	if kind != "" {
@@ -260,14 +321,21 @@ func (r *Resolver) Resolve(in Input) model.Resolution {
 					continue
 				}
 				reason := fmt.Sprintf("%s is the natural home for %s software", name, kindName(kind))
-				return model.Resolution{
+				final = model.Resolution{
 					Provider:     name,
 					Reason:       reason,
 					Confidence:   model.ConfidenceHigh,
 					Alternatives: r.others(candidates, name),
 				}
+				record("ecosystem hint", "selected", name, reason, true)
+				return Explanation{Package: in.Package, Final: final, Steps: steps}
 			}
 		}
+	}
+	if kind != "" {
+		record("ecosystem hint", "skipped", "", fmt.Sprintf("package name suggests %s ecosystem but no preferred provider available", kindName(kind)), false)
+	} else {
+		record("ecosystem hint", "skipped", "", "package name does not suggest a specific ecosystem", false)
 	}
 
 	// The project's ecosystem is the next signal. Running inside a Rust project
@@ -279,14 +347,19 @@ func (r *Resolver) Resolve(in Input) model.Resolution {
 				if !allowed(name) || !available(name, in.Available) {
 					continue
 				}
-				return model.Resolution{
+				final = model.Resolution{
 					Provider:     name,
 					Reason:       fmt.Sprintf("the current project is a %s project", kindName(in.Ecosystem)),
 					Confidence:   model.ConfidenceLow,
 					Alternatives: r.others(candidates, name),
 				}
+				record("project ecosystem", "selected", name, final.Reason, true)
+				return Explanation{Package: in.Package, Final: final, Steps: steps}
 			}
 		}
+		record("project ecosystem", "skipped", "", fmt.Sprintf("project is %s but no preferred provider available", kindName(in.Ecosystem)), false)
+	} else {
+		record("project ecosystem", "skipped", "", "no project ecosystem detected", false)
 	}
 
 	// Rule 3, general case: a system package manager, but if more than one is
@@ -298,22 +371,27 @@ func (r *Resolver) Resolve(in Input) model.Resolution {
 		}
 	}
 	if len(systemCandidates) == 1 {
-		return model.Resolution{
+		final = model.Resolution{
 			Provider:     systemCandidates[0],
 			Reason:       "only one package manager is available",
 			Confidence:   model.ConfidenceHigh,
 			Alternatives: r.others(candidates, systemCandidates[0]),
 		}
+		record("system package manager", "selected", systemCandidates[0], final.Reason, true)
+		return Explanation{Package: in.Package, Final: final, Steps: steps}
 	}
 	if len(systemCandidates) > 1 {
-		return model.Resolution{
+		final = model.Resolution{
 			Provider:     systemCandidates[0],
 			Reason:       "several package managers are available and none is clearly better",
 			Confidence:   model.ConfidenceLow,
 			Ambiguous:    true,
 			Alternatives: systemCandidates[1:],
 		}
+		record("system package manager", "ambiguous", systemCandidates[0], final.Reason, true)
+		return Explanation{Package: in.Package, Final: final, Steps: steps}
 	}
+	record("system package manager", "skipped", "", "no system package managers available", false)
 
 	// Nothing specific matched. Only language providers are left, and an
 	// unrecognised name says nothing about which ecosystem it belongs to. With
@@ -321,19 +399,23 @@ func (r *Resolver) Resolve(in Input) model.Resolution {
 	// about rather than settled by registration order — which would otherwise
 	// make the answer depend on an arbitrary detail of how providers are wired.
 	if len(candidates) > 1 {
-		return model.Resolution{
+		final = model.Resolution{
 			Provider:     candidates[0],
 			Reason:       "nothing identifies which ecosystem this software belongs to",
 			Confidence:   model.ConfidenceLow,
 			Ambiguous:    true,
 			Alternatives: r.others(candidates, candidates[0]),
 		}
+		record("fallback", "ambiguous", candidates[0], final.Reason, true)
+		return Explanation{Package: in.Package, Final: final, Steps: steps}
 	}
-	return model.Resolution{
+	final = model.Resolution{
 		Provider:   candidates[0],
 		Reason:     "only one available provider can install this software",
 		Confidence: model.ConfidenceLow,
 	}
+	record("fallback", "selected", candidates[0], final.Reason, true)
+	return Explanation{Package: in.Package, Final: final, Steps: steps}
 }
 
 // candidates lists the providers that can act, filtered by availability and the

@@ -8,9 +8,11 @@
 package project
 
 import (
+	"bufio"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/starpoint/starpoint/internal/model"
 )
@@ -41,6 +43,9 @@ type Info struct {
 	Tools []string `json:"tools,omitempty"`
 	// Toolchain is the subset of Tools that is the language runtime itself.
 	Toolchain []string `json:"toolchain,omitempty"`
+	// ToolchainVersion is the toolchain version declared in project files.
+	// For Rust, this comes from rust-toolchain.toml. For Go, from go.mod.
+	ToolchainVersion string `json:"toolchain_version,omitempty"`
 	// HasProjectConfig reports whether a project-local Starpoint config exists.
 	HasProjectConfig bool `json:"has_project_config"`
 }
@@ -66,7 +71,7 @@ var markers = []struct {
 	tools []Tool
 }{
 	{KindGo, []string{"go.mod"}, []Tool{{Name: "go", Bootstrap: true}}},
-	{KindRust, []string{"Cargo.toml"}, []Tool{
+	{KindRust, []string{"Cargo.toml", "rust-toolchain.toml", "rust-toolchain"}, []Tool{
 		{Name: "cargo", Bootstrap: true},
 		{Name: "rustc", Bootstrap: true},
 	}},
@@ -117,8 +122,79 @@ func Detect(dir string) Info {
 		current = parent
 	}
 	info.Toolchain = toolNames(allBootstrap(info))
+	info.ToolchainVersion = declaredToolchain(info.Root, info.Kind)
 	info.HasProjectConfig = configExists(info.Root)
 	return info
+}
+
+// declaredToolchain reads explicit project intent only. It never invokes
+// rustup/go and never changes or installs a toolchain.
+func declaredToolchain(root string, kind Kind) string {
+	if root == "" {
+		return ""
+	}
+	filename := ""
+	if kind == KindRust {
+		filename = "rust-toolchain.toml"
+	}
+	if kind == KindGo {
+		filename = "go.mod"
+	}
+	if filename == "" {
+		return ""
+	}
+	if kind == KindRust {
+		if _, err := os.Stat(filepath.Join(root, filename)); err != nil {
+			legacy, legacyErr := os.ReadFile(filepath.Join(root, "rust-toolchain"))
+			if legacyErr == nil {
+				return strings.TrimSpace(strings.SplitN(string(legacy), "#", 2)[0])
+			}
+			return ""
+		}
+	}
+	f, err := os.Open(filepath.Join(root, filename))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	if kind == KindRust {
+		var inToolchain bool
+		scanner := bufio.NewScanner(f)
+		var channel string
+		for scanner.Scan() {
+			line := strings.TrimSpace(strings.SplitN(scanner.Text(), "#", 2)[0])
+			if strings.HasPrefix(line, "[") {
+				inToolchain = line == "[toolchain]"
+				continue
+			}
+			if !inToolchain {
+				continue
+			}
+			key, value, ok := strings.Cut(line, "=")
+			if ok && strings.TrimSpace(key) == "channel" {
+				channel = unquote(strings.TrimSpace(value))
+			}
+		}
+		if channel != "" {
+			return channel
+		}
+		return ""
+	}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		fields := strings.Fields(strings.SplitN(scanner.Text(), "//", 2)[0])
+		if len(fields) == 2 && fields[0] == "go" {
+			return fields[1]
+		}
+	}
+	return ""
+}
+
+func unquote(value string) string {
+	if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'')) {
+		return value[1 : len(value)-1]
+	}
+	return value
 }
 
 func allBootstrap(info Info) []Tool {

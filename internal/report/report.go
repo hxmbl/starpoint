@@ -9,14 +9,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/starpoint/starpoint/internal/config"
 	"github.com/starpoint/starpoint/internal/engine"
+	"github.com/starpoint/starpoint/internal/locator"
 	"github.com/starpoint/starpoint/internal/model"
 	"github.com/starpoint/starpoint/internal/project"
 	"github.com/starpoint/starpoint/internal/provider"
+	"github.com/starpoint/starpoint/internal/resolve"
 )
 
 // Writer renders results.
@@ -47,7 +50,15 @@ type ListItem struct {
 }
 
 // List renders `starpoint list`.
-func (w *Writer) List(states []model.State) error {
+func (w *Writer) List(states []model.State, pathInventory ...[]locator.Found) error {
+	var unaccounted []locator.Found
+	if len(pathInventory) > 0 {
+		for _, f := range pathInventory[0] {
+			if !f.Attributed {
+				unaccounted = append(unaccounted, f)
+			}
+		}
+	}
 	items := make([]ListItem, 0, len(states))
 	for _, st := range states {
 		item := ListItem{
@@ -75,26 +86,51 @@ func (w *Writer) List(states []model.State) error {
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 
 	if w.asJSON {
-		return w.emit(map[string]any{"packages": items})
+		payload := map[string]any{"schema_version": 1, "packages": items}
+		payload["unaccounted_path"] = unaccounted
+		return w.emit(payload)
 	}
 	if len(items) == 0 {
 		fmt.Fprintln(w.out, "No software in the configuration yet. Add some with: starpoint install <package>")
 		return nil
 	}
-	rows := make([][]string, 0, len(items))
-	rows = append(rows, []string{"PACKAGE", "LOCATION", "SCOPE", "PROVIDER", "VERSION", "STATUS"})
-	for _, it := range items {
-		rows = append(rows, []string{
-			it.Name, dash(it.Path), it.Scope, dash(it.Provider), dash(it.Version), it.Status,
-		})
+	if len(items) > 0 {
+		rows := make([][]string, 0, len(items)+1)
+		rows = append(rows, []string{"PACKAGE", "LOCATION", "SCOPE", "PROVIDER", "VERSION", "STATUS"})
+		for _, it := range items {
+			rows = append(rows, []string{
+				it.Name, dash(it.Path), it.Scope, dash(it.Provider), dash(it.Version), it.Status,
+			})
+		}
+		if err := w.table(rows); err != nil {
+			return err
+		}
 	}
-	return w.table(rows)
+	if len(unaccounted) > 0 {
+		if len(items) == 0 {
+			fmt.Fprintln(w.out, "\nNo software in the configuration yet. Add some with: starpoint install <package>")
+		}
+		fmt.Fprintln(w.out, "\nPATH executables with unknown ownership")
+		rows := [][]string{{"BINARY", "LOCATION", "DETAIL"}}
+		for _, f := range unaccounted {
+			detail := f.Reason
+			if f.Duplicate {
+				detail = strings.TrimSpace(detail + "; duplicate name later on PATH")
+			}
+			if f.Symlink {
+				detail = strings.TrimSpace(detail + "; symlink → " + f.Target)
+			}
+			rows = append(rows, []string{filepath.Base(f.Path), f.Path, dash(detail)})
+		}
+		return w.table(rows)
+	}
+	return nil
 }
 
 // Info renders `starpoint info <package>`.
 func (w *Writer) Info(st model.State) error {
 	if w.asJSON {
-		return w.emit(map[string]any{"package": st})
+		return w.emit(map[string]any{"schema_version": 1, "package": st})
 	}
 	var b strings.Builder
 	p := st.Package
@@ -196,7 +232,7 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 	}
 
 	if w.asJSON {
-		return w.emit(out)
+		return w.emit(map[string]any{"schema_version": 1, "sync": out})
 	}
 
 	if len(actions) == 0 {
@@ -269,9 +305,10 @@ func dedupeTransitions(in []model.Transition) []model.Transition {
 func (w *Writer) Transitions(ts []model.Transition, dryRun bool) error {
 	if w.asJSON {
 		return w.emit(map[string]any{
-			"dry_run":     dryRun,
-			"transitions": ts,
-			"pending":     countPending(ts),
+			"schema_version": 1,
+			"dry_run":        dryRun,
+			"transitions":    ts,
+			"pending":        countPending(ts),
 		})
 	}
 	if len(ts) == 0 {
@@ -325,7 +362,7 @@ func (w *Writer) writeTransitions(ts []model.Transition) {
 // showing the phases and the evidence rather than a bare status.
 func (w *Writer) TransitionDetail(t model.Transition) error {
 	if w.asJSON {
-		return w.Render(map[string]any{"transition": t})
+		return w.Render(map[string]any{"schema_version": 1, "transition": t})
 	}
 	from := t.From.Name
 	if from == "" {
@@ -379,12 +416,13 @@ type ProviderHealth struct {
 
 // DoctorReport is the machine-readable shape of `starpoint doctor`.
 type DoctorReport struct {
-	Starpoint StarpointInfo    `json:"starpoint"`
-	Config    ConfigInfo       `json:"config"`
-	Providers []ProviderHealth `json:"providers"`
-	Ownership []model.State    `json:"ownership"`
-	Problems  []model.Warning  `json:"problems,omitempty"`
-	Healthy   bool             `json:"healthy"`
+	Starpoint     StarpointInfo    `json:"starpoint"`
+	Config        ConfigInfo       `json:"config"`
+	Providers     []ProviderHealth `json:"providers"`
+	Ownership     []model.State    `json:"ownership"`
+	PATHInventory []locator.Found  `json:"path_inventory"`
+	Problems      []model.Warning  `json:"problems,omitempty"`
+	Healthy       bool             `json:"healthy"`
 }
 
 // StarpointInfo describes the running binary.
@@ -408,7 +446,7 @@ type ConfigInfo struct {
 // Doctor renders `starpoint doctor`.
 func (w *Writer) Doctor(rep DoctorReport) error {
 	if w.asJSON {
-		return w.emit(rep)
+		return w.emit(map[string]any{"schema_version": 1, "doctor": rep, "providers": rep.Providers, "healthy": rep.Healthy})
 	}
 	fmt.Fprintln(w.out, "Starpoint")
 	fmt.Fprintf(w.out, "  Version:  %s\n", rep.Starpoint.Version)
@@ -460,6 +498,28 @@ func (w *Writer) Doctor(rep DoctorReport) error {
 			return err
 		}
 	}
+	fmt.Fprintf(w.out, "\nPATH inventory (%d executable entries)\n", len(rep.PATHInventory))
+	if len(rep.PATHInventory) > 0 {
+		rows := [][]string{{"BINARY", "LOCATION", "OWNER", "DETAIL"}}
+		for _, f := range rep.PATHInventory {
+			owner, detail := "unknown", f.Reason
+			if f.Installation != nil {
+				owner = f.Installation.Provider
+			}
+			if f.Duplicate {
+				detail = strings.TrimSpace(detail + " duplicate name; later PATH entry")
+			}
+			if f.Symlink {
+				detail = strings.TrimSpace(detail + " symlink → " + f.Target)
+			}
+			rows = append(rows, []string{filepath.Base(f.Path), f.Path, owner, dash(detail)})
+		}
+		if err := w.table(rows); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintln(w.out, "  No executable entries found on PATH.")
+	}
 
 	if len(rep.Problems) > 0 {
 		fmt.Fprintf(w.out, "\nProblems\n")
@@ -482,6 +542,7 @@ func (w *Writer) Result(op string, res *engine.Result) error {
 	changed := res.ConfigChanged && !res.DryRun
 	if w.asJSON {
 		return w.emit(map[string]any{
+			"schema_version": 1,
 			"operation":      op,
 			"dry_run":        res.DryRun,
 			"config_changed": changed,
@@ -531,7 +592,7 @@ func (w *Writer) Result(op string, res *engine.Result) error {
 // Init renders the outcome of `starpoint init`.
 func (w *Writer) Init(path string, created, replaced bool) error {
 	if w.asJSON {
-		return w.emit(map[string]any{"path": path, "created": created, "replaced": replaced})
+		return w.emit(map[string]any{"schema_version": 1, "path": path, "created": created, "replaced": replaced})
 	}
 	switch {
 	case replaced:
@@ -549,7 +610,7 @@ func (w *Writer) Render(v any) error {
 	if !w.asJSON {
 		return nil
 	}
-	return w.emit(v)
+	return w.emit(map[string]any{"schema_version": 1, "data": v})
 }
 
 // Warn writes a warning line in human mode.
@@ -707,6 +768,39 @@ func DocumentInfo(doc *config.Document, globalPath string, writable bool) Config
 // The last part is the reason this exists. "No provider has it" and "no provider
 // *was able to say*" are different claims, and a report that conflates them
 // teaches the user to trust a weaker guarantee than the one being offered.
+
+// Explain renders the provider-resolution reasoning chain.
+func (w *Writer) Explain(expl resolve.Explanation) error {
+	if w.asJSON {
+		return w.emit(map[string]any{"schema_version": 1, "explain": expl})
+	}
+	fmt.Fprintf(w.out, "Package: %s\n\n", expl.Package.Describe())
+	fmt.Fprintf(w.out, "Selected provider: %s\n", expl.Final.Provider)
+	fmt.Fprintf(w.out, "Confidence: %s\n", expl.Final.Confidence)
+	if expl.Final.Ambiguous {
+		fmt.Fprintf(w.out, "Ambiguous: yes\n")
+		if len(expl.Final.Alternatives) > 0 {
+			fmt.Fprintf(w.out, "Alternatives: %s\n", strings.Join(expl.Final.Alternatives, ", "))
+		}
+	}
+	fmt.Fprintf(w.out, "Reason: %s\n\n", expl.Final.Reason)
+	fmt.Fprintln(w.out, "Resolution reasoning:")
+	for _, step := range expl.Steps {
+		marker := "  "
+		if step.Applied {
+			marker = "→ "
+		}
+		fmt.Fprintf(w.out, "%s%s: %s", marker, step.Rule, step.Outcome)
+		if step.Provider != "" {
+			fmt.Fprintf(w.out, " (%s)", step.Provider)
+		}
+		fmt.Fprintln(w.out)
+		if step.Reason != "" {
+			fmt.Fprintf(w.out, "      %s\n", step.Reason)
+		}
+	}
+	return nil
+}
 func (w *Writer) Lookup(s engine.Survey) error {
 	if w.asJSON {
 		return w.Render(map[string]any{"lookup": s})

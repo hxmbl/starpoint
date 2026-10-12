@@ -12,10 +12,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/starpoint/starpoint/internal/config"
+	"github.com/starpoint/starpoint/internal/history"
 	"github.com/starpoint/starpoint/internal/locator"
 	"github.com/starpoint/starpoint/internal/model"
 	"github.com/starpoint/starpoint/internal/provider"
@@ -30,6 +32,7 @@ type Engine struct {
 	locator  *locator.Locator
 	resolver *resolve.Resolver
 	tracker  *tracking.Tracker
+	history  *history.History
 
 	// healthOnce and healthCache make provider probing happen once per Engine.
 	//
@@ -40,17 +43,48 @@ type Engine struct {
 	// state rather than three slightly different samples of it.
 	healthOnce  sync.Once
 	healthCache map[string]provider.Health
+
+	// historyErr records a failure to load the transition history database.
+	//
+	// A corrupt history file must not stop a command from running, but it must
+	// not pass unnoticed either: history backs `transition --reverse`, and
+	// silently recording nothing makes a transition that just succeeded look
+	// like one that never happened. The engine keeps working and the caller
+	// reports the problem.
+	historyErr error
 }
+
+// HistoryError reports why transition history is unavailable, or nil if it
+// loaded cleanly.
+func (e *Engine) HistoryError() error { return e.historyErr }
 
 // New builds an Engine.
 func New(reg *provider.Registry, loc *locator.Locator) *Engine {
 	tracker, _ := tracking.New("")
-	return &Engine{reg: reg, locator: loc, resolver: resolve.New(reg), tracker: tracker}
+	hist, histErr := history.New("")
+	if histErr != nil {
+		// Keep going with history disabled, but remember why so the caller can
+		// say so out loud instead of silently dropping every transition.
+		hist = nil
+	}
+	if loc != nil {
+		for _, p := range reg.All() {
+			if mapped, ok := p.(provider.ExecutableMappingProvider); ok {
+				loc.PackageMappings = append(loc.PackageMappings, mapped)
+			}
+		}
+	}
+	return &Engine{reg: reg, locator: loc, resolver: resolve.New(reg), tracker: tracker, history: hist, historyErr: histErr}
 }
 
 // SetTracker sets the execution tracker. This is primarily for testing.
 func (e *Engine) SetTracker(t *tracking.Tracker) {
 	e.tracker = t
+}
+
+// SetHistory sets the transition history. This is primarily for testing.
+func (e *Engine) SetHistory(h *history.History) {
+	e.history = h
 }
 
 // Options configures a single operation.
@@ -63,6 +97,8 @@ type Options struct {
 	Allowed []string
 	// Dir is the working directory, used for project context.
 	Dir string
+	// ConfigPath identifies the source-of-truth file for audit records.
+	ConfigPath string
 	// Ecosystem is the ecosystem of the project at Dir, if any. It informs
 	// provider resolution without overriding an explicit decision.
 	Ecosystem provider.Kind
@@ -636,3 +672,65 @@ func scopeOf(st model.State) string {
 
 // ScopeOf is the exported accessor used by the reporting layer.
 func ScopeOf(st model.State) string { return scopeOf(st) }
+
+// Prune removes orphaned software installed by Starpoint-managed providers.
+//
+// Orphaned software is software that exists on the machine but is not declared
+// in the configuration. System and global-scoped providers are never pruned,
+// as Starpoint does not own or manage those installations.
+func (e *Engine) Prune(ctx context.Context, doc *config.Document, opts Options) (*Result, error) {
+	available := e.health(ctx)
+	res := &Result{DryRun: opts.DryRun}
+
+	// Build a set of all managed packages
+	managed := map[string]bool{}
+	for _, pkg := range doc.Packages() {
+		managed[pkg.Name] = true
+	}
+
+	var failures []string
+	for _, p := range e.reg.All() {
+		provName := p.Name()
+		h := available[provName]
+
+		// Skip unavailable providers
+		if !h.Available {
+			continue
+		}
+
+		// The system provider and every provider with a machine-wide default scope
+		// are outside Starpoint's safe cleanup boundary.
+		if provName == system.Name || p.Capabilities().DefaultScope == model.ScopeGlobal {
+			continue
+		}
+		if !p.Capabilities().Remove || !p.Capabilities().Discover {
+			continue
+		}
+		items, err := p.Discover(ctx)
+		if err != nil {
+			failures = append(failures, provName+": "+err.Error())
+			continue
+		}
+		for _, inst := range items {
+			if inst.Scope == model.ScopeGlobal || inst.Scope == model.ScopeProject || managed[inst.Name] {
+				continue
+			}
+			pkg := model.Package{Name: inst.Name, Provider: provName, Scope: model.ScopeUser}
+			action := model.PlannedAction{Action: model.ActionRemove, State: model.State{Package: pkg, Current: &inst, Res: model.Resolution{Provider: provName}}}
+			if opts.DryRun {
+				res.Applied = append(res.Applied, action)
+				continue
+			}
+			if err := p.Remove(ctx, pkg); err != nil {
+				failures = append(failures, provName+"/"+inst.Name+": "+err.Error())
+				continue
+			}
+			res.Applied = append(res.Applied, action)
+		}
+	}
+	if len(failures) > 0 {
+		return res, fmt.Errorf("prune incomplete:\n  %s", strings.Join(failures, "\n  "))
+	}
+
+	return res, nil
+}

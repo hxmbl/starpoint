@@ -3,10 +3,54 @@
 package shell
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/starpoint/starpoint/internal/provider"
 )
+
+// ExecutableForPackage resolves the executable that verifies a package, given an
+// executable-to-package mapping.
+//
+// The mapping is many-to-one: "python3" and "python" both name the python3
+// package, so more than one key can claim a package. Go randomises map
+// iteration, so scanning the map directly would return a different executable
+// from one run to the next and make verification fail intermittently.
+//
+// The tie is broken in two deterministic steps. An executable named exactly
+// after its package wins, because that pairing is the one the author of the
+// mapping wrote down deliberately: Debian and Fedora ship /usr/bin/python3 for
+// the python3 package, while /usr/bin/python may be a virtual provide with no
+// executable behind it. Failing that, the shortest name wins, purely so the
+// answer never depends on map order again.
+func ExecutableForPackage(mapping map[string]string, packageName string) (string, bool) {
+	keys := make([]string, 0, len(mapping))
+	for executable := range mapping {
+		keys = append(keys, executable)
+	}
+	sort.Strings(keys)
+	best := ""
+	for _, executable := range keys {
+		if mapping[executable] != packageName {
+			continue
+		}
+		if best == "" {
+			best = executable
+			continue
+		}
+		// An exact name match outranks any other claimant.
+		if executable == packageName {
+			return executable, true
+		}
+		if best == packageName {
+			continue
+		}
+		if len(executable) < len(best) {
+			best = executable
+		}
+	}
+	return best, best != ""
+}
 
 // VersionFromArgs picks the most likely version token out of free-form CLI
 // output such as `git version 2.43.0`.
@@ -82,4 +126,9 @@ func Unsupported(name, op, msg string) *provider.Error {
 // Failure builds a generic failure.
 func Failure(name, op, msg string, err error) *provider.Error {
 	return Err(name, op, provider.ErrFailed, msg, err)
+}
+
+// UnsupportedVerify builds an unsupported error for Verify operations.
+func UnsupportedVerify(name string) *provider.Error {
+	return Unsupported(name, "verify", "this provider does not support executable verification")
 }

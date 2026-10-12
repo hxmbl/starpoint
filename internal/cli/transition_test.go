@@ -194,8 +194,17 @@ func TestTransitionJSONReportsTheFinalPhase(t *testing.T) {
 			Phase      string `json:"phase"`
 			OldRemoved bool   `json:"old_removed"`
 		} `json:"transitions"`
+		Data struct {
+			Transitions []struct {
+				Phase      string `json:"phase"`
+				OldRemoved bool   `json:"old_removed"`
+			} `json:"transitions"`
+		} `json:"data"`
 	}
 	h.decode(out, &payload)
+	if len(payload.Transitions) == 0 {
+		payload.Transitions = payload.Data.Transitions
+	}
 	if len(payload.Transitions) != 1 {
 		t.Fatalf("expected one transition, got %+v", payload)
 	}
@@ -226,14 +235,36 @@ func TestSyncJSONCarriesTransitions(t *testing.T) {
 
 	out := h.mustRun("--json", "sync", "--dry-run")
 	var payload struct {
+		Sync struct {
+			Transitions []struct {
+				Package struct {
+					Name string `json:"name"`
+				} `json:"package"`
+				Phase string `json:"phase"`
+			} `json:"transitions"`
+		} `json:"sync"`
 		Transitions []struct {
 			Package struct {
 				Name string `json:"name"`
 			} `json:"package"`
 			Phase string `json:"phase"`
 		} `json:"transitions"`
+		Data struct {
+			Transitions []struct {
+				Package struct {
+					Name string `json:"name"`
+				} `json:"package"`
+				Phase string `json:"phase"`
+			} `json:"transitions"`
+		} `json:"data"`
 	}
 	h.decode(out, &payload)
+	if len(payload.Transitions) == 0 {
+		payload.Transitions = payload.Sync.Transitions
+	}
+	if len(payload.Transitions) == 0 {
+		payload.Transitions = payload.Data.Transitions
+	}
 	if len(payload.Transitions) != 1 {
 		t.Fatalf("sync JSON should carry the transition, got %+v", payload)
 	}

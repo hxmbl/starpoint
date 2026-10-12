@@ -6,6 +6,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,14 +15,18 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/starpoint/starpoint/internal/config"
 	"github.com/starpoint/starpoint/internal/engine"
+	"github.com/starpoint/starpoint/internal/history"
 	"github.com/starpoint/starpoint/internal/locator"
+	"github.com/starpoint/starpoint/internal/lock"
 	"github.com/starpoint/starpoint/internal/model"
 	"github.com/starpoint/starpoint/internal/project"
 	"github.com/starpoint/starpoint/internal/provider"
 	"github.com/starpoint/starpoint/internal/providers"
+	"github.com/starpoint/starpoint/internal/recovery"
 	"github.com/starpoint/starpoint/internal/report"
 	"github.com/starpoint/starpoint/internal/resolve"
 	"github.com/starpoint/starpoint/internal/tracking"
@@ -84,6 +89,12 @@ func (e *Env) newEngine() *engine.Engine {
 	}
 	eng := engine.New(e.registry(), e.loc())
 	// Tracker will be set by tests if needed
+	if err := eng.HistoryError(); err != nil {
+		// Reporting this matters: without history, `transition --reverse` cannot
+		// see what happened and no transition is recorded for later reversal.
+		fmt.Fprintf(e.Stderr,
+			"warning: transition history is unavailable (%v); transitions will not be recorded\n", err)
+	}
 	return eng
 }
 
@@ -92,6 +103,42 @@ func (e *Env) globalPath() (string, error) {
 		return e.GlobalConfig, nil
 	}
 	return config.DefaultGlobalPath()
+}
+
+func (e *Env) acquireMutationLock(path, operation string, allowUnsafeRecovery ...bool) (func(), error) {
+	m, err := lock.New(filepath.Join(filepath.Dir(path), ".starpoint", "locks"))
+	if err != nil {
+		return nil, err
+	}
+	l, err := m.AcquirePath(path, operation)
+	if err != nil {
+		return nil, err
+	}
+	detector := recovery.ForConfig(path)
+	ops, err := detector.Detect()
+	if err != nil {
+		_ = l.Release()
+		return nil, fmt.Errorf("checking for interrupted operations: %w", err)
+	}
+	if unsafe := recovery.Unrecoverable(ops); len(unsafe) > 0 && (len(allowUnsafeRecovery) == 0 || !allowUnsafeRecovery[0]) {
+		_ = l.Release()
+		var details []string
+		for _, op := range unsafe {
+			details = append(details, fmt.Sprintf("%s: %s", op.Path, op.Reason))
+		}
+		return nil, fmt.Errorf("cannot safely continue until interrupted files are inspected:\n  %s", strings.Join(details, "\n  "))
+	}
+	if len(ops) > 0 {
+		// Sole copies are excluded: a file that is the only copy of a user's
+		// configuration is never cleaned up automatically.
+		if safe := recovery.Discardable(recovery.Recoverable(ops)); len(safe) > 0 {
+			if _, _, err := detector.Cleanup(safe); err != nil {
+				_ = l.Release()
+				return nil, fmt.Errorf("recovering interrupted operations: %w", err)
+			}
+		}
+	}
+	return func() { _ = l.Release() }, nil
 }
 
 // Run dispatches a command and returns its exit code.
@@ -105,11 +152,11 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	// `starpoint sync --json` and `starpoint --json sync` interchangeably and
 	// neither should be a syntax error.
 	var (
-		asJSON    bool
-		force     bool
-		providers []string
+		asJSON     bool
+		force      bool
+		providers  []string
 		contextDir string
-		record    bool
+		record     bool
 	)
 	rest, flagErr := extractGlobalFlags(args, &asJSON, &force, &providers, &contextDir, &record)
 	if contextDir != "" {
@@ -155,6 +202,8 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		err = cmdList(ctx, env, w, cmdArgs)
 	case "info", "show":
 		err = cmdInfo(ctx, env, w, cmdArgs)
+	case "explain":
+		err = cmdExplain(ctx, env, w, cmdArgs)
 	case "doctor":
 		err = cmdDoctor(ctx, env, w, cmdArgs)
 	case "install", "add", "i":
@@ -167,6 +216,10 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		err = cmdUpdate(ctx, env, w, cmdArgs, providers)
 	case "runs", "history":
 		err = cmdRuns(ctx, env, w, cmdArgs)
+	case "prune":
+		err = cmdPrune(ctx, env, w, cmdArgs, providers)
+	case "recover":
+		err = cmdRecover(env, w, cmdArgs)
 	case "help":
 		printUsage(env.Stdout)
 		return 0
@@ -183,18 +236,15 @@ func Run(ctx context.Context, env *Env, args []string) int {
 			return 2
 		}
 		if asJSON {
-			emitError(env, err)
+			enc := json.NewEncoder(env.Stderr)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(map[string]any{"schema_version": 1, "error": err.Error()})
 		} else {
 			fmt.Fprintf(env.Stderr, "error: %s\n", err)
 		}
 		return 1
 	}
 	return 0
-}
-
-func emitError(env *Env, err error) {
-	w := report.New(env.Stderr, true)
-	_ = w.Render(map[string]any{"error": err.Error()})
 }
 
 // leadingArgs returns the arguments before the first bare word, which is where
@@ -256,6 +306,8 @@ Commands:
   transition [pkg...]  Move ownership between providers, or show pending moves
   update               Update managed software, respecting explicit pins
   runs, history        Show execution history of package operations
+  prune                Remove orphaned software from Starpoint-managed providers
+  recover              Inspect and clear files left by an interrupted run
 
 A provider may be named after the package names, or with --provider:
   starpoint install ripgrep brew
@@ -286,6 +338,7 @@ Examples:
   starpoint sync --dry-run
   starpoint transition
   starpoint list --json
+  starpoint explain ruff
   starpoint runs --package ruff
   starpoint runs --directory /path/to/project
 `)
@@ -297,9 +350,17 @@ func cmdInit(ctx context.Context, env *Env, w *report.Writer, force bool) error 
 	if err != nil {
 		return err
 	}
-	existing, _, err := config.LoadFile(path, false)
+	unlock, err := env.acquireMutationLock(path, "init", force)
 	if err != nil {
 		return err
+	}
+	defer unlock()
+	existing, _, err := config.LoadFile(path, false)
+	if err != nil && !force {
+		return err
+	}
+	if err != nil {
+		existing = config.File{Path: path, Raw: config.Raw{Schema: config.SchemaVersion}}
 	}
 	if existing.Exists && !force {
 		return w.Init(path, false, false)
@@ -345,6 +406,14 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 	doc, eng, opts, proj, err := env.setup(ctx, allowed)
 	if err != nil {
 		return err
+	}
+	if !dryRun {
+		path, _ := env.globalPath()
+		unlock, lockErr := env.acquireMutationLock(path, "sync")
+		if lockErr != nil {
+			return lockErr
+		}
+		defer unlock()
 	}
 	if !doc.Global.Exists && len(doc.Global.Raw.Packages) == 0 {
 		w.Warn("no configuration found; run 'starpoint init' first")
@@ -425,7 +494,7 @@ func cmdList(ctx context.Context, env *Env, w *report.Writer, args []string) err
 	} else if filter != "" {
 		states = filterProvider(states, filter)
 	}
-	return w.List(states)
+	return w.List(states, env.loc().OnPath())
 }
 
 func filterManaged(states []model.State) []model.State {
@@ -561,9 +630,28 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 	eng := engine.New(reg, env.loc())
 
 	rep := report.DoctorReport{
-		Starpoint: report.StarpointInfo{Version: Version},
-		Providers: []report.ProviderHealth{},
-		Healthy:   true,
+		Starpoint:     report.StarpointInfo{Version: Version},
+		Providers:     []report.ProviderHealth{},
+		PATHInventory: env.loc().OnPath(),
+		Healthy:       true,
+	}
+	rep.Config = report.DocumentInfo(doc, globalPath, isWritable(globalPath))
+	for _, file := range doc.Projects {
+		rep.Config.Files = append(rep.Config.Files, file.Path)
+	}
+	if detector := recovery.ForConfig(globalPath); detector != nil {
+		ops, detectErr := detector.Detect()
+		if detectErr != nil {
+			rep.Problems = append(rep.Problems, model.Warning{Severity: model.SeverityWarn, Message: "could not inspect interrupted operations: " + detectErr.Error()})
+		} else {
+			for _, op := range ops {
+				severity, advice := model.SeverityInfo, "run a normal Starpoint operation to clean it up"
+				if !op.Recoverable {
+					severity, advice = model.SeverityWarn, "preserve this file and inspect it before manual recovery"
+				}
+				rep.Problems = append(rep.Problems, model.Warning{Severity: severity, Message: fmt.Sprintf("interrupted %s at %s: %s; %s", op.Type, op.Path, op.Reason, advice)})
+			}
+		}
 	}
 	if exe, err := os.Executable(); err == nil {
 		rep.Starpoint.Path = exe
@@ -695,6 +783,75 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 	return w.Doctor(rep)
 }
 
+// cmdExplain shows the provider-resolution reasoning chain for a package.
+func cmdExplain(ctx context.Context, env *Env, w *report.Writer, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("%w: explain needs a package name", ErrUsage)
+	}
+	name := args[0]
+
+	globalPath, err := env.globalPath()
+	if err != nil {
+		return err
+	}
+	doc, err := config.Load(config.LoadOptions{GlobalPath: globalPath, Dir: env.WorkDir, DiscoverProjects: true})
+	if err != nil {
+		return err
+	}
+
+	reg := env.registry()
+	eng := engine.New(reg, env.loc())
+
+	// Check if the package is in the configuration
+	pkg, inConfig := doc.Package(name)
+	if !inConfig {
+		pkg = model.Package{Name: name}
+	}
+
+	// Get provider health
+	available := map[string]provider.Health{}
+	for _, h := range reg.Available(ctx) {
+		available[h.Name] = h
+	}
+
+	// Get existing installation
+	var existing *model.Installation
+	if inConfig {
+		plan, _, err := eng.Plan(ctx, doc, engine.Options{Dir: env.WorkDir})
+		if err != nil {
+			return err
+		}
+		for _, st := range plan.States {
+			if st.Package.Name == name && st.Current != nil {
+				existing = st.Current
+				break
+			}
+		}
+	}
+
+	// Detect project ecosystem
+	var eco provider.Kind
+	proj := project.Detect(env.WorkDir)
+	if proj.Kind != project.KindUnknown {
+		eco = projectEcosystem(proj.Kind)
+	}
+
+	// Build resolver input
+	resolver := resolve.New(reg)
+	in := resolve.Input{
+		Package:   pkg,
+		Existing:  existing,
+		Available: available,
+		Allowed:   env.restrict,
+		Ecosystem: eco,
+		Locator:   env.loc(),
+	}
+
+	// Get explanation
+	expl := resolver.Explain(in)
+	return w.Explain(expl)
+}
+
 // looksLikeVersion reports whether a name is a bare version number such as
 // "1.50.0". No package manager has a package called that, and sending one to a
 // package manager produces a confusing failure instead of an obvious one.
@@ -810,6 +967,14 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 	doc, eng, opts, proj, err := env.setup(ctx, allowed)
 	if err != nil {
 		return err
+	}
+	if !dryRun {
+		path, _ := env.globalPath()
+		unlock, lockErr := env.acquireMutationLock(path, "install")
+		if lockErr != nil {
+			return lockErr
+		}
+		defer unlock()
 	}
 	opts.DryRun = dryRun
 	opts.NoConfirm = noConfirm || doc.Settings().NoConfirm
@@ -1102,6 +1267,14 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	if err != nil {
 		return err
 	}
+	if !dryRun {
+		path, _ := env.globalPath()
+		unlock, lockErr := env.acquireMutationLock(path, "remove")
+		if lockErr != nil {
+			return lockErr
+		}
+		defer unlock()
+	}
 	opts.DryRun = dryRun
 	opts.NoConfirm = noConfirm || doc.Settings().NoConfirm
 	if named != "" {
@@ -1167,6 +1340,7 @@ func cmdTransition(ctx context.Context, env *Env, w *report.Writer, args []strin
 		dryRun    bool
 		noConfirm bool
 		all       bool
+		reverse   bool
 	)
 	var names []string
 	for i := 0; i < len(args); i++ {
@@ -1177,6 +1351,8 @@ func cmdTransition(ctx context.Context, env *Env, w *report.Writer, args []strin
 			noConfirm = true
 		case "--all", "-a":
 			all = true
+		case "--reverse", "-r":
+			reverse = true
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				return fmt.Errorf("%w: unknown option %q for transition", ErrUsage, args[i])
@@ -1189,8 +1365,21 @@ func cmdTransition(ctx context.Context, env *Env, w *report.Writer, args []strin
 	if err != nil {
 		return err
 	}
+	if !dryRun && len(names) > 0 {
+		path, _ := env.globalPath()
+		unlock, lockErr := env.acquireMutationLock(path, "transition")
+		if lockErr != nil {
+			return lockErr
+		}
+		defer unlock()
+	}
 	opts.DryRun = dryRun
 	opts.NoConfirm = noConfirm
+
+	// Handle --reverse flag
+	if reverse {
+		return cmdTransitionReverse(ctx, env, w, eng, doc, opts, names, dryRun, noConfirm)
+	}
 
 	plan, _, err := eng.Plan(ctx, doc, opts)
 	if err != nil {
@@ -1341,6 +1530,14 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	if err != nil {
 		return err
 	}
+	if !dryRun {
+		path, _ := env.globalPath()
+		unlock, lockErr := env.acquireMutationLock(path, "update")
+		if lockErr != nil {
+			return lockErr
+		}
+		defer unlock()
+	}
 	opts.DryRun = dryRun
 	opts.NoConfirm = noConfirm || doc.Settings().NoConfirm
 
@@ -1479,9 +1676,20 @@ func (e *Env) setup(ctx context.Context, allowed []string) (*config.Document, *e
 	if err != nil {
 		return nil, nil, engine.Options{}, nil, err
 	}
+	if detector := recovery.ForConfig(path); detector != nil {
+		ops, detectErr := detector.Detect()
+		if detectErr != nil {
+			e.warn("could not inspect interrupted operations: " + detectErr.Error())
+		} else {
+			for _, op := range ops {
+				e.warn(fmt.Sprintf("interrupted %s at %s: %s", op.Type, op.Path, op.Reason))
+			}
+		}
+	}
 	opts := engine.Options{
-		Allowed: append(append([]string{}, e.restrict...), allowed...),
-		Dir:     e.WorkDir,
+		Allowed:    append(append([]string{}, e.restrict...), allowed...),
+		Dir:        e.WorkDir,
+		ConfigPath: path,
 	}
 	proj := project.Detect(e.WorkDir)
 	opts.Ecosystem = projectEcosystem(proj.Kind)
@@ -1568,6 +1776,435 @@ func cmdRuns(ctx context.Context, env *Env, w *report.Writer, args []string) err
 			rec.PackageName,
 			shortDir,
 			rec.Timestamp.Format("2006-01-02 15:04:05"))
+	}
+	return nil
+}
+
+// cmdPrune removes orphaned software from Starpoint-managed providers.
+func cmdPrune(ctx context.Context, env *Env, w *report.Writer, args []string, allowed []string) error {
+	var (
+		dryRun    bool
+		noConfirm bool
+	)
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--dry-run", "-n":
+			dryRun = true
+		case "--no-confirm", "-y", "--yes":
+			noConfirm = true
+		default:
+			return fmt.Errorf("%w: unknown option %q for prune", ErrUsage, args[i])
+		}
+	}
+
+	doc, eng, opts, _, err := env.setup(ctx, allowed)
+	if err != nil {
+		return err
+	}
+	opts.DryRun = dryRun
+	opts.NoConfirm = noConfirm || doc.Settings().NoConfirm
+	if !dryRun {
+		path, _ := env.globalPath()
+		unlock, lockErr := env.acquireMutationLock(path, "prune")
+		if lockErr != nil {
+			return lockErr
+		}
+		defer unlock()
+	}
+	previewOpts := opts
+	previewOpts.DryRun = true
+	preview, err := eng.Prune(ctx, doc, previewOpts)
+	if err != nil {
+		return err
+	}
+	if !dryRun && len(preview.Applied) > 0 && !opts.NoConfirm {
+		if env.Confirm == nil {
+			return errors.New("prune requires confirmation; use --no-confirm to proceed")
+		}
+		ok, err := env.Confirm(fmt.Sprintf("Remove %d orphaned user-scoped package(s)?", len(preview.Applied)))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			fmt.Fprintln(env.Stdout, "Nothing was changed.")
+			return nil
+		}
+	}
+	res := preview
+	if !dryRun {
+		res, err = eng.Prune(ctx, doc, opts)
+		if err != nil {
+			return err
+		}
+	}
+
+	if w.JSON() {
+		return w.Render(map[string]any{
+			"operation": "prune",
+			"dry_run":   res.DryRun,
+			"warnings":  res.Warnings,
+		})
+	}
+
+	// Human-readable output
+	if len(res.Warnings) > 0 {
+		for _, warn := range res.Warnings {
+			fmt.Fprintf(env.Stdout, "  %s\n", warn.Message)
+		}
+	}
+	if len(res.Applied) == 0 && len(res.Warnings) == 0 {
+		fmt.Fprintln(env.Stdout, "No orphaned software found.")
+	}
+	return nil
+}
+
+// cmdRecover inspects and clears files left behind by an interrupted run.
+//
+// Every mutating command refuses to start while an interrupted config write is
+// unresolved, because it cannot tell whether the write it is about to make would
+// be layered on top of something the user has not seen. That refusal is
+// deliberate, but it is only safe if there is a way out. This command is that
+// way out: it reports exactly what was left behind and, on request, removes it.
+//
+// It is read-only unless --discard is given, and it takes the mutation lock
+// directly rather than through acquireMutationLock, since the whole point is to
+// resolve the state that makes acquireMutationLock refuse.
+func cmdRecover(env *Env, w *report.Writer, args []string) error {
+	var discard, noConfirm bool
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--discard", "--clean":
+			discard = true
+		case "--no-confirm", "-y", "--yes":
+			noConfirm = true
+		default:
+			return fmt.Errorf("%w: unknown option %q for recover", ErrUsage, args[i])
+		}
+	}
+
+	path, err := env.globalPath()
+	if err != nil {
+		return err
+	}
+	detector := recovery.ForConfig(path)
+	ops, err := detector.Detect()
+	if err != nil {
+		return fmt.Errorf("checking for interrupted operations: %w", err)
+	}
+
+	if len(ops) == 0 {
+		if w.JSON() {
+			return w.Render(map[string]any{"operation": "recover", "interrupted": []any{}})
+		}
+		fmt.Fprintln(env.Stdout, "No interrupted operations found.")
+		return nil
+	}
+
+	// A temporary file that is the only copy of a configuration is never
+	// discarded. It is not an aborted write to roll back; it is the user's
+	// entire declared state, waiting for the rename that never happened.
+	soleCopies := recovery.SoleCopies(ops)
+	discardable := recovery.Discardable(ops)
+
+	if !discard {
+		if w.JSON() {
+			return w.Render(map[string]any{
+				"operation":   "recover",
+				"interrupted": ops,
+				"sole_copies": soleCopies,
+			})
+		}
+		fmt.Fprintln(env.Stdout, "Interrupted operations found:")
+		for _, op := range ops {
+			fmt.Fprintf(env.Stdout, "  %s\n    %s\n", op.Path, op.Reason)
+		}
+		reportSoleCopies(env, soleCopies)
+		if len(discardable) > 0 {
+			fmt.Fprintf(env.Stdout, "\n%s\n",
+				"Starpoint will not modify configuration while these are present.\n"+
+					"The configuration itself is intact: it is only replaced by an\n"+
+					"atomic rename, so it was never left half-written. Run\n"+
+					"'starpoint recover --discard' to remove the leftover files.")
+		}
+		return nil
+	}
+
+	if len(discardable) == 0 {
+		// Everything found is irreplaceable. Reporting success here would be a lie.
+		if w.JSON() {
+			return w.Render(map[string]any{
+				"operation":   "recover",
+				"cleaned":     []recovery.Operation{},
+				"sole_copies": soleCopies,
+				"remaining":   soleCopies,
+			})
+		}
+		fmt.Fprintln(env.Stdout, "Nothing was discarded.")
+		reportSoleCopies(env, soleCopies)
+		return nil
+	}
+
+	if !noConfirm {
+		// Deleting without the ability to ask is exactly what the confirmation
+		// rule exists to prevent: a non-interactive stream must say it is running
+		// unattended rather than quietly proceed.
+		if env.Confirm == nil {
+			return errors.New("recover --discard requires confirmation; use --no-confirm to proceed")
+		}
+		ok, err := env.Confirm(fmt.Sprintf("Discard %d leftover file(s)?\n%s",
+			len(discardable), describePaths(discardable)))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			fmt.Fprintln(env.Stdout, "Nothing was changed.")
+			return nil
+		}
+	}
+
+	// Take the lock directly. acquireMutationLock would reject these very files.
+	m, err := lock.New(filepath.Join(filepath.Dir(path), ".starpoint", "locks"))
+	if err != nil {
+		return err
+	}
+	l, err := m.AcquirePath(path, "recover")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = l.Release() }()
+
+	// Cleanup refuses anything it cannot prove safe, which is the right default
+	// but the wrong answer for files whose real config is present: --discard is
+	// the user making that judgement, in the command they were pointed at for
+	// exactly this purpose. Sole copies are excluded above and never reach here.
+	authorized := make([]recovery.Operation, len(discardable))
+	copy(authorized, discardable)
+	for i := range authorized {
+		authorized[i].Recoverable = true
+	}
+	cleaned, failed, cleanErr := detector.Cleanup(authorized)
+
+	if w.JSON() {
+		out := map[string]any{
+			"operation":   "recover",
+			"cleaned":     cleaned,
+			"remaining":   failed,
+			"sole_copies": soleCopies,
+		}
+		if err := w.Render(out); err != nil {
+			return err
+		}
+		// A partial cleanup is a failure even in JSON mode: the caller asked for
+		// files to be gone and some are still there.
+		return cleanErr
+	}
+
+	if len(cleaned) > 0 {
+		fmt.Fprintf(env.Stdout, "Removed %d leftover file(s).\n", len(cleaned))
+	}
+	// Report the reason Cleanup actually recorded, which is why the delete
+	// failed, rather than the reason Detect gave for leaving the file there.
+	if len(failed) > 0 {
+		fmt.Fprintln(env.Stdout, "Could not remove:")
+		for _, op := range failed {
+			fmt.Fprintf(env.Stdout, "  %s: %s\n", op.Path, op.Reason)
+		}
+	}
+	reportSoleCopies(env, soleCopies)
+	return cleanErr
+}
+
+// reportSoleCopies explains files that must be restored rather than deleted.
+func reportSoleCopies(env *Env, ops []recovery.Operation) {
+	if len(ops) == 0 {
+		return
+	}
+	fmt.Fprintln(env.Stdout, "\nThese files are the only copy of a configuration and will not be discarded:")
+	for _, op := range ops {
+		fmt.Fprintf(env.Stdout, "  %s\n", op.Path)
+		if op.Restorable() {
+			fmt.Fprintf(env.Stdout, "    restore it with: mv %q %q\n", op.Path, op.Target())
+		} else {
+			fmt.Fprintf(env.Stdout, "    move it to %q by hand\n", op.Target())
+		}
+	}
+}
+
+// describePaths renders operations as an indented list for a confirmation prompt.
+func describePaths(ops []recovery.Operation) string {
+	var b strings.Builder
+	for _, op := range ops {
+		fmt.Fprintf(&b, "  %s\n", op.Path)
+	}
+	return b.String()
+}
+
+// cmdTransitionReverse reverses a previous transition for the given packages.
+func cmdTransitionReverse(ctx context.Context, env *Env, w *report.Writer, eng *engine.Engine, doc *config.Document, opts engine.Options, names []string, dryRun, noConfirm bool) error {
+	if len(names) == 0 {
+		return fmt.Errorf("%w: --reverse requires package names", ErrUsage)
+	}
+
+	// Get transition history
+	hist, err := history.New("")
+	if err != nil {
+		return fmt.Errorf("loading transition history: %w", err)
+	}
+
+	var selected []model.State
+	var toReverse []model.Transition
+
+	for _, name := range names {
+		// Find the last transition for this package
+		last := hist.LastTransition(name)
+		if last == nil {
+			fmt.Fprintf(env.Stdout, "No transition history found for %s\n", name)
+			continue
+		}
+
+		if !last.Transition.Reversible {
+			fmt.Fprintf(env.Stdout, "Last transition for %s is not reversible\n", name)
+			continue
+		}
+		if last.Transition.Phase != model.TransitionCompleted {
+			return fmt.Errorf("cannot reverse %s: the recorded transition did not complete", name)
+		}
+
+		pkg := last.Transition.Package
+		pkg.Provider = last.Transition.From.Name
+		current, _, lookupErr := eng.Preview(ctx, doc, pkg, opts)
+		if lookupErr != nil {
+			return fmt.Errorf("checking current ownership of %s: %w", name, lookupErr)
+		}
+		if current.Provider != last.Transition.To.Name {
+			return fmt.Errorf("cannot reverse %s: history expects %s to own it, current resolution is %s", name, last.Transition.To.Name, current.Provider)
+		}
+		from, fromOK := eng.Registry().Get(last.Transition.From.Name)
+		if !fromOK || !from.Capabilities().Install {
+			return fmt.Errorf("cannot reverse %s: previous provider %s cannot install", name, last.Transition.From.Name)
+		}
+		if !last.Transition.From.Available {
+			return fmt.Errorf("cannot reverse %s: previous provider %s is unavailable", name, last.Transition.From.Name)
+		}
+		if last.Transition.Installed == nil {
+			return fmt.Errorf("cannot reverse %s safely: transition history has no verified installation details", name)
+		}
+
+		state := model.State{
+			Package: pkg,
+			Res: model.Resolution{
+				Provider: last.Transition.From.Name,
+				Reason:   "reversing previous transition",
+			},
+			Status: model.StatusProviderDiffers,
+		}
+
+		// Mark the current provider as different
+		installed, lookupErr := from.Installed(ctx, pkg)
+		if lookupErr != nil {
+			return fmt.Errorf("checking previous installation of %s: %w", name, lookupErr)
+		}
+		state.Current = last.Transition.Installed
+		if installed == nil {
+			return fmt.Errorf("cannot reverse %s safely: %s no longer reports an installed copy", name, last.Transition.From.Name)
+		}
+		if !last.Transition.Verification.OK() {
+			return fmt.Errorf("cannot reverse %s safely: the previous installation was not verified in transition history", name)
+		}
+		state.Elsewhere = []model.Installation{*installed}
+
+		selected = append(selected, state)
+		toReverse = append(toReverse, last.Transition)
+	}
+
+	if len(selected) == 0 {
+		return fmt.Errorf("no reversible transitions found for %s", strings.Join(names, ", "))
+	}
+
+	// Show what will be reversed
+	fmt.Fprintln(env.Stdout, "The following transitions will be reversed:")
+	for _, t := range toReverse {
+		fmt.Fprintf(env.Stdout, "  %s: %s -> %s (reversing transition from %s)\n",
+			t.Package.Name, t.To.Name, t.From.Name,
+			time.Unix(t.Timestamp, 0).Format("2006-01-02 15:04:05"))
+		if t.Note != "" {
+			fmt.Fprintf(env.Stdout, "      %s\n", t.Note)
+		}
+	}
+
+	if !dryRun && !noConfirm {
+		if env.Confirm == nil {
+			return errors.New("transition reversal requires confirmation; use --no-confirm to proceed")
+		}
+		ok, err := env.Confirm("Proceed?")
+		if err != nil {
+			return err
+		}
+		if !ok {
+			fmt.Fprintln(env.Stdout, "Nothing was changed.")
+			return nil
+		}
+	}
+
+	// Perform the reverse transitions
+	var applied []model.Transition
+	var failures []string
+	for _, st := range selected {
+		t, err := eng.ExecuteTransition(ctx, st, opts)
+		applied = append(applied, t)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %s", t.Package.Name, err))
+		}
+	}
+
+	if w.JSON() {
+		if err := w.Render(map[string]any{
+			"operation":   "transition-reverse",
+			"dry_run":     dryRun,
+			"transitions": applied,
+		}); err != nil {
+			return err
+		}
+	}
+	if !w.JSON() {
+		w.Transitions(applied, dryRun)
+	}
+
+	if len(failures) > 0 {
+		return fmt.Errorf("reverse transitions did not complete:\n  %s", strings.Join(failures, "\n  "))
+	}
+	for _, t := range applied {
+		if t.Phase != model.TransitionCompleted {
+			continue
+		}
+		pkg := t.Package
+		pkg.Provider = t.To.Name
+		if f, found := doc.Find(pkg.Name); found {
+			var destination *config.File
+			if f.Project {
+				for i := range doc.Projects {
+					if doc.Projects[i].Path == f.Path {
+						destination = &doc.Projects[i]
+						break
+					}
+				}
+			} else {
+				destination = &doc.Global
+			}
+			if destination == nil {
+				return fmt.Errorf("reverse of %s completed but config file is unavailable", pkg.Name)
+			}
+			for i := range destination.Raw.Packages {
+				if destination.Raw.Packages[i].Name == pkg.Name {
+					destination.Raw.Packages[i].Provider = t.To.Name
+				}
+			}
+		} else {
+			doc.Global.Raw.Packages = append(doc.Global.Raw.Packages, pkg)
+		}
+		if err := doc.Save(); err != nil {
+			return fmt.Errorf("reverse of %s completed but could not persist desired provider: %w", pkg.Name, err)
+		}
 	}
 	return nil
 }

@@ -307,6 +307,20 @@ func (f *FakeProvider) Update(_ context.Context, pkg model.Package) (*model.Inst
 	return &copied, nil
 }
 
+// Verify checks that an installed executable is functional.
+func (f *FakeProvider) Verify(_ context.Context, pkg model.Package) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.Items[pkg.Name]; !ok {
+		return &provider.Error{
+			Provider: f.ProviderName,
+			Kind:     provider.ErrNotFound,
+			Message:  "package not installed",
+		}
+	}
+	return nil
+}
+
 // installPath returns where this fake installs a package.
 func (f *FakeProvider) installPath(name string) string {
 	if f.InstallPath != "" {

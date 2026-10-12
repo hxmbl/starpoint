@@ -41,11 +41,11 @@ func (p *Provider) Kind() provider.Kind { return provider.KindNode }
 
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
-		Discover:           true,
-		Install:            true,
-		Remove:             true,
-		Update:             true,
-		PinVersion:         true, // name@version
+		Discover:            true,
+		Install:             true,
+		Remove:              true,
+		Update:              true,
+		PinVersion:          true, // name@version
 		DefaultScope:        model.ScopeUser,
 		CanInstallInContext: true,
 	}
@@ -262,4 +262,18 @@ func (p *Provider) InstallWithContext(ctx context.Context, pkg model.Package, co
 		Scope:    model.ScopeProject,
 		Path:     filepath.Join(contextDir, "node_modules", ".bin", pkg.Name),
 	}, nil
+}
+
+// Verify checks that an installed npm package's executable is functional.
+// For npm, this attempts to run the package's executable with --version.
+func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
+	// Try to run the executable with --version to verify it's functional.
+	res, err := p.runner.Run(ctx, pkg.Name, "--version")
+	if err != nil {
+		return shell.Failure(p.Name(), "verify", "could not run executable for verification", err)
+	}
+	if res.Failed() {
+		return shell.Failure(p.Name(), "verify", "executable failed verification", nil)
+	}
+	return nil
 }

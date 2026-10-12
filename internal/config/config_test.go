@@ -141,7 +141,7 @@ func TestWriteAndReloadRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSavePersistsAndProjectConfigIsRemovedWhenEmptied(t *testing.T) {
+func TestSavePreservesEmptyProjectConfigWhenEmptied(t *testing.T) {
 	dir := t.TempDir()
 	global := filepath.Join(dir, "global.toml")
 	project := filepath.Join(dir, "project.toml")
@@ -164,8 +164,8 @@ func TestSavePersistsAndProjectConfigIsRemovedWhenEmptied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload project: %v", err)
 	}
-	if f.Exists {
-		t.Fatal("an emptied project config should be deleted, not left as an empty file")
+	if !f.Exists {
+		t.Fatal("an emptied project config should remain so its comments and intent are preserved")
 	}
 }
 

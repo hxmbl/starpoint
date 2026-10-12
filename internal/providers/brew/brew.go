@@ -34,6 +34,7 @@ type Provider struct {
 }
 
 var _ provider.Provider = (*Provider)(nil)
+var _ provider.ExecutableMappingProvider = (*Provider)(nil)
 
 // New builds a Homebrew provider.
 func New(runner exec.Runner) *Provider { return &Provider{runner: runner} }
@@ -274,4 +275,58 @@ func classify(name, op string, res exec.Result) error {
 		}
 		return shell.Failure(name, op, msg, nil)
 	}
+}
+
+// ExecutableToPackage returns a mapping from executable names to package names.
+// For Homebrew, most formulae install an executable with the same name, but there
+// are exceptions. This provides a basic mapping for common packages.
+func (p *Provider) ExecutableToPackage() map[string]string {
+	// This is a minimal mapping for common packages. In production, this could be
+	// expanded by querying Homebrew's metadata or maintaining a larger database.
+	return map[string]string{
+		"git":         "git",
+		"python3":     "python",
+		"python":      "python",
+		"node":        "node",
+		"npm":         "node",
+		"rustc":       "rust",
+		"cargo":       "rust",
+		"go":          "go",
+		"ruby":        "ruby",
+		"gem":         "ruby",
+		"java":        "openjdk",
+		"javac":       "openjdk",
+		"ripgrep":     "ripgrep",
+		"fd":          "fd",
+		"bat":         "bat",
+		"exa":         "exa",
+		"eza":         "eza",
+		"jq":          "jq",
+		"yq":          "yq",
+		"fzf":         "fzf",
+		"tmux":        "tmux",
+		"vim":         "vim",
+		"neovim":      "neovim",
+		"nvim":        "neovim",
+		"htop":        "htop",
+		"btop":        "btop",
+		"wget":        "wget",
+		"curl":        "curl",
+		"ffmpeg":      "ffmpeg",
+		"imagemagick": "imagemagick",
+	}
+}
+
+// Verify checks that an installed executable is functional by running it.
+// For Homebrew, this attempts to run the package's executable with a --version flag.
+func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
+	// Try to run the executable with --version to verify it's functional.
+	res, err := p.runner.Run(ctx, pkg.Name, "--version")
+	if err != nil {
+		return shell.Failure(p.Name(), "verify", "could not run executable for verification", err)
+	}
+	if res.Failed() {
+		return shell.Failure(p.Name(), "verify", "executable failed verification", nil)
+	}
+	return nil
 }

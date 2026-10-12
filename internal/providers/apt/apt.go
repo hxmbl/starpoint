@@ -28,6 +28,8 @@ type Provider struct {
 }
 
 var _ provider.Provider = (*Provider)(nil)
+var _ provider.ExecutableMappingProvider = (*Provider)(nil)
+var _ provider.PackageExecutableProvider = (*Provider)(nil)
 
 // New builds an APT provider.
 func New(runner exec.Runner) *Provider { return &Provider{runner: runner} }
@@ -195,4 +197,72 @@ func classify(op string, res exec.Result) error {
 		}
 		return shell.Failure(Name, op, msg, nil)
 	}
+}
+
+// ExecutableToPackage returns a mapping from executable names to package names.
+// For APT, most packages install an executable with the same name, but there are
+// exceptions (e.g., `python3` is in the `python3` package). This provides a basic
+// mapping for common packages.
+func (p *Provider) ExecutableToPackage() map[string]string {
+	return map[string]string{
+		"git":            "git",
+		"python3":        "python3",
+		"python":         "python3",
+		"node":           "nodejs",
+		"npm":            "npm",
+		"rustc":          "rustc",
+		"cargo":          "cargo",
+		"go":             "golang-go",
+		"ruby":           "ruby",
+		"gem":            "rubygems",
+		"java":           "default-jdk",
+		"javac":          "default-jdk",
+		"ripgrep":        "ripgrep",
+		"fd":             "fd-find",
+		"bat":            "bat",
+		"exa":            "exa",
+		"eza":            "eza",
+		"jq":             "jq",
+		"yq":             "yq",
+		"fzf":            "fzf",
+		"tmux":           "tmux",
+		"vim":            "vim",
+		"neovim":         "neovim",
+		"nvim":           "neovim",
+		"htop":           "htop",
+		"btop":           "btop",
+		"wget":           "wget",
+		"curl":           "curl",
+		"ffmpeg":         "ffmpeg",
+		"imagemagick":    "imagemagick",
+		"docker":         "docker.io",
+		"docker-compose": "docker-compose",
+	}
+}
+
+// Verify checks that an installed executable is functional by running it.
+// For APT, this attempts to run the package's executable with a --version flag.
+func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
+	// Try to run the executable with --version to verify it's functional.
+	// This is a basic check; a more sophisticated implementation would
+	// use provider-specific metadata to determine the correct verification command.
+	exe := pkg.Name
+	if mapped, ok := p.ExecutableForPackage(pkg.Name); ok {
+		exe = mapped
+	}
+	if exe == "" || strings.ContainsAny(exe, "/\\") {
+		return shell.UnsupportedVerify(p.Name())
+	}
+	res, err := p.runner.Run(ctx, exe, "--version")
+	if err != nil {
+		return shell.Failure(p.Name(), "verify", "could not run executable for verification", err)
+	}
+	if res.Failed() {
+		return shell.Failure(p.Name(), "verify", "executable failed verification", nil)
+	}
+	return nil
+}
+
+func (p *Provider) ExecutableForPackage(packageName string) (string, bool) {
+	return shell.ExecutableForPackage(p.ExecutableToPackage(), packageName)
 }

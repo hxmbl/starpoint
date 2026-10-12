@@ -77,6 +77,9 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 			continue
 		}
 		res.Applied = append(res.Applied, annotate(action, installPath(inst)))
+		if warning := verifyInstalled(ctx, p, action.State.Package); warning != nil {
+			res.Warnings = append(res.Warnings, *warning)
+		}
 		// Record execution in tracking system
 		if e.tracker != nil {
 			_ = e.tracker.Record(action.State.Package.Name, opts.Dir, time.Now())
@@ -139,6 +142,9 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 			continue
 		}
 		res.Applied = append(res.Applied, annotate(action, installPath(inst)))
+		if warning := verifyInstalled(ctx, p, action.State.Package); warning != nil {
+			res.Warnings = append(res.Warnings, *warning)
+		}
 		// Record execution in tracking system
 		if e.tracker != nil {
 			_ = e.tracker.Record(action.State.Package.Name, opts.Dir, time.Now())
@@ -157,6 +163,32 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 		return res, fmt.Errorf("some operations did not complete:\n  %s", strings.Join(failures, "\n  "))
 	}
 	return res, nil
+}
+
+// verifyInstalled runs an optional provider executable check after a successful
+// install or update. Verification failures are warnings because the provider's
+// own inventory and install operation already succeeded; unsupported package
+// identifiers are simply left to inventory and PATH checks.
+func verifyInstalled(ctx context.Context, p provider.Provider, pkg model.Package) *model.Warning {
+	if p == nil || !p.Capabilities().Verify {
+		return nil
+	}
+	verifier, ok := p.(provider.Verifier)
+	if !ok {
+		return nil
+	}
+	if err := verifier.Verify(ctx, pkg); err != nil {
+		if pe, ok := provider.AsProviderError(err); ok && pe.Kind == provider.ErrUnsupported {
+			return nil
+		}
+		return &model.Warning{
+			Severity: model.SeverityWarn,
+			Package:  pkg.Name,
+			Provider: p.Name(),
+			Message:  "provider installed the package but executable verification failed: " + err.Error(),
+		}
+	}
+	return nil
 }
 
 // applyEdit mutates a document to match a planned configuration edit.

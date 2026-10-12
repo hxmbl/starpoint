@@ -14,9 +14,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/starpoint/starpoint/internal/model"
+	"github.com/starpoint/starpoint/internal/provider"
 	"github.com/starpoint/starpoint/internal/providers/brew"
 	"github.com/starpoint/starpoint/internal/providers/cargo"
 	"github.com/starpoint/starpoint/internal/providers/golang"
@@ -32,6 +34,63 @@ type Locator struct {
 	LookPath func(string) (string, error)
 	// Stat is overridable for the same reason.
 	Stat func(string) (os.FileInfo, error)
+	// SearchPath overrides PATH for executable inventory. Empty means PATH from
+	// the current process.
+	SearchPath string
+	// PackageMappings optionally provides provider package to executable maps
+	// used to attribute system binaries to their package manager.
+	PackageMappings []provider.ExecutableMappingProvider
+}
+
+// OnPath returns every executable visible in PATH, preserving duplicate names
+// from different directories. Symlinks are attributed using both their visible
+// path and resolved target; Path always remains the entry users execute.
+func (l *Locator) OnPath() []Found {
+	path := l.SearchPath
+	if path == "" {
+		path = os.Getenv("PATH")
+	}
+	var out []Found
+	seenNames := map[string]bool{}
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" {
+			dir = "."
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			full := filepath.Join(dir, entry.Name())
+			info, err := os.Stat(full) // follow symlinks; dangling links are not executable
+			if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+				continue
+			}
+			duplicate := seenNames[entry.Name()]
+			seenNames[entry.Name()] = true
+			scope, owner, ok := l.AttributeExecutable(full)
+			target, targetErr := filepath.EvalSymlinks(full)
+			linkInfo, _ := os.Lstat(full)
+			found := Found{Path: full, Attributed: ok, Duplicate: duplicate, Symlink: linkInfo != nil && linkInfo.Mode()&os.ModeSymlink != 0}
+			if targetErr == nil && target != full {
+				found.Target = target
+			}
+			if ok {
+				found.Installation = &model.Installation{Name: entry.Name(), Path: full, Provider: owner, Scope: scope}
+			} else {
+				found.Reason = "ownership unknown; no known provider matches " + full
+			}
+			out = append(out, found)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		left, right := filepath.Base(out[i].Path), filepath.Base(out[j].Path)
+		if left != right {
+			return left < right
+		}
+		return out[i].Path < out[j].Path
+	})
+	return out
 }
 
 // New builds a Locator backed by the real filesystem.
@@ -56,13 +115,18 @@ func (l *Locator) stat(path string) (os.FileInfo, error) {
 // Found is the result of locating a single name.
 type Found struct {
 	// Installation is what was located, or nil.
-	Installation *model.Installation
+	Installation *model.Installation `json:"installation,omitempty"`
 	// Path is the raw resolved path even when no owner could be attributed.
-	Path string
+	Path string `json:"path,omitempty"`
 	// Attributed is true when the path could be assigned to a known owner.
-	Attributed bool
+	Attributed bool `json:"attributed"`
 	// Reason explains an unattributed result.
-	Reason string
+	Reason string `json:"reason,omitempty"`
+	// Duplicate is true when an earlier PATH entry has the same name.
+	Duplicate bool `json:"duplicate,omitempty"`
+	// Symlink records whether Path is a symlink; Target is its resolved path.
+	Symlink bool   `json:"symlink,omitempty"`
+	Target  string `json:"target,omitempty"`
 }
 
 // Locate finds an executable by name on PATH and attributes it to an owner.
@@ -79,7 +143,12 @@ func (l *Locator) Locate(name string) Found {
 	if err != nil {
 		return Found{Reason: "not on PATH"}
 	}
-	scope, owner, ok := l.Attribute(path)
+	scope, owner, ok := l.AttributeExecutable(path)
+	if ok && owner == system.Name {
+		if packageOwner, packageName, found := l.packageOwner(name); found {
+			return Found{Path: path, Installation: &model.Installation{Name: packageName, Path: path, Provider: packageOwner, Scope: scope}, Attributed: true}
+		}
+	}
 	if !ok {
 		return Found{Path: path, Reason: "no known owner for " + path}
 	}
@@ -93,6 +162,33 @@ func (l *Locator) Locate(name string) Found {
 		},
 		Attributed: true,
 	}
+}
+
+// AttributeExecutable attributes a visible executable, preferring a more
+// specific resolved symlink target over a generic directory owner such as the
+// operating system's /usr/bin.
+func (l *Locator) AttributeExecutable(path string) (model.Scope, string, bool) {
+	scope, owner, ok := l.Attribute(path)
+	target, err := filepath.EvalSymlinks(path)
+	if err == nil && target != path {
+		if targetScope, targetOwner, targetOK := l.Attribute(target); targetOK &&
+			(!ok || owner == system.Name || targetOwner != system.Name) {
+			return targetScope, targetOwner, true
+		}
+	}
+	return scope, owner, ok
+}
+
+func (l *Locator) packageOwner(executable string) (string, string, bool) {
+	for _, p := range l.PackageMappings {
+		if p == nil {
+			continue
+		}
+		if packageName, ok := p.ExecutableToPackage()[executable]; ok {
+			return p.Name(), packageName, true
+		}
+	}
+	return "", "", false
 }
 
 // prefix is an attribution rule.

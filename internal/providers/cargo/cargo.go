@@ -40,11 +40,11 @@ func (p *Provider) Kind() provider.Kind { return provider.KindRust }
 
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
-		Discover:           true,
-		Install:            true,
-		Remove:             true,
-		Update:             true, // `cargo install` over an existing crate is an upgrade.
-		PinVersion:         true, // --version x.y.z
+		Discover:            true,
+		Install:             true,
+		Remove:              true,
+		Update:              true, // `cargo install` over an existing crate is an upgrade.
+		PinVersion:          true, // --version x.y.z
 		DefaultScope:        model.ScopeUser,
 		CanInstallInContext: true,
 	}
@@ -248,4 +248,33 @@ func (p *Provider) InstallWithContext(ctx context.Context, pkg model.Package, co
 		Scope:    model.ScopeProject,
 		Path:     filepath.Join(contextDir, "target", "debug", pkg.Name),
 	}, nil
+}
+
+// Verify checks that an installed crate's executable is functional.
+// For Cargo, this attempts to run the crate's executable with --version.
+func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
+	// First, discover the executable name for this crate
+	all, err := p.Discover(ctx)
+	if err != nil {
+		return shell.Failure(p.Name(), "verify", "could not list installed crates", err)
+	}
+	var exeName string
+	for _, inst := range all {
+		if inst.Name == pkg.Name && inst.Path != "" {
+			exeName = filepath.Base(inst.Path)
+			break
+		}
+	}
+	if exeName == "" {
+		// Fall back to the package name as the executable name
+		exeName = pkg.Name
+	}
+	res, err := p.runner.Run(ctx, exeName, "--version")
+	if err != nil {
+		return shell.Failure(p.Name(), "verify", "could not run executable for verification", err)
+	}
+	if res.Failed() {
+		return shell.Failure(p.Name(), "verify", "executable failed verification", nil)
+	}
+	return nil
 }

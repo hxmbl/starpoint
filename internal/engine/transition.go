@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/starpoint/starpoint/internal/config"
 	"github.com/starpoint/starpoint/internal/model"
@@ -48,6 +49,14 @@ func (e *Engine) Verify(ctx context.Context, name string, p provider.Provider) m
 			v.Method = p.Name() + " inventory and install path"
 		}
 		return v
+	}
+	if verifier, ok := p.(provider.Verifier); ok && p.Capabilities().Verify {
+		if err := verifier.Verify(ctx, model.Package{Name: inst.Name}); err != nil {
+			if pe, ok := provider.AsProviderError(err); !ok || pe.Kind != provider.ErrUnsupported {
+				v.Note = "provider verification failed: " + err.Error()
+				return v
+			}
+		}
 	}
 
 	found := e.locator.Locate(name)
@@ -331,6 +340,14 @@ func (e *Engine) ExecuteTransition(ctx context.Context, st model.State, opts Opt
 		t.Phase = model.TransitionCompleted
 		t.Recoverable = false
 		t.Note = "ownership moved from " + t.From.Name + " to " + t.To.Name
+		t.Timestamp = time.Now().Unix()
+		t.Reversible = t.From.Name != "" && t.To.Name != ""
+		// Record in history
+		if e.history != nil {
+			if err := e.history.Record(t, opts.ConfigPath); err != nil {
+				t.Note = strings.TrimSpace(t.Note + "; transition completed but history could not be saved: " + err.Error())
+			}
+		}
 	} else if t.Phase != model.TransitionCompleted && t.Phase != model.TransitionBlocked {
 		t.Phase = model.TransitionVerified
 		t.Recoverable = true

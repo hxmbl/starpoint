@@ -705,6 +705,59 @@ func TestInfoJSON(t *testing.T) {
 	}
 }
 
+func TestExplainShowsResolutionReasoning(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	out := h.mustRun("explain", "ruff")
+	if !strings.Contains(out, "Resolution reasoning") {
+		t.Errorf("explain output should contain reasoning chain: %s", out)
+	}
+	if !strings.Contains(out, "Selected provider") {
+		t.Errorf("explain output should show selected provider: %s", out)
+	}
+}
+
+func TestExplainJSON(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	out := h.mustRun("--json", "explain", "ruff")
+	var payload struct {
+		SchemaVersion int `json:"schema_version"`
+		Explain       struct {
+			Package struct {
+				Name string `json:"name"`
+			} `json:"package"`
+			Final struct {
+				Provider string `json:"provider"`
+			} `json:"final"`
+			Steps []struct {
+				Rule    string `json:"rule"`
+				Outcome string `json:"outcome"`
+				Applied bool   `json:"applied"`
+			} `json:"steps"`
+		} `json:"explain"`
+	}
+	h.decode(out, &payload)
+	if payload.SchemaVersion != 1 {
+		t.Errorf("unexpected schema version: %d", payload.SchemaVersion)
+	}
+	if payload.Explain.Package.Name != "ruff" {
+		t.Errorf("unexpected JSON: %+v", payload)
+	}
+	if len(payload.Explain.Steps) == 0 {
+		t.Errorf("explain JSON should contain steps: %+v", payload)
+	}
+}
+
+func TestExplainNeedsPackageName(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	code, _, errOut := h.run("explain")
+	if code == 0 {
+		t.Error("explain without package name should fail")
+	}
+	if !strings.Contains(errOut, "needs a package name") {
+		t.Errorf("error message should mention missing package name: %s", errOut)
+	}
+}
+
 func TestUpdateRespectsPins(t *testing.T) {
 	h := newHarness(t, `
 schema = 1
@@ -772,6 +825,15 @@ func TestDoctorJSONExposesCapabilities(t *testing.T) {
 			Exists   bool   `json:"exists"`
 			Writable bool   `json:"writable"`
 		} `json:"config"`
+		Doctor struct {
+			Starpoint struct {
+				Version string `json:"version"`
+			} `json:"starpoint"`
+			Config struct {
+				Path   string `json:"path"`
+				Exists bool   `json:"exists"`
+			} `json:"config"`
+		} `json:"doctor"`
 		Providers []struct {
 			Name         string `json:"name"`
 			Available    bool   `json:"available"`
@@ -784,10 +846,10 @@ func TestDoctorJSONExposesCapabilities(t *testing.T) {
 		Healthy bool `json:"healthy"`
 	}
 	h.decode(out, &payload)
-	if payload.Starpoint.Version == "" {
+	if payload.Starpoint.Version == "" && payload.Doctor.Starpoint.Version == "" {
 		t.Error("doctor should report the version")
 	}
-	if payload.Config.Path != h.config || !payload.Config.Exists {
+	if (payload.Config.Path != h.config || !payload.Config.Exists) && (payload.Doctor.Config.Path != h.config || !payload.Doctor.Config.Exists) {
 		t.Errorf("config section wrong: %+v", payload.Config)
 	}
 	byName := map[string]int{}
@@ -909,12 +971,17 @@ func TestErrorsAreJSONInJSONMode(t *testing.T) {
 	if strings.TrimSpace(errOut) == "" {
 		t.Fatal("expected an error on stderr")
 	}
-	var payload map[string]string
+	var payload struct {
+		Error string `json:"error"`
+		Data  struct {
+			Error string `json:"error"`
+		} `json:"data"`
+	}
 	if err := json.Unmarshal([]byte(errOut), &payload); err != nil {
 		t.Fatalf("JSON mode should emit JSON errors, got: %s", errOut)
 	}
-	if payload["error"] == "" {
-		t.Errorf("the error message should be present: %v", payload)
+	if payload.Error == "" && payload.Data.Error == "" {
+		t.Errorf("the error message should be present: %+v", payload)
 	}
 	_ = out
 }

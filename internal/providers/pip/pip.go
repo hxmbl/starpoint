@@ -252,3 +252,20 @@ func (p *Provider) classify(op string, res exec.Result) error {
 		return shell.Failure(Name, op, msg, nil)
 	}
 }
+
+// Verify checks that an installed Python package is functional.
+// For pip, this attempts to run the package's executable with --version.
+func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
+	if _, _, err := p.locate(); err != nil {
+		return shell.Unsupported(p.Name(), "verify", "pip is not installed")
+	}
+	// Try to run the executable with --version to verify it's functional.
+	res, err := p.runner.Run(ctx, pkg.Name, "--version")
+	if err != nil {
+		return shell.Failure(p.Name(), "verify", "could not run executable for verification", err)
+	}
+	if res.Failed() {
+		return shell.Failure(p.Name(), "verify", "executable failed verification", nil)
+	}
+	return nil
+}

@@ -70,6 +70,7 @@ editing the configuration to make the problem go away.
 | `starpoint init [--force]` | Create `~/.starpoint.toml` |
 | `starpoint sync [--dry-run] [--no-confirm]` | Converge the machine onto the configuration |
 | `starpoint transition [pkg...]` | Show or perform provider transitions (alias: `move`) |
+| `starpoint transition --reverse <package>` | Reverse the most recent transition when safe |
 | `starpoint doctor` | Inspect Starpoint, config, providers, ownership, inconsistencies |
 | `starpoint list [--json]` | Show managed software, its location, scope and provider |
 | `starpoint info <package>` | Show one package's state in detail |
@@ -77,6 +78,10 @@ editing the configuration to make the problem go away.
 | `starpoint install .` | Handle the current project |
 | `starpoint remove <package>` | Uninstall and delete from config (alias: `uninstall`) |
 | `starpoint update [--self]` | Update managed software, respecting pins |
+| `starpoint explain <package>` | Explain how Starpoint resolves ownership |
+| `starpoint prune` | Preview and remove orphaned user-scoped installations |
+| `starpoint recover [--discard]` | Inspect and clear files left by an interrupted run |
+| `starpoint runs` | Show where Starpoint has been run |
 
 A provider may be named after the package names, before them, or with
 `--provider`, and a version may be written inline:
@@ -118,6 +123,8 @@ Implemented in this release:
 | `system` | global | Read-only. Attributes `/usr/bin`-style software to the OS and refuses to mutate it. |
 | `brew` | user | Formulae and casks. Cannot pin an arbitrary version, and says so. |
 | `apt` | global | dpkg inventory, `pkg=version` pins, archive channel. |
+| `dnf` | global | RPM inventory and versioned package installation. |
+| `pacman` | global | Pacman inventory and repository installation. Arch repositories serve current versions only, so it cannot honour a version pin and says so rather than building a command that cannot work. |
 | `uv` | user | Python tools and interpreters, `==` pins. |
 | `pip` | user | Python packages, installed with `--user` so pip never needs root. |
 | `rustup` | user | Rust toolchains: `rustc`, `cargo`, `rustfmt` and friends, plus the toolchains themselves. |
@@ -133,11 +140,31 @@ asks what a provider can do rather than branching on provider names, so adding
 an ecosystem does not mean touching the engine.
 
 **The compatibility target is the machine.** Every package manager installed on
-this project's development host is implemented. Two tools that are installed are
-deliberately *not* providers: Docker and Podman manage containers rather than
-software on the machine, and Bun and Deno cannot enumerate what they have
-installed — a provider that cannot answer "what do you own?" would make
-Starpoint's central promise false. Both are recorded in `docs/next-tasks.md`.
+this project's development host is implemented. Docker and Podman manage
+containers rather than software on the machine. Bun, Deno, Nix, and version
+managers remain deferred until Starpoint can report their ownership and
+placement reliably; see `docs/next-tasks.md`.
+
+### Operations and completion
+
+`doctor` reports provider health, configuration and ownership, interrupted config
+writes, plus executables found on `PATH` whose owner is unknown. `list` shows
+configured software and unaccounted executables. Provider transitions use
+observed inventory and executable resolution to resume after interruption;
+`starpoint runs` exposes transition history and `transition --reverse` attempts
+a safe reversal.
+
+State-changing commands share a per-config lock. The lock prevents two Starpoint
+processes from racing on the same source of truth.
+
+Configuration is written to a sibling temporary file, flushed, and renamed into
+place, so a crash mid-write cannot leave a half-written config: the rename is the
+only step that publishes it. If a run is interrupted between those steps, the
+leftover `.tmp` file makes Starpoint refuse to modify configuration rather than
+layer new writes on top of a change the user never saw. `starpoint recover` reports
+what was left behind and, with `--discard`, clears it. Bash, zsh, and fish completion
+definitions are in `completions/`; JSON response shapes are documented in
+[`docs/json-schema.md`](docs/json-schema.md).
 
 ### Asking every provider at once
 
@@ -263,27 +290,22 @@ make fmt       # gofmt -w
 Tests never modify the machine: providers talk to an interface, and the test
 suite substitutes a scripted command runner and in-memory providers.
 
-## Deliberately not implemented
+## Deliberately deferred
 
 - HTTP API. The internal model is already machine-readable and `--json` exposes
   it. A server can be added later without reshaping anything.
 - GUI.
-- Most of the ecosystem list. dnf, pacman, nix, winget, choco, RubyGems, Composer,
-  Maven/Gradle, NuGet, SwiftPM, CocoaPods, vcpkg, conda, Flatpak and Snap are all
-  plausible and none are stubbed out; they are simply not written yet. See
-  `docs/next-tasks.md`.
+- Additional ecosystems such as Bun, Deno, Nix, mise/asdf, winget, Chocolatey,
+  Composer, Maven/Gradle, NuGet, SwiftPM, CocoaPods, vcpkg, Conda, Flatpak and
+  Snap remain candidates. See `docs/next-tasks.md`.
 - A universal project dependency system. `starpoint install .` works from a
   narrow, documented rule set rather than pretending one command can understand
   every ecosystem.
-- Comment-preserving configuration writes. Starpoint rewrites the file when it
-  records a provider decision, and a TOML round trip cannot keep comments. This
-  is why `starpoint init` prints the documentation instead of embedding it in a
-  file that the first `install` would strip.
 
 ## Known limitations
 
-- `scope = "project"` is recorded and displayed but not yet a placement Starpoint
-  can install into. No provider advertises `ProjectInstall`.
+- `scope = "project"` is intent. Providers that cannot install into a project
+  context report the limitation; Starpoint does not rewrite manifests implicitly.
 - Cross-provider ownership requires the filesystem. A package whose binary name
   differs from its package name and which no provider tracks is reported as
   present but unattributed rather than guessed at. Homebrew's `rust` formula

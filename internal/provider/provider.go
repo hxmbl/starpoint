@@ -66,6 +66,9 @@ type Capabilities struct {
 	// CanInstallInContext means the provider supports context-aware installation,
 	// i.e., it can install packages scoped to a specific project directory.
 	CanInstallInContext bool
+	// Verify means the provider can verify an installation by running the
+	// installed executable (e.g., `ruff --version`) in addition to checking inventory.
+	Verify bool
 	// DefaultScope is where this provider places software when the user does
 	// not care.
 	DefaultScope model.Scope
@@ -195,6 +198,13 @@ type Provider interface {
 	Update(ctx context.Context, pkg model.Package) (*model.Installation, error)
 }
 
+// Verifier is an optional provider capability for executable self-verification.
+// Keeping it optional avoids requiring package-only providers to pretend their
+// package identifiers are runnable commands.
+type Verifier interface {
+	Verify(ctx context.Context, pkg model.Package) error
+}
+
 // ContextAwareProvider is an optional interface that providers can implement
 // to support context-aware installation. When a provider implements this
 // interface, the core can install packages scoped to a specific project
@@ -207,6 +217,26 @@ type ContextAwareProvider interface {
 	// Providers that do not support context-aware installation should return
 	// an unsupported error.
 	InstallWithContext(ctx context.Context, pkg model.Package, contextDir string) (*model.Installation, error)
+}
+
+// ExecutableMappingProvider is an optional interface that providers can implement
+// to declare which executables their packages supply. This mapping is used for
+// ownership attribution: when Starpoint finds an executable on PATH, it can
+// determine which package and provider owns it.
+type ExecutableMappingProvider interface {
+	Provider
+	// ExecutableToPackage returns a mapping from executable names to package names.
+	// The key is the executable name (e.g., "git", "rustc") and the value is the
+	// package name as known to this provider (e.g., "git", "rust"). Providers
+	// that cannot provide this mapping may return nil or an empty map.
+	ExecutableToPackage() map[string]string
+}
+
+// PackageExecutableProvider optionally maps an installed package back to the
+// command it supplies. Providers use this to avoid treating package identifiers
+// as executable names during self-verification.
+type PackageExecutableProvider interface {
+	ExecutableForPackage(packageName string) (string, bool)
 }
 
 // Health is the result of probing a provider.
@@ -230,6 +260,8 @@ type Health struct {
 	Capabilities Capabilities `json:"capabilities"`
 	// ContextAware is true when the provider implements ContextAwareProvider.
 	ContextAware bool `json:"contextAware,omitempty"`
+	// HasExecutableMapping is true when the provider implements ExecutableMappingProvider.
+	HasExecutableMapping bool `json:"hasExecutableMapping,omitempty"`
 }
 
 // Registry holds the known providers.
@@ -280,7 +312,12 @@ func (r *Registry) Names() []string {
 func (r *Registry) Available(ctx context.Context) []Health {
 	var out []Health
 	for _, p := range r.All() {
-		out = append(out, p.Health(ctx))
+		h := p.Health(ctx)
+		_, isContextAware := p.(ContextAwareProvider)
+		h.ContextAware = isContextAware
+		_, hasExecutableMapping := p.(ExecutableMappingProvider)
+		h.HasExecutableMapping = hasExecutableMapping
+		out = append(out, h)
 	}
 	return out
 }

@@ -265,3 +265,17 @@ func (p *Provider) classify(op string, res exec.Result) error {
 		return shell.Failure(Name, op, msg, nil)
 	}
 }
+
+// Verify checks that an installed gem's executable is functional.
+// For RubyGems, this attempts to run the gem's executable with --version.
+func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
+	// Try to run the executable with --version to verify it's functional.
+	res, err := p.runner.Run(ctx, pkg.Name, "--version")
+	if err != nil {
+		return shell.Failure(p.Name(), "verify", "could not run executable for verification", err)
+	}
+	if res.Failed() {
+		return shell.Failure(p.Name(), "verify", "executable failed verification", nil)
+	}
+	return nil
+}

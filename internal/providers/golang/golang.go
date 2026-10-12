@@ -41,11 +41,11 @@ func (p *Provider) Kind() provider.Kind { return provider.KindGo }
 
 func (p *Provider) Capabilities() provider.Capabilities {
 	return provider.Capabilities{
-		Discover:           true, // via the Go bin directory
-		Install:            true,
-		Remove:             true,
-		Update:             true, // go install path@latest replaces the binary
-		PinVersion:         true, // path@v1.2.3
+		Discover:            true, // via the Go bin directory
+		Install:             true,
+		Remove:              true,
+		Update:              true, // go install path@latest replaces the binary
+		PinVersion:          true, // path@v1.2.3
 		DefaultScope:        model.ScopeUser,
 		CanInstallInContext: true,
 	}
@@ -311,4 +311,19 @@ func (p *Provider) InstallWithContext(ctx context.Context, pkg model.Package, co
 		Scope:    model.ScopeProject,
 		Path:     filepath.Join(projectBin, binaryName(pkg.Name)),
 	}, nil
+}
+
+// Verify checks that an installed Go binary is functional.
+// For Go, this attempts to run the binary with --version.
+func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
+	// For Go packages, the executable name is derived from the module path
+	exeName := binaryName(pkg.Name)
+	res, err := p.runner.Run(ctx, exeName, "--version")
+	if err != nil {
+		return shell.Failure(p.Name(), "verify", "could not run executable for verification", err)
+	}
+	if res.Failed() {
+		return shell.Failure(p.Name(), "verify", "executable failed verification", nil)
+	}
+	return nil
 }

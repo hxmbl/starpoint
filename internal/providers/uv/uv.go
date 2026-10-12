@@ -182,6 +182,37 @@ func (p *Provider) Update(ctx context.Context, pkg model.Package) (*model.Instal
 	return p.Installed(ctx, pkg)
 }
 
+// Verify checks that an installed uv tool is functional by running it with --version.
+func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
+	inst, err := p.Installed(ctx, pkg)
+	if err != nil || inst == nil {
+		return &provider.Error{
+			Provider: p.Name(),
+			Kind:     provider.ErrNotFound,
+			Message:  "package not installed",
+		}
+	}
+	// Try to run the tool with --version to verify it works
+	binPath := p.toolBinPath(pkg.Name)
+	if binPath == "" {
+		return &provider.Error{
+			Provider: p.Name(),
+			Kind:     provider.ErrFailed,
+			Message:  "cannot locate tool executable",
+		}
+	}
+	_, err = p.runner.Run(ctx, binPath, "--version")
+	if err != nil {
+		return &provider.Error{
+			Provider: p.Name(),
+			Kind:     provider.ErrFailed,
+			Message:  "tool verification failed",
+			Err:      err,
+		}
+	}
+	return nil
+}
+
 // toolBinPath reports where uv exposes the tool's executable.
 func (p *Provider) toolBinPath(name string) string {
 	if p.home == "" {

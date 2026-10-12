@@ -161,6 +161,10 @@ type Transition struct {
 	Advice string `json:"advice,omitempty"`
 	// Note is a short human summary of what happened.
 	Note string `json:"note,omitempty"`
+	// Timestamp records when the transition was completed. Used for history.
+	Timestamp int64 `json:"timestamp,omitempty"`
+	// Reversible reports whether this transition can be reversed.
+	Reversible bool `json:"reversible,omitempty"`
 }
 
 // NeedsWork reports whether the transition is not in a resting state.

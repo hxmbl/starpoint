@@ -584,3 +584,17 @@ func firstMessage(res exec.Result, fallback string) string {
 	}
 	return fallback
 }
+
+// Verify checks that an installed rustup toolchain or binary is functional.
+// For rustup, this attempts to run the binary with --version.
+func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
+	// Try to run the executable with --version to verify it's functional.
+	res, err := p.runner.Run(ctx, pkg.Name, "--version")
+	if err != nil {
+		return shell.Failure(p.Name(), "verify", "could not run executable for verification", err)
+	}
+	if res.Failed() {
+		return shell.Failure(p.Name(), "verify", "executable failed verification", nil)
+	}
+	return nil
+}
