@@ -126,7 +126,7 @@ Implemented in this release:
 | `dnf` | global | RPM inventory and versioned package installation. |
 | `pacman` | global | Pacman inventory and repository installation. Arch repositories serve current versions only, so it cannot honour a version pin and says so rather than building a command that cannot work. |
 | `uv` | user | Python tools and interpreters, `==` pins. |
-| `pip` | user | Python packages, installed with `--user` so pip never needs root. |
+| `pip` | user | Python packages, installed with `--user` so pip never needs root. Locations come from `pip show -f`: the console script when there is one, otherwise the package directory. |
 | `rustup` | user | Rust toolchains: `rustc`, `cargo`, `rustfmt` and friends, plus the toolchains themselves. |
 | `cargo` | user | Crates from `cargo install`, `--version` pins. |
 | `npm` | user | Global packages, `name@version` and dist-tags. |

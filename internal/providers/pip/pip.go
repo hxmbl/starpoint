@@ -17,6 +17,7 @@ package pip
 import (
 	"context"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -167,12 +168,103 @@ func (p *Provider) Installed(ctx context.Context, pkg model.Package) (*model.Ins
 		return nil, err
 	}
 	for _, inst := range all {
-		if inst.Name == pkg.Name {
+		if strings.EqualFold(normalize(inst.Name), normalize(pkg.Name)) {
 			found := inst
+			found.Path = p.installPath(ctx, inst.Name)
 			return &found, nil
 		}
 	}
 	return nil, nil
+}
+
+// installPath reports where an installed distribution lives, from
+// `pip show -f`: its console script when it has one (that is what a user runs
+// and what verification needs to find), otherwise its top-level package.
+//
+// An empty result means pip could not say; that is reported as unknown rather
+// than guessed.
+func (p *Provider) installPath(ctx context.Context, name string) string {
+	res, err := p.runner.Run(ctx, p.binary, "show", "-f", name)
+	if err != nil || res.Failed() {
+		return ""
+	}
+	return pathFromShow(res.Stdout, name)
+}
+
+// pathFromShow picks the most useful location out of `pip show -f` output.
+// Files are listed relative to Location, so a console script appears as
+// ../../../bin/<name>.
+func pathFromShow(out, name string) string {
+	var (
+		location string
+		files    []string
+		inFiles  bool
+	)
+	for _, line := range strings.Split(out, "\n") {
+		if inFiles {
+			if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+				if f := strings.TrimSpace(line); f != "" {
+					files = append(files, f)
+				}
+				continue
+			}
+			inFiles = false
+		}
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(key) {
+		case "Location":
+			location = strings.TrimSpace(value)
+		case "Files":
+			inFiles = true
+		}
+	}
+	if location == "" {
+		return ""
+	}
+	resolve := func(rel string) string {
+		return filepath.Clean(filepath.Join(location, filepath.FromSlash(rel)))
+	}
+
+	var scripts []string
+	for _, f := range files {
+		slashed := filepath.ToSlash(f)
+		dir := pathpkg.Base(pathpkg.Dir(slashed))
+		if dir == "bin" || dir == "Scripts" {
+			scripts = append(scripts, resolve(f))
+		}
+	}
+	want := normalize(name)
+	for _, s := range scripts {
+		base := strings.TrimSuffix(filepath.Base(s), ".exe")
+		if normalize(base) == want {
+			return s
+		}
+	}
+	if len(scripts) > 0 {
+		return scripts[0]
+	}
+	for _, f := range files {
+		slashed := filepath.ToSlash(f)
+		if strings.HasPrefix(slashed, "..") {
+			continue
+		}
+		top := strings.SplitN(slashed, "/", 2)[0]
+		if strings.HasSuffix(top, ".dist-info") || strings.HasSuffix(top, ".egg-info") || top == "__pycache__" {
+			continue
+		}
+		return resolve(top)
+	}
+	return location
+}
+
+// normalize applies PEP 503 name normalisation, so "Pillow", "pillow" and
+// "python_dateutil"/"python-dateutil" compare equal.
+func normalize(name string) string {
+	name = strings.ToLower(name)
+	return strings.NewReplacer("_", "-", ".", "-").Replace(name)
 }
 
 // Install installs into the user site, which is the only location pip can write
