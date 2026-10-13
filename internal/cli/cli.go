@@ -572,20 +572,24 @@ func cmdInfo(ctx context.Context, env *Env, w *report.Writer, args []string) err
 	// is exactly what a user asking "where did this come from?" needs to avoid.
 	survey := eng.Survey(ctx, model.Package{Name: name}, opts)
 	owners := survey.Owners()
+	// The desired provider is what `starpoint add` would record, which is the
+	// same decision explain shows. Reporting the current owner here instead
+	// made info and explain contradict each other.
+	desired := eng.Decide(ctx, doc, model.Package{Name: name}, opts)
+	adopt := "run 'starpoint add " + name + "' to record it"
+	if desired.Provider != "" {
+		adopt += " (it would be recorded with " + desired.Provider + ")"
+	}
 	if len(owners) > 0 {
+		current := *owners[0].Installation
 		st := model.State{
 			Package: model.Package{Name: name},
-			Res: model.Resolution{
-				Provider:   owners[0].Provider,
-				Reason:     "found on this machine",
-				Confidence: model.ConfidenceCertain,
-			},
-			Current: owners[0].Installation,
-			Desired: owners[0].Installation,
-			Status:  model.StatusMissing,
+			Res:     desired,
+			Current: &current,
+			Status:  model.StatusUnmanaged,
 			Notes: []string{
 				"installed but not managed by Starpoint",
-				"run 'starpoint add " + name + "' to record it",
+				adopt,
 			},
 		}
 		if len(owners) > 1 {
@@ -602,9 +606,9 @@ func cmdInfo(ctx context.Context, env *Env, w *report.Writer, args []string) err
 	if found.Path != "" {
 		if err := w.Info(model.State{
 			Package: model.Package{Name: name},
-			Res:     model.Resolution{Provider: "", Reason: "found on PATH", Confidence: model.ConfidenceSpeculat},
+			Res:     desired,
 			Current: &model.Installation{Name: name, Path: found.Path},
-			Status:  model.StatusMissing,
+			Status:  model.StatusUnmanaged,
 			Notes: []string{
 				"present at " + found.Path + " but Starpoint cannot tell which provider installed it",
 				"run 'starpoint add " + name + " --provider <name>' to record ownership",
@@ -810,6 +814,9 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 }
 
 // cmdExplain shows the provider-resolution reasoning chain for a package.
+//
+// It asks the engine for the same decision install and info use, so the three
+// can never disagree about which provider a package belongs to.
 func cmdExplain(ctx context.Context, env *Env, w *report.Writer, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("%w: explain needs a package name", ErrUsage)
@@ -818,67 +825,15 @@ func cmdExplain(ctx context.Context, env *Env, w *report.Writer, args []string) 
 	if err := rejectOption("explain", name); err != nil {
 		return err
 	}
-
-	globalPath, err := env.globalPath()
+	doc, eng, opts, _, err := env.setup(ctx, nil)
 	if err != nil {
 		return err
 	}
-	doc, err := config.Load(config.LoadOptions{GlobalPath: globalPath, Dir: env.WorkDir, DiscoverProjects: true})
-	if err != nil {
-		return err
-	}
-
-	reg := env.registry()
-	eng := engine.New(reg, env.loc())
-
-	// Check if the package is in the configuration
 	pkg, inConfig := doc.Package(name)
 	if !inConfig {
-		pkg = model.Package{Name: name}
+		pkg = model.ParseSpec(name)
 	}
-
-	// Get provider health
-	available := map[string]provider.Health{}
-	for _, h := range reg.Available(ctx) {
-		available[h.Name] = h
-	}
-
-	// Get existing installation
-	var existing *model.Installation
-	if inConfig {
-		plan, _, err := eng.Plan(ctx, doc, engine.Options{Dir: env.WorkDir})
-		if err != nil {
-			return err
-		}
-		for _, st := range plan.States {
-			if st.Package.Name == name && st.Current != nil {
-				existing = st.Current
-				break
-			}
-		}
-	}
-
-	// Detect project ecosystem
-	var eco provider.Kind
-	proj := project.Detect(env.WorkDir)
-	if proj.Kind != project.KindUnknown {
-		eco = projectEcosystem(proj.Kind)
-	}
-
-	// Build resolver input
-	resolver := resolve.New(reg)
-	in := resolve.Input{
-		Package:   pkg,
-		Existing:  existing,
-		Available: available,
-		Allowed:   env.restrict,
-		Ecosystem: eco,
-		Locator:   env.loc(),
-	}
-
-	// Get explanation
-	expl := resolver.Explain(in)
-	return w.Explain(expl)
+	return w.Explain(eng.Explain(ctx, doc, pkg, opts))
 }
 
 // looksLikeVersion reports whether a name is a bare version number such as

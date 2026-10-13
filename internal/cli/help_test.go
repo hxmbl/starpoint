@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/starpoint/starpoint/internal/model"
 )
 
 // The audit found `starpoint add --help` planning an install of a package
@@ -86,5 +89,67 @@ func TestUnknownOptionsAreNotPackageNames(t *testing.T) {
 		if len(h.brew.InstallCalls)+len(h.brew.RemoveCalls) != 0 {
 			t.Errorf("%v: nothing may be installed or removed", args)
 		}
+	}
+}
+
+// firstJSON decodes the first JSON document of a command's output.
+func firstJSON(t *testing.T, out string, target any) {
+	t.Helper()
+	if err := json.NewDecoder(strings.NewReader(out)).Decode(target); err != nil {
+		t.Fatalf("decoding %q: %v", out, err)
+	}
+}
+
+// The audit: `info git` on a machine where git is installed but not managed
+// said "Status: missing", and named a desired provider explain disagreed with.
+func TestInfoOnUnmanagedSoftwareSaysUnmanagedAndAgreesWithExplain(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	h.sys.With(model.Installation{Name: "git", Version: "2.43.0", Path: "/usr/bin/git"})
+	h.apt.IsAvailable = true
+
+	out := h.mustRun("info", "git")
+	if !strings.Contains(out, "Status:            unmanaged") {
+		t.Errorf("installed-but-unmanaged software is not missing:\n%s", out)
+	}
+	if strings.Contains(out, "missing") {
+		t.Errorf("nothing about git is missing:\n%s", out)
+	}
+
+	var info struct {
+		Package model.State `json:"package"`
+	}
+	firstJSON(t, h.mustRun("info", "git", "--json"), &info)
+	var explain struct {
+		Explain struct {
+			Final model.Resolution `json:"final"`
+		} `json:"explain"`
+	}
+	firstJSON(t, h.mustRun("explain", "git", "--json"), &explain)
+	if info.Package.Res.Provider != explain.Explain.Final.Provider {
+		t.Errorf("info wants %q but explain picks %q", info.Package.Res.Provider, explain.Explain.Final.Provider)
+	}
+	if info.Package.Status != model.StatusUnmanaged {
+		t.Errorf("status = %q", info.Package.Status)
+	}
+	if info.Package.Current == nil || info.Package.Current.Provider != "system" {
+		t.Errorf("the current owner should still be reported, got %+v", info.Package.Current)
+	}
+}
+
+func TestExplainMatchesWhatInstallRecords(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	h.brew.With(model.Installation{Name: "jq", Version: "1.7", Path: "/opt/homebrew/bin/jq"})
+	var explain struct {
+		Explain struct {
+			Final model.Resolution `json:"final"`
+		} `json:"explain"`
+	}
+	firstJSON(t, h.mustRun("explain", "jq", "--json"), &explain)
+	if explain.Explain.Final.Provider != "brew" {
+		t.Errorf("explain should see the existing brew copy, as install does; got %+v", explain.Explain.Final)
+	}
+	h.mustRun("install", "jq", "--no-confirm")
+	if !strings.Contains(h.configBody(), `provider = "brew"`) {
+		t.Errorf("install recorded something else:\n%s", h.configBody())
 	}
 }

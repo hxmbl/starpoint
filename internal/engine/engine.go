@@ -519,6 +519,14 @@ func (e *Engine) Decide(ctx context.Context, doc *config.Document, pkg model.Pac
 	return e.resolver.Resolve(e.resolveInput(pkg, e.findExisting(ctx, pkg, available), available, opts))
 }
 
+// Explain returns the resolver's full reasoning for a package, from exactly the
+// input Decide, install and sync use. explain and info must never describe a
+// different decision from the one install would make.
+func (e *Engine) Explain(ctx context.Context, doc *config.Document, pkg model.Package, opts Options) resolve.Explanation {
+	available := e.health(ctx)
+	return e.resolver.Explain(e.resolveInput(pkg, e.findExisting(ctx, pkg, available), available, opts))
+}
+
 // Duplicate records a second copy of software that Starpoint already tracks.
 // This is not a convergence problem: it is a machine that has drifted into
 // ambiguity, and only the user can decide which copy to keep.

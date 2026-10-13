@@ -58,7 +58,7 @@ All JSON output, including errors, includes a top-level `schema_version` field. 
   "desired": "Installation | null",
   "current": "Installation | null",
   "elsewhere": ["Installation"],
-  "status": "correct | missing | provider-differs | version-differs | version-unsatisfiable",
+  "status": "correct | missing | provider-differs | version-differs | version-unsatisfiable | unmanaged",
   "notes": ["string"]
 }
 ```

@@ -125,6 +125,10 @@ const (
 	// StatusUnpinnedConflict means the software is present through the desired
 	// provider but the requested version cannot be enforced by that provider.
 	StatusUnpinnedConflict Status = "version-unsatisfiable"
+	// StatusUnmanaged means the software is on the machine but not in the
+	// configuration. Nothing is wrong with it; Starpoint simply does not own
+	// it, and "missing" would be the opposite of the truth.
+	StatusUnmanaged Status = "unmanaged"
 )
 
 // Healthy reports whether the status needs no action.
