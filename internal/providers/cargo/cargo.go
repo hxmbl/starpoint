@@ -278,3 +278,26 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 	}
 	return nil
 }
+
+var _ provider.LatestVersionProvider = (*Provider)(nil)
+
+// LatestVersion asks crates.io through `cargo search`, whose lines read
+// `name = "x.y.z"    # description`. Only an exact name match counts.
+func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string, error) {
+	res, err := p.runner.Run(ctx, "cargo", "search", pkg.Name, "--limit", "1")
+	if err != nil {
+		return "", shell.Failure(p.Name(), "latest", "could not run cargo search", err)
+	}
+	if res.Failed() {
+		return "", shell.Failure(p.Name(), "latest", shell.Diagnostic(res.Field()), nil)
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		name, rest, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(name) != pkg.Name {
+			continue
+		}
+		rest = strings.SplitN(rest, "#", 2)[0]
+		return strings.Trim(strings.TrimSpace(rest), `"`), nil
+	}
+	return "", nil
+}

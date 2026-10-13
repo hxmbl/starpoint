@@ -19,12 +19,14 @@ This file tracks work that remains after the current implementation. Completed i
 7. **Add more providers when ownership is reliable.** Bun, Deno, Nix, mise, asdf, Flatpak, Snap, winget, Chocolatey, and additional language providers remain candidates. Each provider should support useful inventory and ownership reporting before it is used for automatic resolution.
 8. **Provider-specific version constraints.** Exact pins are supported where providers can honor them. Ranges and richer constraint syntax remain deferred until a concrete provider requires them; parsing must stay provider-specific.
 9. **Inventory pass consolidation.** Planning and ownership reporting may query provider inventories more than once. Revisit if profiling shows this is a material latency problem.
+10. **Newest-version lookups for more providers.** Pin conflicts are detected for pip, npm, pnpm, Homebrew, Cargo, RubyGems and APT. uv has no index query of its own; yarn, Go, DNF and Pacman are also unimplemented.
 
 ## Settled behavior
 
 - Project configuration is additive to global configuration. A project entry with the same package name overrides the global entry; other global packages remain desired.
 - `scope = "project"` is accepted as placement intent, but providers that cannot install into a project context report that limitation. Starpoint does not silently rewrite a project's manifest to manufacture support.
 - `install .` records the toolchain a project needs (node, cargo, go, ...) in the project's own `.starpoint.toml`, creating it if necessary, and never installs a toolchain implicitly. Project dependencies are installed by the ecosystem's own tool after confirmation.
+- `update` never moves a pin silently. A newer version than the pin is reported as a conflict and asked about; yes updates and rewrites the pin to the installed version, anything else (including `--no-confirm`) keeps it. `sync` still converges on the pin without asking.
 - `sync` does not adopt an installation merely because it exists. `starpoint install` is the explicit adoption path and records the selected provider in the source of truth.
 - An explicit provider in configuration wins. Otherwise an existing non-system owner is retained, known executable ownership mappings are considered, then ecosystem and project context guide a choice. Starpoint asks when multiple viable general providers remain ambiguous.
 - Transition phases are reconstructed from provider inventory and executable resolution. Re-running a transition resumes based on observed machine state; the history store supports audit and explicit reversal.

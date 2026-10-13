@@ -178,15 +178,17 @@ Options:
 `,
 	"update": `Usage: starpoint update [--self] [--dry-run] [--no-confirm]
 
-Update managed software. A version pinned in the configuration is respected
-and left unchanged.
+Update managed software. A version pinned in the configuration is respected:
+when a newer version exists, Starpoint explains the conflict and asks whether
+to update anyway, rewriting the pin if you say yes. With --no-confirm (or
+without a terminal) the pin is kept.
 
 Aliases: upgrade
 
 Options:
   --self               Also update Starpoint itself, through its provider
   --dry-run, -n        Show what would be updated; change nothing
-  --no-confirm, -y     Do not ask first
+  --no-confirm, -y     Do not ask first (pins are kept)
   --json               Machine-readable output
 `,
 	"runs": `Usage: starpoint runs [--package <name>] [--directory <dir>]

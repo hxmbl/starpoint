@@ -335,3 +335,17 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 	}
 	return nil
 }
+
+var _ provider.LatestVersionProvider = (*Provider)(nil)
+
+// LatestVersion asks the registry for the version pnpm would install.
+func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string, error) {
+	res, err := p.runner.Run(ctx, p.exec(), "view", pkg.Name, "version")
+	if err != nil {
+		return "", shell.Failure(p.Name(), "latest", "could not run pnpm view", err)
+	}
+	if res.Failed() {
+		return "", shell.Failure(p.Name(), "latest", shell.Diagnostic(res.Field()), nil)
+	}
+	return strings.TrimSpace(shell.FirstLine(p.stripNoise(res.Stdout))), nil
+}

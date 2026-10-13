@@ -254,6 +254,16 @@ type ExecutableDirProvider interface {
 	ExecutableDir(ctx context.Context) string
 }
 
+// LatestVersionProvider is implemented by providers that can say which version
+// of a package they would install now. `update` uses it to tell a pin that is
+// merely satisfied from a pin that is holding a package back.
+//
+// An empty version with a nil error means the provider does not know the
+// package.
+type LatestVersionProvider interface {
+	LatestVersion(ctx context.Context, pkg model.Package) (string, error)
+}
+
 // Health is the result of probing a provider.
 type Health struct {
 	// Name is the provider name.

@@ -126,3 +126,24 @@ func TestWarningStringNamesItsSubject(t *testing.T) {
 		t.Errorf("String() = %q", global.String())
 	}
 }
+
+func TestCompareVersions(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"1.10", "1.9", 1},
+		{"1.9", "1.10", -1},
+		{"v2.0.0", "2.0.0", 0},
+		{"1.3", "1.3.0", -1},
+		{"0.6.0", "0.5.4", 1},
+		{"1.0.0-rc1", "1.0.0-rc2", -1},
+		{"2026.7.22", "2025.12.1", 1},
+	}
+	for _, c := range cases {
+		got := CompareVersions(c.a, c.b)
+		if (got > 0) != (c.want > 0) || (got < 0) != (c.want < 0) {
+			t.Errorf("CompareVersions(%q, %q) = %d, want sign %d", c.a, c.b, got, c.want)
+		}
+	}
+}

@@ -233,6 +233,20 @@ entry with the same name.
 }
 ```
 
+`update` adds `pin_conflicts`, one per pinned package with a newer version
+available:
+
+```json
+{
+  "package": "string",
+  "provider": "string",
+  "pinned": "string",
+  "available": "string",
+  "resolution": "kept | updated | pending",
+  "config_path": "string | null"
+}
+```
+
 ### `starpoint transition`
 
 ```json

@@ -279,3 +279,28 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 	}
 	return nil
 }
+
+var _ provider.LatestVersionProvider = (*Provider)(nil)
+
+// LatestVersion asks rubygems.org through `gem search --remote --exact`, whose
+// result line reads "name (x.y.z)".
+func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string, error) {
+	res, err := p.runner.Run(ctx, "gem", "search", "--remote", "--exact", pkg.Name)
+	if err != nil {
+		return "", shell.Failure(p.Name(), "latest", "could not run gem search", err)
+	}
+	if res.Failed() {
+		return "", shell.Failure(p.Name(), "latest", shell.Diagnostic(res.Field()), nil)
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, pkg.Name+" (") {
+			continue
+		}
+		inner := strings.TrimSuffix(strings.TrimPrefix(line, pkg.Name+" ("), ")")
+		if fields := strings.FieldsFunc(inner, func(r rune) bool { return r == ',' || r == ' ' }); len(fields) > 0 {
+			return fields[0], nil
+		}
+	}
+	return "", nil
+}

@@ -1625,12 +1625,35 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	// Updating changes the machine without being asked about a specific package,
 	// so the set of packages it would touch is shown first. A plan with nothing in
 	// it is not worth a question.
-	wouldUpdate, err := eng.UpdatePlan(ctx, doc, opts)
+	previewRes, err := eng.UpdatePreview(ctx, doc, opts)
 	if err != nil {
 		return err
 	}
+
+	// A pin holding a package back is the user's decision to revisit, not
+	// Starpoint's. Each one is explained and asked about; anything but an
+	// explicit yes keeps the pin. --no-confirm keeps every pin, because
+	// silently rewriting the source of truth is the one thing an unattended
+	// update must not do.
+	if !opts.DryRun && !opts.NoConfirm && env.Confirm != nil {
+		for _, c := range previewRes.PinConflicts {
+			fmt.Fprintf(env.Stdout, "!!! There is a new version available for %s (%s), but config says %s\n",
+				c.Package, c.Available, c.Pinned)
+			ok, err := env.Confirm("Update anyway?")
+			if err != nil {
+				return err
+			}
+			if ok {
+				if opts.UpdatePinned == nil {
+					opts.UpdatePinned = map[string]bool{}
+				}
+				opts.UpdatePinned[c.Package] = true
+			}
+		}
+	}
+
 	var preview []change
-	for _, a := range wouldUpdate {
+	for _, a := range previewRes.Applied {
 		preview = append(preview, change{
 			verb:   "Update",
 			target: a.State.Package.Spec(),
@@ -1662,18 +1685,33 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	}
 	if w.JSON() {
 		_ = w.Render(map[string]any{
-			"operation": "update",
-			"dry_run":   res.DryRun,
-			"actions":   res.Applied,
-			"warnings":  res.Warnings,
+			"operation":     "update",
+			"dry_run":       res.DryRun,
+			"actions":       res.Applied,
+			"warnings":      res.Warnings,
+			"pin_conflicts": res.PinConflicts,
 		})
 		return updateErr
+	}
+	for _, c := range res.PinConflicts {
+		if c.Resolution == "updated" {
+			continue // reported below as an applied update
+		}
+		outcome := "the pin was kept"
+		if c.Resolution == "pending" {
+			outcome = "update would ask whether to move the pin"
+		}
+		fmt.Fprintf(env.Stdout, "!!! There is a new version available for %s (%s), but config says %s; %s\n",
+			c.Package, c.Available, c.Pinned, outcome)
 	}
 	for _, a := range res.Applied {
 		fmt.Fprintf(env.Stdout, "%s", strings.TrimSpace(actionLine("updated", a)))
 		fmt.Fprintln(env.Stdout)
 	}
 	for _, warn := range res.Warnings {
+		if strings.HasPrefix(warn.Message, "there is a new version available") {
+			continue // already shown as a pin conflict above
+		}
 		fmt.Fprintf(env.Stdout, "  %s\n", warn.Message)
 	}
 	if len(res.Applied) == 0 && len(res.Warnings) == 0 {

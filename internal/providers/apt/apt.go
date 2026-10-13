@@ -266,3 +266,26 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 func (p *Provider) ExecutableForPackage(packageName string) (string, bool) {
 	return shell.ExecutableForPackage(p.ExecutableToPackage(), packageName)
 }
+
+var _ provider.LatestVersionProvider = (*Provider)(nil)
+
+// LatestVersion reads the candidate version from `apt-cache policy`.
+func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string, error) {
+	res, err := p.runner.Run(ctx, "apt-cache", "policy", pkg.Name)
+	if err != nil {
+		return "", shell.Failure(p.Name(), "latest", "could not run apt-cache policy", err)
+	}
+	if res.Failed() {
+		return "", shell.Failure(p.Name(), "latest", shell.Diagnostic(res.Field()), nil)
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if ok && key == "Candidate" {
+			if v := strings.TrimSpace(value); v != "(none)" {
+				return v, nil
+			}
+			return "", nil
+		}
+	}
+	return "", nil
+}

@@ -420,3 +420,31 @@ func (p *Provider) userBase(ctx context.Context) string {
 	}
 	return ""
 }
+
+var _ provider.LatestVersionProvider = (*Provider)(nil)
+
+// LatestVersion asks the index which version pip would install, from
+// `pip index versions`, whose first line is "name (x.y.z)".
+func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string, error) {
+	if _, _, err := p.locate(); err != nil {
+		return "", shell.Unsupported(p.Name(), "latest", "pip is not installed")
+	}
+	res, err := p.runner.Run(ctx, p.binary, "index", "versions", pkg.Name)
+	if err != nil {
+		return "", shell.Failure(p.Name(), "latest", "could not run pip index versions", err)
+	}
+	if res.Failed() {
+		return "", p.classify("latest", res)
+	}
+	return parenthesisedVersion(shell.FirstLine(res.Stdout)), nil
+}
+
+// parenthesisedVersion extracts "x.y.z" from "name (x.y.z)".
+func parenthesisedVersion(line string) string {
+	open := strings.Index(line, "(")
+	end := strings.Index(line, ")")
+	if open < 0 || end <= open {
+		return ""
+	}
+	return strings.TrimSpace(strings.Fields(line[open+1:end] + " ")[0])
+}

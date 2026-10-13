@@ -83,9 +83,21 @@ different provider by editing that field, Starpoint understands it as a
 transition — it installs the new copy, verifies it, and only then removes the
 old one. It never installs a second copy and leaves the first behind.
 
-`version` is a hard pin. Starpoint will not move it. If a provider cannot deliver
-it, or an update would contradict it, Starpoint reports the conflict instead of
-editing the configuration to make the problem go away.
+`version` is a hard pin. Starpoint will not move it on its own. If a provider
+cannot deliver it, Starpoint reports the conflict instead of editing the
+configuration to make the problem go away. When `starpoint update` finds a newer
+version than a pin allows, it explains the conflict and asks:
+
+```
+!!! There is a new version available for ruff (0.6.0), but config says 0.5.0
+Update anyway? [y/N]
+```
+
+Yes updates the package and rewrites the pin to the version now installed; no
+(or `--no-confirm`, or no terminal) keeps the pin; `--dry-run` reports the
+conflict. `--json` lists them under `pin_conflicts`. Newer versions are known for
+pip, npm, pnpm, Homebrew, Cargo, RubyGems and APT; for other providers a pin is
+simply reported as left unchanged.
 
 ## Commands
 
@@ -101,7 +113,7 @@ editing the configuration to make the problem go away.
 | `starpoint install <package> [provider]` | Install and record (alias: `add`) |
 | `starpoint install .` | Install the current project's declared packages and dependencies; record its toolchain in the project config |
 | `starpoint remove <package>` | Uninstall and delete from config (alias: `uninstall`) |
-| `starpoint update [--self]` | Update managed software, respecting pins |
+| `starpoint update [--self] [--dry-run] [--no-confirm]` | Update managed software; asks before moving past a pin |
 | `starpoint explain <package>` | Explain how Starpoint resolves ownership |
 | `starpoint prune` | Preview and remove orphaned user-scoped installations |
 | `starpoint recover [--discard]` | Inspect and clear files left by an interrupted run |

@@ -138,6 +138,8 @@ type FakeProvider struct {
 	// fake reports line up with the PATH a fake locator resolves, which matters
 	// whenever a test is exercising verification.
 	InstallPath string
+	// Latest is what LatestVersion reports per package; missing means unknown.
+	Latest map[string]string
 	// ExeDir is what ExecutableDir reports; empty means unknown.
 	ExeDir string
 	// RemoveHook runs after a successful Remove, for tests that model a
@@ -309,6 +311,13 @@ func (f *FakeProvider) Remove(_ context.Context, pkg model.Package) error {
 	return nil
 }
 
+// LatestVersion implements provider.LatestVersionProvider.
+func (f *FakeProvider) LatestVersion(_ context.Context, pkg model.Package) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Latest[pkg.Name], nil
+}
+
 // ExecutableDir implements provider.ExecutableDirProvider.
 func (f *FakeProvider) ExecutableDir(context.Context) string { return f.ExeDir }
 
@@ -324,7 +333,13 @@ func (f *FakeProvider) Update(_ context.Context, pkg model.Package) (*model.Inst
 	if !ok {
 		inst = model.Installation{Name: pkg.Name, Provider: f.ProviderName, Scope: f.Caps.DefaultScope, Version: "1.0.0"}
 	}
-	inst.Version = bump(inst.Version)
+	if pkg.Version != "" {
+		inst.Version = pkg.Version
+	} else if latest := f.Latest[pkg.Name]; latest != "" {
+		inst.Version = latest
+	} else {
+		inst.Version = bump(inst.Version)
+	}
 	f.Items[pkg.Name] = inst
 	copied := inst
 	return &copied, nil

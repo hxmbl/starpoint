@@ -108,6 +108,9 @@ type Options struct {
 	// own package database, and mistaking one for the other turns a no-op into a
 	// destructive install.
 	AdoptOnly bool
+	// UpdatePinned names pinned packages the user agreed to move to the newest
+	// version during update. Their pin is rewritten in the configuration.
+	UpdatePinned map[string]bool
 	// SurveyTimeout bounds one round of concurrent provider lookups. Zero keeps
 	// the default.
 	SurveyTimeout time.Duration
@@ -128,6 +131,8 @@ type Result struct {
 	ConfigPath string `json:"config_path,omitempty"`
 	// Warnings are non-fatal problems.
 	Warnings []model.Warning `json:"warnings,omitempty"`
+	// PinConflicts are pinned packages with a newer version available.
+	PinConflicts []model.PinConflict `json:"pin_conflicts,omitempty"`
 	// DryRun echoes the mode.
 	DryRun bool `json:"dry_run"`
 }
