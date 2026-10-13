@@ -51,6 +51,30 @@ A project may also have its own `.starpoint.toml`. It applies when you run
 Starpoint inside that directory and takes precedence over the global file for
 the packages it declares.
 
+`starpoint install .` installs what the project in the current directory needs:
+
+1. the packages its `.starpoint.toml` declares;
+2. the toolchain its ecosystem expects (node/npm, cargo/rustc, go, python3,
+   ruby/gem), recorded — never installed — in the project's `.starpoint.toml`,
+   which is created if needed, when the owner can be identified;
+3. its dependencies, through the ecosystem's own tool run in the project root:
+
+| Project | Command |
+| --- | --- |
+| Node with `packageManager` in package.json | that manager (`pnpm install`, `yarn install`, `npm ci`/`npm install`) |
+| Node with pnpm-lock.yaml / yarn.lock / package-lock.json | `pnpm install` / `yarn install` / `npm ci` |
+| Node without a lockfile | `npm install` |
+| Python with uv.lock, or `[tool.uv]` in pyproject.toml | `uv sync` |
+| Python with requirements.txt | `pip3 install -r requirements.txt` (or `pip`) |
+| Rust (Cargo.toml) | `cargo fetch` |
+| Go (go.mod) | `go mod download` |
+| Ruby (Gemfile) | `bundle install` |
+
+The command is shown and confirmed before anything changes (declining changes
+nothing at all), `--dry-run` prints it without running it, and `--no-confirm`
+runs it unattended. A Python project with neither uv configuration nor
+requirements.txt is reported rather than guessed at.
+
 ### What Starpoint writes
 
 `provider` is the ownership decision. Once written it is authoritative: `sync`
@@ -75,7 +99,7 @@ editing the configuration to make the problem go away.
 | `starpoint list [--json]` | Show managed software, its location, scope and provider |
 | `starpoint info <package>` | Show one package's state in detail |
 | `starpoint install <package> [provider]` | Install and record (alias: `add`) |
-| `starpoint install .` | Handle the current project |
+| `starpoint install .` | Install the current project's declared packages and dependencies; record its toolchain in the project config |
 | `starpoint remove <package>` | Uninstall and delete from config (alias: `uninstall`) |
 | `starpoint update [--self]` | Update managed software, respecting pins |
 | `starpoint explain <package>` | Explain how Starpoint resolves ownership |
@@ -324,9 +348,9 @@ suite substitutes a scripted command runner and in-memory providers.
 - Additional ecosystems such as Bun, Deno, Nix, mise/asdf, winget, Chocolatey,
   Composer, Maven/Gradle, NuGet, SwiftPM, CocoaPods, vcpkg, Conda, Flatpak and
   Snap remain candidates. See `docs/next-tasks.md`.
-- A universal project dependency system. `starpoint install .` works from a
-  narrow, documented rule set rather than pretending one command can understand
-  every ecosystem.
+- A universal project dependency system. `starpoint install .` delegates to each
+  ecosystem's own installer, chosen by a narrow, documented rule set, rather
+  than pretending one command can understand every ecosystem.
 
 ## Known limitations
 

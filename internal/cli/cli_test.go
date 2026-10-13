@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +47,8 @@ type harness struct {
 	confirm *bool
 	// choices records every provider question the harness was asked.
 	choices []string
+	// ran records commands run by `install .`, as "dir: command".
+	ran []string
 }
 
 // ask makes the harness answer every confirmation with the given answer.
@@ -131,6 +134,11 @@ func newHarness(t *testing.T, configBody string) *harness {
 		Choose: func(question string, options []string) (string, error) {
 			h.choices = append(h.choices, question)
 			return options[0], nil
+		},
+		// Dependency installs are recorded, never run.
+		RunInDir: func(_ context.Context, dir string, _, _ io.Writer, name string, args ...string) error {
+			h.ran = append(h.ran, dir+": "+strings.TrimSpace(name+" "+strings.Join(args, " ")))
+			return nil
 		},
 	}
 	// Hook into newEngine to set tracker. Resolve the locator at call time so a

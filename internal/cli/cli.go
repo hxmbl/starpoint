@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -65,6 +66,10 @@ type Env struct {
 	// command that was told not to ask would read as one that asked and was
 	// refused, and would then decline to do the work it was told to do.
 	confirmAsked bool
+	// RunInDir runs a command in a directory with output streamed to the
+	// given writers. Nil means the real command. Tests replace it so
+	// `install .` can be exercised without npm or cargo.
+	RunInDir func(ctx context.Context, dir string, stdout, stderr io.Writer, name string, args ...string) error
 	// newEngine is overridden in tests to inject a tracker
 	newEngineFn func() *engine.Engine
 }
@@ -978,9 +983,15 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 	// `starpoint install .` is "install what this project needs", and it has no
 	// package name to look up or ask about.
 	if len(names) == 1 && (names[0] == "." || names[0] == "./") && named == "" {
-		res, err := installProject(ctx, env, eng, doc, opts, proj, version, channel)
+		res, deps, err := installProject(ctx, env, eng, doc, opts, proj, version, channel, w.JSON())
 		if err != nil {
+			if w.JSON() && res != nil {
+				_ = w.Render(map[string]any{"operations": []*engine.Result{res}, "dependencies": deps})
+			}
 			return err
+		}
+		if w.JSON() {
+			return w.Render(map[string]any{"operations": []*engine.Result{res}, "dependencies": deps})
 		}
 		return reportInstall(w, []*engine.Result{res}, nil)
 	}
@@ -1124,27 +1135,71 @@ func (e *Env) askProvider(ctx context.Context, eng *engine.Engine, doc *config.D
 	return e.Choose(question, options)
 }
 
+// dependencyReport is what `install .` did about the project's dependencies.
+type dependencyReport struct {
+	// Command is the ecosystem command chosen, nil when none applies.
+	Command *project.DependencyInstall `json:"command,omitempty"`
+	// Skipped explains why nothing ran.
+	Skipped string `json:"skipped,omitempty"`
+	// Ran reports whether the command was run and succeeded.
+	Ran bool `json:"ran"`
+	// DryRun echoes the mode.
+	DryRun bool `json:"dry_run"`
+}
+
 // installProject handles `starpoint install .`.
 //
-// The project's own Starpoint configuration is the source of truth. Everything
-// Starpoint can infer from a marker file is reported and, at most, adopted — a
-// toolchain is never installed implicitly, because inferring "this project is
-// Rust therefore install rustc" from a Cargo.toml is exactly the kind of
-// confident nonsense this project exists to avoid.
+// "Install what this project needs" is three things, in order:
+//
+//  1. The packages the project's own .starpoint.toml declares.
+//  2. The toolchain the ecosystem expects (node, cargo, go, ...). It is recorded
+//     when its owner can be identified, never installed: inferring "this is a
+//     Rust project, so install rustc" from a Cargo.toml is a decision with
+//     consequences far beyond the project. It is recorded in the project's
+//     .starpoint.toml (created if needed), because the project is what needs
+//     it; the global configuration stays the user's own statement of intent.
+//  3. The project's dependencies, through the ecosystem's own installer chosen
+//     from the files the project has (npm ci, pnpm install, uv sync, cargo
+//     fetch, ...). Starpoint does not resolve dependencies itself.
+//
+// The dependency command is described and confirmed before anything changes,
+// so declining leaves the machine and every configuration file untouched.
 func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *config.Document, opts engine.Options,
-	proj *project.Info, version, channel string) (*engine.Result, error) {
+	proj *project.Info, version, channel string, asJSON bool) (*engine.Result, *dependencyReport, error) {
 	if proj == nil || proj.Kind == project.KindUnknown {
-		return nil, fmt.Errorf("no project detected here; run 'starpoint install <package>' to name software explicitly")
+		return nil, nil, fmt.Errorf("no project detected here; run 'starpoint install <package>' to name software explicitly")
 	}
-	fmt.Fprintf(env.Stdout, "Project: %s project at %s (via %s)\n", proj.Kind, proj.Root, proj.Marker)
+	// Narration goes to stderr under --json so stdout stays one JSON document.
+	out := env.Stdout
+	if asJSON {
+		out = env.Stderr
+	}
+	fmt.Fprintf(out, "Project: %s project at %s (via %s)\n", proj.Kind, proj.Root, proj.Marker)
 
 	result := &engine.Result{DryRun: opts.DryRun}
-	projectConfig := filepath.Join(proj.Root, ".starpoint.toml")
+	projectConfig := filepath.Join(proj.Root, config.ProjectFileName)
+
+	deps, why := proj.Dependencies(osexec.LookPath)
+	report := &dependencyReport{Command: deps, Skipped: why, DryRun: opts.DryRun}
+	if deps != nil {
+		if err := env.confirmChanges([]change{{
+			verb:   "Run",
+			target: deps.String(),
+			detail: "in " + deps.Dir + " (" + deps.Reason + ")",
+			after:  "the project's dependencies are installed by " + deps.Tool + "; the toolchain is recorded in " + projectConfig,
+		}}, opts); err != nil {
+			return nil, nil, err
+		}
+		if env.declined() {
+			report.Skipped = "declined"
+			return result, report, nil
+		}
+	}
 
 	// Everything the project has declared is what it wants. Install it.
 	declared, _ := doc.ProjectFileFor(proj.Root)
 	if !proj.HasProjectConfig {
-		fmt.Fprintf(env.Stdout, "No %s yet; add entries to declare what this project needs.\n", projectConfig)
+		fmt.Fprintf(out, "No %s yet; add entries to declare what this project needs.\n", projectConfig)
 	} else {
 		for _, pkg := range declared.Raw.Packages {
 			if version != "" {
@@ -1155,25 +1210,19 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 			}
 			res, err := eng.Add(ctx, doc, pkg, opts)
 			if err != nil {
-				return result, err
+				return result, report, err
 			}
-			// Record execution for context-aware installation
-			provider := pkg.Provider
-			if provider == "" && len(res.Applied) > 0 {
-				provider = res.Applied[0].State.Res.Provider
-			}
-			// Tracking is now handled in the engine
 			result.Applied = append(result.Applied, res.Applied...)
 			result.ConfigChanged = result.ConfigChanged || res.ConfigChanged
 			result.ConfigPath = res.ConfigPath
 		}
 		if len(declared.Raw.Packages) == 0 {
-			fmt.Fprintf(env.Stdout, "%s declares no packages yet.\n", projectConfig)
+			fmt.Fprintf(out, "%s declares no packages yet.\n", projectConfig)
 		}
 	}
 
-	// The toolchain the ecosystem expects is reported, and adopted when its owner
-	// can be identified.
+	// The toolchain the ecosystem expects is reported, and adopted into the
+	// project's configuration when its owner can be identified.
 	for _, tool := range proj.ExpectedTools() {
 		found := env.loc().Locate(tool.Name)
 		switch {
@@ -1181,35 +1230,33 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 			// Present but unattributable. Starpoint records what it can attribute;
 			// claiming ownership of an unexplained binary would put a lie in the
 			// source of truth.
-			fmt.Fprintf(env.Stdout, "  %s: %s (owner unknown; add it with --provider if you want it managed)\n",
+			fmt.Fprintf(out, "  %s: %s (owner unknown; add it with --provider if you want it managed)\n",
 				tool.Name, found.Path)
 		case found.Installation != nil:
-			fmt.Fprintf(env.Stdout, "  %s: %s (%s)\n", tool.Name, found.Installation.Provider, found.Path)
+			fmt.Fprintf(out, "  %s: %s (%s)\n", tool.Name, found.Installation.Provider, found.Path)
 			if _, managed := doc.Package(tool.Name); managed {
 				continue
 			}
 			if opts.DryRun {
+				fmt.Fprintf(out, "    would be recorded in %s\n", projectConfig)
 				continue
 			}
-			// A toolchain is machine software, not something a project owns, so
-			// recording it in the project's configuration would be a lie. It goes
-			// to the global file, attributed to the marker that revealed it.
 			// AdoptOnly matters: a language toolchain is never in its own
 			// provider's package list, so an install attempt here would be both
 			// wrong and slow.
-			globalOpts := opts
-			globalOpts.Dir = ""
-			globalOpts.AdoptOnly = true
+			doc.EnsureProjectFile(proj.Root)
+			projectOpts := opts
+			projectOpts.Dir = proj.Root
+			projectOpts.AdoptOnly = true
 			res, err := eng.Add(ctx, doc, model.Package{
 				Name:     tool.Name,
 				Provider: found.Installation.Provider,
 				Scope:    found.Installation.Scope,
 				Reason:   "adopted from " + proj.Marker + " in " + proj.Root,
-			}, globalOpts)
+			}, projectOpts)
 			if err != nil {
-				return result, err
+				return result, report, err
 			}
-			// Tracking is now handled in the engine
 			result.Applied = append(result.Applied, res.Applied...)
 			result.ConfigChanged = result.ConfigChanged || res.ConfigChanged
 			result.ConfigPath = res.ConfigPath
@@ -1218,7 +1265,7 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 			if tool.Bootstrap {
 				msg += "; it is this ecosystem's toolchain, so Starpoint will not install it for you"
 			}
-			fmt.Fprintf(env.Stdout, "  %s\n", msg)
+			fmt.Fprintf(out, "  %s\n", msg)
 			result.Warnings = append(result.Warnings, model.Warning{
 				Severity: model.SeverityWarn,
 				Package:  tool.Name,
@@ -1232,10 +1279,42 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 		if _, ok := doc.Package(req.Name); ok {
 			continue
 		}
-		fmt.Fprintf(env.Stdout, "  %s is implied by %s but not declared; add it to %s to manage it\n",
+		fmt.Fprintf(out, "  %s is implied by %s but not declared; add it to %s to manage it\n",
 			req.Name, proj.Marker, projectConfig)
 	}
-	return result, nil
+
+	// Finally, the dependencies themselves.
+	if deps == nil {
+		fmt.Fprintf(out, "Dependencies: %s\n", why)
+		return result, report, nil
+	}
+	if opts.DryRun {
+		fmt.Fprintf(out, "Would run: %s (in %s; %s)\n", deps.String(), deps.Dir, deps.Reason)
+		return result, report, nil
+	}
+	fmt.Fprintf(out, "Running: %s (in %s)\n", deps.String(), deps.Dir)
+	if err := env.runInDir(ctx, deps.Dir, out, env.Stderr, deps.Tool, deps.Args...); err != nil {
+		return result, report, fmt.Errorf("installing dependencies with '%s' in %s: %w", deps.String(), deps.Dir, err)
+	}
+	report.Ran = true
+	return result, report, nil
+}
+
+// runInDir runs a command in a directory with its output streamed, which is
+// what a dependency install needs: it can take minutes and its progress is the
+// user's only sign of life.
+func (e *Env) runInDir(ctx context.Context, dir string, stdout, stderr io.Writer, name string, args ...string) error {
+	if e.RunInDir != nil {
+		return e.RunInDir(ctx, dir, stdout, stderr, name, args...)
+	}
+	if _, err := osexec.LookPath(name); err != nil {
+		return fmt.Errorf("%s is not on PATH; install it (for example 'starpoint install %s') and run this again", name, name)
+	}
+	cmd := osexec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
 }
 
 func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, allowed []string) error {

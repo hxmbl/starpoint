@@ -157,6 +157,32 @@ func (d *Document) Find(name string) (File, bool) {
 	return File{}, false
 }
 
+// EnsureProjectFile returns the project configuration rooted at root, adding a
+// new, not-yet-written one to the document when there is none. It is written
+// by the next Save.
+func (d *Document) EnsureProjectFile(root string) File {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		abs = root
+	}
+	path := filepath.Join(abs, ProjectFileName)
+	for _, f := range d.Projects {
+		if f.Path == path {
+			return f
+		}
+	}
+	f := File{Path: path, Project: true, Raw: Raw{Schema: SchemaVersion}}
+	// Projects are ordered outermost first, so the most specific file wins.
+	i := len(d.Projects)
+	for i > 0 && len(filepath.Dir(d.Projects[i-1].Path)) > len(abs) {
+		i--
+	}
+	d.Projects = append(d.Projects, File{})
+	copy(d.Projects[i+1:], d.Projects[i:])
+	d.Projects[i] = f
+	return f
+}
+
 // ProjectFileFor returns the project file that owns dir, if any. Ownership means
 // dir is at or below the project's declared root.
 func (d *Document) ProjectFileFor(dir string) (File, bool) {

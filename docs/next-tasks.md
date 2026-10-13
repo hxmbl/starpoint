@@ -6,7 +6,7 @@ This file tracks work that remains after the current implementation. Completed i
 
 1. **Recover interrupted package-manager operations.** Starpoint currently detects and safely cleans stale config-writer temporary files. Provider operations are still recovered by re-inspecting inventories and PATH when the command is rerun; Starpoint does not yet persist a journal for every provider subprocess. Add explicit operation records only where provider state alone cannot safely identify progress.
 2. **Expand executable-to-package mappings.** The locator supports provider mappings and uses them for ownership attribution, but only a subset of providers maps executable names back to package names. Add mappings as provider inventory semantics are confirmed, especially for multi-binary packages.
-3. **Improve project-context coverage.** Project detection reads Rust and Go toolchain declarations and contributes project ecosystem context to provider resolution. It does not yet consume dependency declarations from every ecosystem or automatically mutate project manifests. Add ecosystems with clear ownership and lockfile behavior.
+3. **Improve project-context coverage.** Project detection reads Rust and Go toolchain declarations and contributes project ecosystem context to provider resolution. `install .` runs the ecosystem's own dependency installer (npm/pnpm/yarn, uv/pip, cargo, go, bundler) chosen from lockfiles; it never mutates project manifests. Add ecosystems with clear ownership and lockfile behavior (Poetry, Pipenv, Bun, Composer), and consider honouring declared toolchain versions.
 
 ## Remaining CLI and API work
 
@@ -24,6 +24,7 @@ This file tracks work that remains after the current implementation. Completed i
 
 - Project configuration is additive to global configuration. A project entry with the same package name overrides the global entry; other global packages remain desired.
 - `scope = "project"` is accepted as placement intent, but providers that cannot install into a project context report that limitation. Starpoint does not silently rewrite a project's manifest to manufacture support.
+- `install .` records the toolchain a project needs (node, cargo, go, ...) in the project's own `.starpoint.toml`, creating it if necessary, and never installs a toolchain implicitly. Project dependencies are installed by the ecosystem's own tool after confirmation.
 - `sync` does not adopt an installation merely because it exists. `starpoint install` is the explicit adoption path and records the selected provider in the source of truth.
 - An explicit provider in configuration wins. Otherwise an existing non-system owner is retained, known executable ownership mappings are considered, then ecosystem and project context guide a choice. Starpoint asks when multiple viable general providers remain ambiguous.
 - Transition phases are reconstructed from provider inventory and executable resolution. Re-running a transition resumes based on observed machine state; the history store supports audit and explicit reversal.
