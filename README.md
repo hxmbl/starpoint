@@ -218,7 +218,9 @@ one is confirmed working:
 - **Confirmed** means two things agree: the target provider reports the software,
   and the command on `PATH` resolves to that provider's copy. A provider that
   says it installed something while a different provider still owns the command is
-  treated as *not* installed, because it is not.
+  treated as *not* installed, because it is not. When the command is not on `PATH`
+  at all, the executable must exist on disk where the provider reported it (or in
+  its bin directory); an inventory entry with no file behind it does not count.
 - **Every early exit leaves the old command working.** A failed install, a failed
   verification and a failed removal all leave the incumbent in place, so the worst
   outcome of a transition is a duplicate rather than a hole.
@@ -226,6 +228,15 @@ one is confirmed working:
   both copies present means the old one still needs removing, only the new one means
   it is done, only the old one means nothing happened. Running `starpoint transition`
   again finishes an interrupted transition instead of starting over.
+- **Shared executable paths are handed over, not raced.** uv and `pip --user`
+  both write console scripts to `~/.local/bin`, so installing the new copy first
+  would overwrite (or be refused by) the old one, and removing the old copy would
+  then delete the new one. When the target's executable path is already occupied,
+  Starpoint removes the old copy first, installs and verifies the new one, and
+  reinstalls the old copy (at its previous version where the provider can pin) if
+  anything fails. After any removal the new copy is verified again and reinstalled
+  if the removal took its executable with it; `completed` is never reported over a
+  missing command.
 - **A provider that cannot remove** gets a completed transition with the leftover
   named, not a failure. Ownership did move; `doctor` reports the duplicate.
 

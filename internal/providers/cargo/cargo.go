@@ -81,7 +81,7 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 		return nil, shell.Failure(p.Name(), "list", "could not list installed crates", err)
 	}
 	if res.Failed() {
-		return nil, shell.Failure(p.Name(), "list", shell.FirstLine(res.Field()), nil)
+		return nil, shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 	}
 	return p.parseList(res.Stdout), nil
 }
@@ -213,7 +213,7 @@ func classify(op string, res exec.Result) error {
 	case strings.Contains(text, "permission denied"):
 		return shell.Err(Name, op, provider.ErrPermission, "cargo needs write access to its install directory", nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "cargo exited nonzero"
 		}

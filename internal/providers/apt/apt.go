@@ -85,7 +85,7 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 		return nil, shell.Failure(p.Name(), "list", "could not enumerate dpkg packages", err)
 	}
 	if res.Failed() {
-		return nil, shell.Failure(p.Name(), "list", shell.FirstLine(res.Field()), nil)
+		return nil, shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 	}
 	var out []model.Installation
 	for _, line := range strings.Split(res.Stdout, "\n") {
@@ -189,9 +189,9 @@ func classify(op string, res exec.Result) error {
 		return shell.Err(Name, op, provider.ErrNetwork, "could not reach the APT archives", nil)
 	case strings.Contains(text, "held broken packages"), strings.Contains(text, "depends:"),
 		strings.Contains(text, "but it is not going to be installed"):
-		return shell.Err(Name, op, provider.ErrConflict, shell.FirstLine(res.Field()), nil)
+		return shell.Err(Name, op, provider.ErrConflict, shell.Diagnostic(res.Field()), nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "apt-get exited nonzero"
 		}

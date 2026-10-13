@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/starpoint/starpoint/internal/providers/brew"
 	"github.com/starpoint/starpoint/internal/providers/system"
 	"github.com/starpoint/starpoint/internal/providers/uv"
+	"github.com/starpoint/starpoint/internal/testsupport"
 )
 
 // withLocator gives the fixture a locator with scripted PATH resolution, so
@@ -554,7 +557,9 @@ func TestVerifyAcceptsWhenPathResolvesInsideTheInstallDirectory(t *testing.T) {
 
 func TestVerifyReportsWhenNoExecutableIsOnPath(t *testing.T) {
 	f := newFixture(t, "schema = 1\n")
-	f.uv.With(model.Installation{Name: "ruff", Version: "0.6.0", Path: "/uv/bin/ruff"})
+	exe := filepath.Join(t.TempDir(), "ruff")
+	testsupport.WriteFile(t, exe, "#!/bin/sh\n")
+	f.uv.With(model.Installation{Name: "ruff", Version: "0.6.0", Path: exe})
 	f.withLocator(map[string]string{})
 
 	v := f.eng.Verify(context.Background(), "ruff", f.uv)
@@ -563,6 +568,49 @@ func TestVerifyReportsWhenNoExecutableIsOnPath(t *testing.T) {
 	}
 	if !strings.Contains(v.Note, "no executable") {
 		t.Errorf("the note should explain the gap, got %q", v.Note)
+	}
+	if v.OnDisk != exe {
+		t.Errorf("the file that confirmed it should be recorded, got %q", v.OnDisk)
+	}
+}
+
+func TestVerifyRejectsAnInventoryEntryWithNoExecutableOnDisk(t *testing.T) {
+	// The audit case: pip listed cowsay, nothing was on PATH, and pip reported no
+	// path. Verification passed, the old copy was removed, and the transition
+	// reported success over a command that no longer existed.
+	f := newFixture(t, "schema = 1\n")
+	f.uv.With(model.Installation{Name: "cowsay", Version: "6.1"})
+	f.withLocator(map[string]string{})
+
+	v := f.eng.Verify(context.Background(), "cowsay", f.uv)
+	if v.OK() {
+		t.Fatal("a command with no executable anywhere must not verify")
+	}
+	if !v.Missing {
+		t.Error("the missing executable should be recorded")
+	}
+	if !strings.Contains(v.Reason(), "not on PATH") {
+		t.Errorf("the reason should explain what is missing, got %q", v.Reason())
+	}
+
+	// A path that is reported but not on disk is no better than none.
+	f.uv.With(model.Installation{Name: "cowsay", Version: "6.1", Path: filepath.Join(t.TempDir(), "gone")})
+	if f.eng.Verify(context.Background(), "cowsay", f.uv).OK() {
+		t.Error("a reported path that does not exist must not verify")
+	}
+}
+
+func TestVerifyFindsTheExecutableInTheProviderBinDirectory(t *testing.T) {
+	f := newFixture(t, "schema = 1\n")
+	dir := t.TempDir()
+	testsupport.WriteFile(t, filepath.Join(dir, "cowsay"), "#!/bin/sh\n")
+	f.uv.ExeDir = dir
+	f.uv.With(model.Installation{Name: "cowsay", Version: "6.1"})
+	f.withLocator(map[string]string{})
+
+	v := f.eng.Verify(context.Background(), "cowsay", f.uv)
+	if !v.OK() {
+		t.Fatalf("an executable in the provider's bin directory confirms it: %s", v.Reason())
 	}
 }
 
@@ -617,5 +665,192 @@ func TestOwnsPath(t *testing.T) {
 		if got := ownsPath(tc.resolved, tc.installed); got != tc.want {
 			t.Errorf("ownsPath(%q, %q) = %v, want %v", tc.resolved, tc.installed, got, tc.want)
 		}
+	}
+}
+
+// sharedBin models uv and pip --user writing the same ~/.local/bin: a fake
+// "pip" is registered beside uv, both report the same executable directory,
+// installing writes the file, removing deletes it, and uv refuses to overwrite
+// a file it did not create. The order of operations is recorded.
+type sharedBin struct {
+	dir string
+	exe string
+	pip *testsupport.FakeProvider
+	log []string
+}
+
+func (f *fixture) sharedBin(name string) *sharedBin {
+	f.t.Helper()
+	sb := &sharedBin{dir: f.t.TempDir()}
+	sb.exe = filepath.Join(sb.dir, name)
+	sb.pip = testsupport.NewFakeProvider("pip", provider.KindPython)
+	f.reg.Register(sb.pip)
+	for _, p := range []*testsupport.FakeProvider{f.uv, sb.pip} {
+		p := p
+		p.ExeDir = sb.dir
+		p.InstallPath = sb.dir
+		p.InstallHook = func(req provider.Request) {
+			sb.log = append(sb.log, p.Name()+" install")
+			testsupport.WriteFile(f.t, filepath.Join(sb.dir, req.Package.Name), "#!/bin/sh\n# "+p.Name()+"\n")
+		}
+		p.RemoveHook = func(pkg model.Package) {
+			sb.log = append(sb.log, p.Name()+" remove")
+			_ = os.Remove(filepath.Join(sb.dir, pkg.Name))
+		}
+	}
+	f.uv.InstallGuard = func(req provider.Request) error {
+		if _, err := os.Stat(filepath.Join(sb.dir, req.Package.Name)); err == nil {
+			return &provider.Error{Provider: uv.Name, Kind: provider.ErrConflict,
+				Message: "error: Executable already exists: " + req.Package.Name}
+		}
+		return nil
+	}
+	f.withLocator(map[string]string{})
+	return sb
+}
+
+func (sb *sharedBin) present() bool {
+	_, err := os.Stat(sb.exe)
+	return err == nil
+}
+
+func TestTransitionUvToPipKeepsTheSharedExecutable(t *testing.T) {
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"cowsay\"\nprovider = \"pip\"\n")
+	sb := f.sharedBin("cowsay")
+	f.uv.With(model.Installation{Name: "cowsay", Version: "6.0", Path: sb.exe})
+	testsupport.WriteFile(t, sb.exe, "#!/bin/sh\n# uv\n")
+
+	tr, err := f.eng.ExecuteTransition(context.Background(), f.transitionState("cowsay"), Options{NoConfirm: true})
+	if err != nil {
+		t.Fatalf("transition: %v", err)
+	}
+	if tr.Phase != model.TransitionCompleted || !tr.OldRemoved {
+		t.Fatalf("expected a completed move, got %q (%s)", tr.Phase, tr.Note)
+	}
+	if !sb.present() {
+		t.Fatal("the executable must still exist after the move")
+	}
+	if want := []string{"uv remove", "pip install"}; strings.Join(sb.log, ",") != strings.Join(want, ",") {
+		t.Errorf("a shared path must be handed over old-first, got %v", sb.log)
+	}
+	if !strings.Contains(tr.Note, sb.exe) {
+		t.Errorf("the note should name the shared path, got %q", tr.Note)
+	}
+}
+
+func TestTransitionPipToUvHandsOverInsteadOfColliding(t *testing.T) {
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"cowsay\"\nprovider = \"uv\"\n")
+	sb := f.sharedBin("cowsay")
+	sb.pip.With(model.Installation{Name: "cowsay", Version: "6.0", Path: sb.exe})
+	testsupport.WriteFile(t, sb.exe, "#!/bin/sh\n# pip\n")
+
+	tr, err := f.eng.ExecuteTransition(context.Background(), f.transitionState("cowsay"), Options{NoConfirm: true})
+	if err != nil {
+		t.Fatalf("uv must not be asked to overwrite pip's executable: %v", err)
+	}
+	if tr.Phase != model.TransitionCompleted {
+		t.Fatalf("expected completed, got %q (%s)", tr.Phase, tr.Note)
+	}
+	if !sb.present() {
+		t.Fatal("the executable must exist after the move")
+	}
+	if _, still := sb.pip.Items["cowsay"]; still {
+		t.Error("pip's copy should be gone")
+	}
+}
+
+func TestTransitionHandOverRestoresTheOldCopyWhenTheNewInstallFails(t *testing.T) {
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"cowsay\"\nprovider = \"pip\"\n")
+	sb := f.sharedBin("cowsay")
+	f.uv.With(model.Installation{Name: "cowsay", Version: "6.0", Path: sb.exe})
+	testsupport.WriteFile(t, sb.exe, "#!/bin/sh\n# uv\n")
+	sb.pip.InstallError = &provider.Error{Provider: "pip", Kind: provider.ErrNetwork, Message: "could not reach PyPI"}
+
+	tr, err := f.eng.ExecuteTransition(context.Background(), f.transitionState("cowsay"), Options{NoConfirm: true})
+	if err == nil {
+		t.Fatal("the failed install must be reported")
+	}
+	if tr.Phase != model.TransitionFailed || !tr.Recoverable {
+		t.Errorf("expected a recoverable failure, got %q recoverable=%v", tr.Phase, tr.Recoverable)
+	}
+	if !sb.present() {
+		t.Fatal("the old copy must be reinstalled so the command still works")
+	}
+	if len(f.uv.InstallCalls) != 1 || f.uv.InstallCalls[0].Package.Version != "6.0" {
+		t.Errorf("the old copy should be reinstalled at its previous version, calls=%+v", f.uv.InstallCalls)
+	}
+	if !strings.Contains(tr.Advice, "reinstalled") {
+		t.Errorf("the advice should say the old copy is back, got %q", tr.Advice)
+	}
+}
+
+func TestTransitionRepairsAnExecutableTheOldRemovalDeleted(t *testing.T) {
+	// The target cannot say where it puts executables, so the collision is not
+	// seen in advance. The removal of the old copy deletes the new copy's file;
+	// verification afterwards must notice and reinstall rather than report
+	// success over a missing command.
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"cowsay\"\nprovider = \"pip\"\n")
+	sb := f.sharedBin("cowsay")
+	sb.pip.ExeDir = ""
+	f.uv.With(model.Installation{Name: "cowsay", Version: "6.0"})
+	f.uv.InstallGuard = nil
+
+	tr, err := f.eng.ExecuteTransition(context.Background(), f.transitionState("cowsay"), Options{NoConfirm: true})
+	if err != nil {
+		t.Fatalf("transition: %v", err)
+	}
+	if tr.Phase != model.TransitionCompleted {
+		t.Fatalf("expected completed after repair, got %q (%s)", tr.Phase, tr.Note)
+	}
+	if !sb.present() {
+		t.Fatal("the executable must be restored")
+	}
+	if !strings.Contains(tr.Note, "reinstalled") {
+		t.Errorf("the repair should be reported, got %q", tr.Note)
+	}
+	if got := strings.Join(sb.log, ","); got != "pip install,uv remove,pip remove,pip install" {
+		t.Errorf("unexpected order: %s", got)
+	}
+}
+
+func TestTransitionFailsWhenTheExecutableCannotBeRepaired(t *testing.T) {
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"cowsay\"\nprovider = \"pip\"\n")
+	sb := f.sharedBin("cowsay")
+	sb.pip.ExeDir = ""
+	f.uv.With(model.Installation{Name: "cowsay", Version: "6.0"})
+	f.uv.InstallGuard = nil
+	// The second pip install (the repair) leaves no file behind.
+	installs := 0
+	sb.pip.InstallHook = func(req provider.Request) {
+		installs++
+		if installs == 1 {
+			testsupport.WriteFile(t, sb.exe, "#!/bin/sh\n")
+		}
+	}
+
+	tr, err := f.eng.ExecuteTransition(context.Background(), f.transitionState("cowsay"), Options{NoConfirm: true})
+	if err == nil {
+		t.Fatal("a move that ends without a working command is a failure")
+	}
+	if tr.Phase == model.TransitionCompleted {
+		t.Fatal("completed must never be reported over a missing executable")
+	}
+}
+
+func TestTransitionDryRunExplainsASharedPath(t *testing.T) {
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"cowsay\"\nprovider = \"pip\"\n")
+	sb := f.sharedBin("cowsay")
+	f.uv.With(model.Installation{Name: "cowsay", Version: "6.0", Path: sb.exe})
+	testsupport.WriteFile(t, sb.exe, "#!/bin/sh\n")
+
+	tr, err := f.eng.ExecuteTransition(context.Background(), f.transitionState("cowsay"), Options{DryRun: true})
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if len(sb.log) != 0 {
+		t.Errorf("a dry run must not touch anything: %v", sb.log)
+	}
+	if !strings.Contains(tr.Note, "removed first") {
+		t.Errorf("the plan should explain the hand-over, got %q", tr.Note)
 	}
 }

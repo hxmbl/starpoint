@@ -114,6 +114,7 @@ func newHarness(t *testing.T, configBody string) *harness {
 		// /Users/..." turns up in a test about fake providers.
 		Locator: &locator.Locator{
 			LookPath: func(string) (string, error) { return "", errNotOnPath },
+			Stat:     fakeStat,
 		},
 		// The default is a user at a terminal who types yes. Tests that care about
 		// the question itself override this; tests that do not should not have to
@@ -146,10 +147,21 @@ func (h *harness) setLocator(paths map[string]string) {
 			}
 			return "", errNotOnPath
 		},
+		Stat: fakeStat,
 	}
 }
 
 var errNotOnPath = errors.New("not on PATH")
+
+// fakeStat treats the paths fake providers install to as present on disk, so
+// verification (which wants an executable behind an inventory entry) sees the
+// software the fakes claim to have installed.
+func fakeStat(path string) (os.FileInfo, error) {
+	if strings.HasPrefix(path, "/fake/") {
+		return os.Stat(os.Args[0])
+	}
+	return os.Stat(path)
+}
 
 func (h *harness) run(args ...string) (int, string, string) {
 	h.t.Helper()

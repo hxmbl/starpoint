@@ -112,7 +112,7 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 		return nil, shell.Failure(p.Name(), "list", "could not list installed gems", err)
 	}
 	if res.Failed() {
-		return nil, shell.Failure(p.Name(), "list", shell.FirstLine(res.Field()), nil)
+		return nil, shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 	}
 	// `gem list` does not say which home a gem is in, so the placement reported
 	// is the one that applies by default: the system home when the per-user home
@@ -256,9 +256,9 @@ func (p *Provider) classify(op string, res exec.Result) error {
 		return shell.Err(Name, op, provider.ErrNetwork, "could not reach rubygems.org", nil)
 	case strings.Contains(text, "can't satisfy your requirement"),
 		strings.Contains(text, "conflict"), strings.Contains(text, "depends on"):
-		return shell.Err(Name, op, provider.ErrConflict, shell.FirstLine(res.Field()), nil)
+		return shell.Err(Name, op, provider.ErrConflict, shell.Diagnostic(res.Field()), nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "gem exited nonzero"
 		}

@@ -269,7 +269,7 @@ func classify(name, op string, res exec.Result) error {
 	case strings.Contains(text, "curl"), strings.Contains(text, "network"), strings.Contains(text, "connection"):
 		return shell.Err(name, op, provider.ErrNetwork, "could not reach the Homebrew index", nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "brew exited nonzero"
 		}

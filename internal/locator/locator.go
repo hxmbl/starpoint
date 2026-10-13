@@ -112,6 +112,16 @@ func (l *Locator) stat(path string) (os.FileInfo, error) {
 	return os.Stat(path)
 }
 
+// Exists reports whether a file is present at path, following symlinks, so a
+// dangling link to a removed tool environment does not count.
+func (l *Locator) Exists(path string) bool {
+	if path == "" {
+		return false
+	}
+	_, err := l.stat(path)
+	return err == nil
+}
+
 // Found is the result of locating a single name.
 type Found struct {
 	// Installation is what was located, or nil.

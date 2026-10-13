@@ -16,6 +16,9 @@ package pip
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/starpoint/starpoint/internal/exec"
@@ -35,9 +38,14 @@ type Provider struct {
 	binary string
 	// python is the interpreter pip belongs to, for diagnostics.
 	python string
+	// binDir caches the user-base bin directory once it is known.
+	binDir string
 }
 
-var _ provider.Provider = (*Provider)(nil)
+var (
+	_ provider.Provider              = (*Provider)(nil)
+	_ provider.ExecutableDirProvider = (*Provider)(nil)
+)
 
 // New builds a pip provider.
 func New(runner exec.Runner) *Provider { return &Provider{runner: runner} }
@@ -125,7 +133,7 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 		return nil, shell.Failure(p.Name(), "list", "could not list installed Python packages", err)
 	}
 	if res.Failed() {
-		return nil, shell.Failure(p.Name(), "list", shell.FirstLine(res.Field()), nil)
+		return nil, shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 	}
 	return p.parseFreeze(res.Stdout), nil
 }
@@ -243,9 +251,9 @@ func (p *Provider) classify(op string, res exec.Result) error {
 		return shell.Err(Name, op, provider.ErrNetwork, "could not reach PyPI", nil)
 	case strings.Contains(text, "conflict"), strings.Contains(text, "dependency"),
 		strings.Contains(text, "resolutionimpossible"):
-		return shell.Err(Name, op, provider.ErrConflict, shell.FirstLine(res.Field()), nil)
+		return shell.Err(Name, op, provider.ErrConflict, shell.Diagnostic(res.Field()), nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "pip exited nonzero"
 		}
@@ -268,4 +276,55 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 		return shell.Failure(p.Name(), "verify", "executable failed verification", nil)
 	}
 	return nil
+}
+
+// ExecutableDir reports where `pip install --user` puts console scripts: the
+// bin directory of the interpreter's user base. On Linux that is ~/.local/bin,
+// the same directory uv links its tools into, which is why a move between the
+// two has to know about it.
+func (p *Provider) ExecutableDir(ctx context.Context) string {
+	if p.binDir != "" {
+		return p.binDir
+	}
+	if runtime.GOOS == "windows" {
+		// The Windows user scheme nests scripts under a versioned directory;
+		// rather than guess, report that the location is unknown.
+		return ""
+	}
+	base := os.Getenv("PYTHONUSERBASE")
+	if base == "" {
+		base = p.userBase(ctx)
+	}
+	if base == "" {
+		return ""
+	}
+	p.binDir = filepath.Join(base, "bin")
+	return p.binDir
+}
+
+// userBase asks the interpreter pip belongs to for its user base.
+func (p *Provider) userBase(ctx context.Context) string {
+	if _, _, err := p.locate(); err != nil {
+		return ""
+	}
+	var candidates []string
+	if res, err := p.runner.Run(ctx, p.binary, "--version"); err == nil && !res.Failed() {
+		if version := strings.TrimSpace(p.interpreterFrom(res.Stdout)); version != "" {
+			candidates = append(candidates, "python"+version)
+		}
+	}
+	candidates = append(candidates, "python3")
+	for _, python := range candidates {
+		if _, err := p.runner.LookPath(python); err != nil {
+			continue
+		}
+		res, err := p.runner.Run(ctx, python, "-m", "site", "--user-base")
+		if err != nil || res.Failed() {
+			continue
+		}
+		if base := strings.TrimSpace(shell.FirstLine(res.Stdout)); base != "" {
+			return base
+		}
+	}
+	return ""
 }

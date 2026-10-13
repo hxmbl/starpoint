@@ -11,6 +11,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/starpoint/starpoint/internal/exec"
@@ -28,7 +29,10 @@ type Provider struct {
 	home   string
 }
 
-var _ provider.Provider = (*Provider)(nil)
+var (
+	_ provider.Provider              = (*Provider)(nil)
+	_ provider.ExecutableDirProvider = (*Provider)(nil)
+)
 
 // New builds a uv provider. home is the user home directory used to locate uv's
 // managed directories; an empty home makes the provider report unavailable.
@@ -79,7 +83,7 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 		return nil, shell.Failure(p.Name(), "list", "could not list uv tools", err)
 	}
 	if res.Failed() {
-		return nil, shell.Failure(p.Name(), "list", shell.FirstLine(res.Field()), nil)
+		return nil, shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 	}
 	return p.parseToolList(res.Stdout), nil
 }
@@ -213,16 +217,47 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 	return nil
 }
 
-// toolBinPath reports where uv exposes the tool's executable.
-func (p *Provider) toolBinPath(name string) string {
+// ExecutableDir reports the directory uv links tool executables into, following
+// uv's own precedence: UV_TOOL_BIN_DIR, then XDG_BIN_HOME, then ~/.local/bin.
+func (p *Provider) ExecutableDir(context.Context) string {
+	if dir := os.Getenv("UV_TOOL_BIN_DIR"); dir != "" {
+		return dir
+	}
+	if dir := os.Getenv("XDG_BIN_HOME"); dir != "" {
+		return dir
+	}
 	if p.home == "" {
 		return ""
 	}
-	candidate := filepath.Join(p.home, ".local", "bin", name)
-	if _, err := os.Stat(candidate); err == nil {
-		return candidate
+	return filepath.Join(p.home, ".local", "bin")
+}
+
+// toolBinPath reports where uv exposes the tool's executable.
+//
+// The bin directory is shared with other tools (pip --user writes console
+// scripts to the same place), so a file existing there is not evidence that uv
+// put it there. On Unix uv links its executables into its own tool directory,
+// and only a link that points there is reported as uv's.
+func (p *Provider) toolBinPath(name string) string {
+	dir := p.ExecutableDir(context.Background())
+	if dir == "" {
+		return ""
 	}
-	return ""
+	candidate := filepath.Join(dir, name)
+	info, err := os.Lstat(candidate)
+	if err != nil {
+		return ""
+	}
+	if runtime.GOOS != "windows" && info.Mode()&os.ModeSymlink == 0 {
+		return ""
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := filepath.EvalSymlinks(candidate)
+		if err != nil || !strings.Contains(filepath.ToSlash(target), "/uv/") {
+			return ""
+		}
+	}
+	return candidate
 }
 
 func classify(op string, res exec.Result) error {
@@ -233,10 +268,14 @@ func classify(op string, res exec.Result) error {
 		return shell.NotFound(Name, op, "uv could not resolve this tool from the package registry")
 	case strings.Contains(text, "already installed"), strings.Contains(text, "is already installed"):
 		return shell.Err(Name, op, provider.ErrConflict, "the tool is already installed through uv", nil)
+	case strings.Contains(text, "executable already exists"):
+		// uv will not overwrite a command another tool put in its bin directory.
+		// The message names the file, which is the thing the user has to act on.
+		return shell.Err(Name, op, provider.ErrConflict, shell.Diagnostic(res.Field()), nil)
 	case strings.Contains(text, "connection"), strings.Contains(text, "network"), strings.Contains(text, "dns"):
 		return shell.Err(Name, op, provider.ErrNetwork, "could not reach the package registry", nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "uv exited nonzero"
 		}

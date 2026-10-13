@@ -233,3 +233,27 @@ func TestClassify(t *testing.T) {
 		}
 	}
 }
+
+func TestExecutableDirIsTheInterpretersUserBaseBin(t *testing.T) {
+	t.Setenv("PYTHONUSERBASE", "")
+	p, r := newProvider(t)
+	r.WithBin("python3.14")
+	r.Set("/home/u/.local\n", "python3.14", "-m", "site", "--user-base")
+	if got := p.ExecutableDir(context.Background()); got != "/home/u/.local/bin" {
+		t.Errorf("ExecutableDir = %q", got)
+	}
+
+	t.Setenv("PYTHONUSERBASE", "/opt/userbase")
+	p2, _ := newProvider(t)
+	if got := p2.ExecutableDir(context.Background()); got != "/opt/userbase/bin" {
+		t.Errorf("PYTHONUSERBASE should be honoured, got %q", got)
+	}
+}
+
+func TestExecutableDirIsUnknownWithoutAnInterpreter(t *testing.T) {
+	t.Setenv("PYTHONUSERBASE", "")
+	p, _ := newProvider(t)
+	if got := p.ExecutableDir(context.Background()); got != "" {
+		t.Errorf("with no interpreter to ask, the directory is unknown, got %q", got)
+	}
+}

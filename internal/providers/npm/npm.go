@@ -102,7 +102,7 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 	if res.Failed() {
 		// npm exits nonzero when the tree has problems, but still prints JSON.
 		if !looksLikeJSON(res.Stdout) {
-			return nil, shell.Failure(p.Name(), "list", shell.FirstLine(res.Field()), nil)
+			return nil, shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 		}
 	}
 	var out lsOutput
@@ -228,7 +228,7 @@ func classify(op string, res exec.Result) error {
 		strings.Contains(text, "network"), strings.Contains(text, "socket hang up"):
 		return shell.Err(Name, op, provider.ErrNetwork, "could not reach the npm registry", nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "npm exited nonzero"
 		}

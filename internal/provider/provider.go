@@ -239,6 +239,21 @@ type PackageExecutableProvider interface {
 	ExecutableForPackage(packageName string) (string, bool)
 }
 
+// ExecutableDirProvider is implemented by providers that expose the commands
+// they install in one known directory, such as uv's tool bin directory or pip's
+// user-base bin directory.
+//
+// It exists because two providers can write the same file. uv and pip both put
+// console scripts in ~/.local/bin on Linux, so moving a tool between them is not
+// "install the new copy, then remove the old one": the install overwrites the
+// old copy's executable and the removal then deletes the new one. Knowing where
+// a provider will put an executable is what lets the core see that coming.
+//
+// An empty string means the provider cannot say.
+type ExecutableDirProvider interface {
+	ExecutableDir(ctx context.Context) string
+}
+
 // Health is the result of probing a provider.
 type Health struct {
 	// Name is the provider name.

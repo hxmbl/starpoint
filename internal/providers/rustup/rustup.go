@@ -579,7 +579,7 @@ func (p *Provider) classify(op string, res exec.Result) error {
 }
 
 func firstMessage(res exec.Result, fallback string) string {
-	if msg := shell.FirstLine(res.Field()); msg != "" {
+	if msg := shell.Diagnostic(res.Field()); msg != "" {
 		return msg
 	}
 	return fallback

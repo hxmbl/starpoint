@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/starpoint/starpoint/internal/provider"
@@ -88,5 +89,34 @@ func TestErrorBuildersCarryProviderAndKind(t *testing.T) {
 	network := Err("curl", "", provider.ErrNetwork, "unreachable", nil)
 	if n, _ := provider.AsProviderError(network); n.Kind != provider.ErrNetwork {
 		t.Errorf("kind = %q", n.Kind)
+	}
+}
+
+func TestDiagnosticPrefersErrorLinesOverProgress(t *testing.T) {
+	out := "Resolved 1 package in 1ms\nerror: Executable already exists: cowsay (use `--force` to overwrite)\nhint: a tool other than uv owns it\n"
+	got := Diagnostic(out)
+	if got == "Resolved 1 package in 1ms" || !strings.Contains(got, "Executable already exists: cowsay") {
+		t.Fatalf("the error line must be reported, got %q", got)
+	}
+	if !strings.Contains(got, "hint:") {
+		t.Errorf("the hint that explains the error should be kept, got %q", got)
+	}
+}
+
+func TestDiagnosticFallsBackToTheLastLines(t *testing.T) {
+	out := "Collecting cowsay\n  Downloading cowsay-6.1.tar.gz\nsomething went sideways\n"
+	got := Diagnostic(out)
+	if !strings.Contains(got, "something went sideways") {
+		t.Errorf("unlabelled output should end with its last line, got %q", got)
+	}
+	if Diagnostic("  \n") != "" {
+		t.Error("empty output has nothing to report")
+	}
+}
+
+func TestDiagnosticIsBounded(t *testing.T) {
+	long := "error: " + strings.Repeat("x", 2000)
+	if got := Diagnostic(long); len(got) > maxDiagnosticLen {
+		t.Errorf("diagnostic should be bounded, got %d bytes", len(got))
 	}
 }

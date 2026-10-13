@@ -146,7 +146,7 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 		if strings.Contains(strings.ToLower(res.Field()), "no global packages") {
 			return nil, nil
 		}
-		return nil, shell.Failure(p.Name(), "list", shell.FirstLine(res.Field()), nil)
+		return nil, shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 	}
 	var parsed lsResponse
 	if err := json.Unmarshal([]byte(p.stripNoise(res.Stdout)), &parsed); err != nil {
@@ -298,7 +298,7 @@ func (p *Provider) classify(op string, res exec.Result) error {
 		strings.Contains(text, "network"), strings.Contains(text, "registry.npmjs.org"):
 		return shell.Err(Name, op, provider.ErrNetwork, "could not reach the npm registry", nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "pnpm exited nonzero"
 		}
