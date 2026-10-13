@@ -244,9 +244,12 @@ func TestInitCreatesGlobalConfig(t *testing.T) {
 
 func TestInitRefusesToOverwriteWithoutForce(t *testing.T) {
 	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"ripgrep\"\n")
-	out := h.mustRun("init")
-	if !strings.Contains(out, "already exists") {
-		t.Errorf("init should decline to overwrite: %s", out)
+	code, _, errOut := h.run("init")
+	if code == 0 {
+		t.Error("declining to overwrite must exit non-zero")
+	}
+	if !strings.Contains(errOut, "already exists") || !strings.Contains(errOut, "--force") {
+		t.Errorf("init should explain why it declined: %s", errOut)
 	}
 	if !strings.Contains(h.configBody(), "ripgrep") {
 		t.Error("the existing configuration must be left untouched")
@@ -273,10 +276,27 @@ func TestInitPrintsDocumentationAndWritesAValidFile(t *testing.T) {
 	}
 }
 
-func TestInitIsIdempotent(t *testing.T) {
-	h := newHarness(t, "schema = 1\n")
-	h.mustRun("init")
-	h.mustRun("init")
+func TestInitTwiceFailsTheSecondTimeAndChangesNothing(t *testing.T) {
+	h := newHarness(t, "")
+	h.mustRun("init", "--force")
+	before := h.configBody()
+	if code, _, _ := h.run("init"); code != 1 {
+		t.Errorf("a second init must exit 1, got %d", code)
+	}
+	if h.configBody() != before {
+		t.Error("the declined init must not touch the file")
+	}
+	code, _, errOut := h.run("init", "--json")
+	if code != 1 || !strings.Contains(errOut, `"error"`) {
+		t.Errorf("JSON callers get the error envelope, got %d %q", code, errOut)
+	}
+}
+
+func TestInitRejectsUnknownArguments(t *testing.T) {
+	h := newHarness(t, "")
+	if code, _, _ := h.run("init", "--frc"); code != 2 {
+		t.Errorf("a typo must be a usage error, got %d", code)
+	}
 }
 
 func TestInstallRecordsPackageAndProvider(t *testing.T) {

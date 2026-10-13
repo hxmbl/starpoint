@@ -203,7 +203,7 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	var err error
 	switch cmd {
 	case "init":
-		err = cmdInit(ctx, env, w, force)
+		err = cmdInit(ctx, env, w, cmdArgs, force)
 	case "sync":
 		err = cmdSync(ctx, env, w, cmdArgs, providers)
 	case "list", "ls":
@@ -360,7 +360,10 @@ Examples:
 }
 
 // cmdInit creates the global configuration.
-func cmdInit(ctx context.Context, env *Env, w *report.Writer, force bool) error {
+func cmdInit(ctx context.Context, env *Env, w *report.Writer, args []string, force bool) error {
+	for _, a := range args {
+		return fmt.Errorf("%w: unknown argument %q for init", ErrUsage, a)
+	}
 	path, err := env.globalPath()
 	if err != nil {
 		return err
@@ -378,7 +381,10 @@ func cmdInit(ctx context.Context, env *Env, w *report.Writer, force bool) error 
 		existing = config.File{Path: path, Raw: config.Raw{Schema: config.SchemaVersion}}
 	}
 	if existing.Exists && !force {
-		return w.Init(path, false, false)
+		// Declining is a failure from the caller's point of view: a script that
+		// runs `starpoint init` expecting a fresh configuration must be able to
+		// tell that it did not get one.
+		return fmt.Errorf("%s already exists; use 'starpoint init --force' to replace it", path)
 	}
 
 	raw := existing.Raw

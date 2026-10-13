@@ -60,7 +60,8 @@ var commandHelp = map[string]string{
 
 Create the global configuration at ~/.starpoint.toml.
 
-If the file already exists, nothing is changed and the command exits non-zero.
+If the file already exists, nothing is changed and the command exits 1;
+use --force to replace it.
 
 Options:
   --force, -f    Overwrite an existing configuration

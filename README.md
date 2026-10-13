@@ -67,7 +67,7 @@ editing the configuration to make the problem go away.
 
 | Command | Purpose |
 | --- | --- |
-| `starpoint init [--force]` | Create `~/.starpoint.toml` |
+| `starpoint init [--force]` | Create `~/.starpoint.toml`; exits 1 without changing anything if it exists, `--force` replaces it |
 | `starpoint sync [--dry-run] [--no-confirm]` | Converge the machine onto the configuration |
 | `starpoint transition [pkg...]` | Show or perform provider transitions (alias: `move`) |
 | `starpoint transition --reverse <package>` | Reverse the most recent transition when safe |
