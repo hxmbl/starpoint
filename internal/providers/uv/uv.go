@@ -14,10 +14,10 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/exec"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/shell"
+	"github.com/hxmbl/starpoint/internal/exec"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/shell"
 )
 
 // Name is the provider identifier persisted in configuration.

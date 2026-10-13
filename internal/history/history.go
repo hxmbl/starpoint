@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/starpoint/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/model"
 )
 
 // Entry records one completed transition.

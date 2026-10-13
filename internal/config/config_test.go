@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/model"
 )
 
 func TestLoadMissingFileIsEmptyNotAnError(t *testing.T) {

@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/config"
-	"github.com/starpoint/starpoint/internal/engine"
-	"github.com/starpoint/starpoint/internal/locator"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/engine"
+	"github.com/hxmbl/starpoint/internal/locator"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
 )
 
 func TestListHumanOutputHasColumns(t *testing.T) {

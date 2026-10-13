@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/starpoint/starpoint/internal/config"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/system"
+	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/system"
 )
 
 // Apply carries out a plan.

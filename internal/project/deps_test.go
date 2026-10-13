@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/testsupport"
+	"github.com/hxmbl/starpoint/internal/testsupport"
 )
 
 func depsFor(t *testing.T, files map[string]string, lookPath func(string) (string, error)) (*DependencyInstall, string) {

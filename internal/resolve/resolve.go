@@ -22,11 +22,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/locator"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/rustup"
-	"github.com/starpoint/starpoint/internal/providers/system"
+	"github.com/hxmbl/starpoint/internal/locator"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/rustup"
+	"github.com/hxmbl/starpoint/internal/providers/system"
 )
 
 // Input is everything the resolver needs to make a decision.

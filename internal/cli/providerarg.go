@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/model"
 )
 
 // splitProviderArg pulls a bare provider name out of a command's positional

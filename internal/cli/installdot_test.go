@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/testsupport"
+	"github.com/hxmbl/starpoint/internal/testsupport"
 )
 
 // nodeProject makes a Node project with a lockfile and puts node and npm on a

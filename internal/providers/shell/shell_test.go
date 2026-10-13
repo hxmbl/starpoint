@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/provider"
 )
 
 func TestVersionFromArgs(t *testing.T) {

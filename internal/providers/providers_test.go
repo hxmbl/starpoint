@@ -3,8 +3,8 @@ package providers
 import (
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/resolve"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/resolve"
 )
 
 // The registry is where Starpoint's decisions about the machine are actually

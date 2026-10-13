@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/provider"
 )
 
 // ExecutableForPackage resolves the executable that verifies a package, given an

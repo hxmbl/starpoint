@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/providers/uv"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/providers/uv"
 )
 
 func TestInstallSaysWhenNoProviderHasTheSoftware(t *testing.T) {

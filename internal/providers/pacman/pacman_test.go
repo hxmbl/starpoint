@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/exec"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/testsupport"
+	"github.com/hxmbl/starpoint/internal/exec"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/testsupport"
 )
 
 func newProvider(t *testing.T) (*Provider, *testsupport.FakeRunner) {

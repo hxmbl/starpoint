@@ -15,6 +15,8 @@ config → desired state → provider resolution → current state → diff → 
 ## Quick start
 
 ```sh
+go install github.com/hxmbl/starpoint/cmd/starpoint@latest
+# or, from a checkout:
 go build -o starpoint ./cmd/starpoint
 
 ./starpoint init                  # create ~/.starpoint.toml

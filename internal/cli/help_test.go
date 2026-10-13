@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/model"
 )
 
 // The audit found `starpoint add --help` planning an install of a package

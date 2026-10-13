@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/starpoint/starpoint/internal/config"
-	"github.com/starpoint/starpoint/internal/exec"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/exec"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
 )
 
 // FakeRunner is a scripted command runner. It records invocations so tests can

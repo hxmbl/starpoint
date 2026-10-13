@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/providers"
+	"github.com/hxmbl/starpoint/internal/providers"
 )
 
 func readCompletion(t *testing.T, name string) string {

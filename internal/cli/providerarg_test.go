@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/providers/brew"
-	"github.com/starpoint/starpoint/internal/providers/uv"
+	"github.com/hxmbl/starpoint/internal/providers/brew"
+	"github.com/hxmbl/starpoint/internal/providers/uv"
 )
 
 func TestProviderMayBeGivenAtTheEnd(t *testing.T) {

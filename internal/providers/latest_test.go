@@ -4,16 +4,16 @@ import (
 	"context"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/apt"
-	"github.com/starpoint/starpoint/internal/providers/brew"
-	"github.com/starpoint/starpoint/internal/providers/cargo"
-	"github.com/starpoint/starpoint/internal/providers/gem"
-	"github.com/starpoint/starpoint/internal/providers/npm"
-	"github.com/starpoint/starpoint/internal/providers/pip"
-	"github.com/starpoint/starpoint/internal/providers/pnpm"
-	"github.com/starpoint/starpoint/internal/testsupport"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/apt"
+	"github.com/hxmbl/starpoint/internal/providers/brew"
+	"github.com/hxmbl/starpoint/internal/providers/cargo"
+	"github.com/hxmbl/starpoint/internal/providers/gem"
+	"github.com/hxmbl/starpoint/internal/providers/npm"
+	"github.com/hxmbl/starpoint/internal/providers/pip"
+	"github.com/hxmbl/starpoint/internal/providers/pnpm"
+	"github.com/hxmbl/starpoint/internal/testsupport"
 )
 
 // Each provider that can name its newest version parses its own tool's output.

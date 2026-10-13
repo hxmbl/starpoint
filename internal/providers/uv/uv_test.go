@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/testsupport"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/testsupport"
 )
 
 const toolListOutput = `ruff v0.5.4

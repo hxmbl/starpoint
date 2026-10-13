@@ -13,13 +13,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/config"
-	"github.com/starpoint/starpoint/internal/engine"
-	"github.com/starpoint/starpoint/internal/locator"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/project"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/resolve"
+	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/engine"
+	"github.com/hxmbl/starpoint/internal/locator"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/project"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/resolve"
 )
 
 // Writer renders results.

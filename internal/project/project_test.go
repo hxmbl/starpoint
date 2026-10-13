@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/model"
 )
 
 func TestDetectFindsMarkersByWalkingUp(t *testing.T) {

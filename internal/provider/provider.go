@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/model"
 )
 
 // Kind groups providers by the world they operate in. It exists for reporting

@@ -19,7 +19,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/starpoint/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/model"
 )
 
 // SchemaVersion is the version written into every file Starpoint creates.

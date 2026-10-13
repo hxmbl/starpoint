@@ -16,14 +16,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/starpoint/starpoint/internal/config"
-	"github.com/starpoint/starpoint/internal/history"
-	"github.com/starpoint/starpoint/internal/locator"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/system"
-	"github.com/starpoint/starpoint/internal/resolve"
-	"github.com/starpoint/starpoint/internal/tracking"
+	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/history"
+	"github.com/hxmbl/starpoint/internal/locator"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/system"
+	"github.com/hxmbl/starpoint/internal/resolve"
+	"github.com/hxmbl/starpoint/internal/tracking"
 )
 
 // Engine computes and applies convergence.

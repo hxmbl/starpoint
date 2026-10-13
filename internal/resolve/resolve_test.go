@@ -4,15 +4,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/brew"
-	"github.com/starpoint/starpoint/internal/providers/cargo"
-	"github.com/starpoint/starpoint/internal/providers/npm"
-	"github.com/starpoint/starpoint/internal/providers/rustup"
-	"github.com/starpoint/starpoint/internal/providers/system"
-	"github.com/starpoint/starpoint/internal/providers/uv"
-	"github.com/starpoint/starpoint/internal/testsupport"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/brew"
+	"github.com/hxmbl/starpoint/internal/providers/cargo"
+	"github.com/hxmbl/starpoint/internal/providers/npm"
+	"github.com/hxmbl/starpoint/internal/providers/rustup"
+	"github.com/hxmbl/starpoint/internal/providers/system"
+	"github.com/hxmbl/starpoint/internal/providers/uv"
+	"github.com/hxmbl/starpoint/internal/testsupport"
 )
 
 // buildRegistry wires fake providers whose capabilities mirror the real ones.
