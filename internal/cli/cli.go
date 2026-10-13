@@ -314,20 +314,29 @@ func printUsage(w io.Writer) {
 
 Usage:
   starpoint <command> [options]
+  starpoint <command> --help      Help for one command
 
 Commands:
-  init                 Create the global configuration (~/.starpoint.toml)
-  sync                 Make installed state match the configuration
-  list                 Show managed software, where it is, and who owns it
-  info <package>       Show one package's state in detail
-  doctor               Inspect Starpoint, configuration, providers and ownership
-  install <package>    Install software and record it in the configuration
-  remove <package>     Remove software and delete it from the configuration
-  transition [pkg...]  Move ownership between providers, or show pending moves
-  update               Update managed software, respecting explicit pins
-  runs, history        Show execution history of package operations
-  prune                Remove orphaned software from Starpoint-managed providers
-  recover              Inspect and clear files left by an interrupted run
+  init [--force]                 Create the global configuration (~/.starpoint.toml)
+  sync [--dry-run] [--no-confirm]
+                                 Make installed state match the configuration
+  list, ls                       Show managed software, where it is, and who owns it
+  info, show <package>           Show one package's state in detail
+  explain <package>              Show how Starpoint decides which provider owns a package
+  doctor [--all]                 Inspect Starpoint, configuration, providers, ownership, PATH
+  install, add <package>         Install software and record it in the configuration
+  install .                      Install the current project's packages and dependencies
+  remove, uninstall <package>    Remove software and delete it from the configuration
+  transition, move [pkg...]      Move ownership between providers, or show pending moves
+                                 (--reverse undoes the last move of a package)
+  update, upgrade [--self]       Update managed software; asks before moving past a pin
+                                 (--self also updates Starpoint through its provider)
+  runs, history                  Show execution history of package operations
+  prune [--dry-run] [--no-confirm]
+                                 Remove orphaned user-scoped software
+  recover [--discard]            Inspect, and with --discard clear, files left by an
+                                 interrupted run
+  help [command]                 Show this help, or help for one command
 
 A provider may be named after the package names, or with --provider:
   starpoint install ripgrep brew
@@ -349,18 +358,21 @@ Global options:
 
 Anything that installs, removes or updates software asks first. Answer with
 --no-confirm to skip the question; a stream that provides no answer at all is
-refused rather than assumed.
+refused rather than assumed. --dry-run shows what would happen and changes
+nothing.
 
 Examples:
   starpoint init
   starpoint install ruff
   starpoint install ripgrep@14.1.0 brew
+  starpoint install .
   starpoint sync --dry-run
+  starpoint update --dry-run
   starpoint transition
   starpoint list --json
   starpoint explain ruff
+  starpoint doctor --all
   starpoint runs --package ruff
-  starpoint runs --directory /path/to/project
 `)
 }
 

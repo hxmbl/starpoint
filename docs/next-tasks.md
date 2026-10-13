@@ -11,7 +11,7 @@ This file tracks work that remains after the current implementation. Completed i
 ## Remaining CLI and API work
 
 4. **Publish the JSON schema as a machine-readable artifact.** `docs/json-schema.md` documents schema version 1 and the command shapes. Generate or validate a formal JSON Schema document from the actual Go output types so external clients can validate payloads without duplicating the prose contract.
-5. **Expose shell completion installation guidance.** Bash, zsh, and fish completion scripts exist under `completions/`. Document installation paths and keep completions aligned with command aliases and flags.
+5. **Generate shell completions.** Bash, zsh, and fish completions are hand-written; a test (internal/cli/completions_test.go) checks them against the command, flag and provider tables. Generating them from those tables would remove the duplication. The zsh and fish files have not been exercised in a real shell in CI.
 6. **Improve PATH inventory controls.** `doctor` summarises the PATH inventory (counts, shadowed names, unknown owners; `--all` for everything) and PATH directories are de-duplicated by real path. `list` still prints every unaccounted executable; consider the same summary there and richer filters (by directory or owner) for very large PATHs, keeping the full data in machine output.
 
 ## Provider coverage

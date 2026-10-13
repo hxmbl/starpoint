@@ -1,17 +1,54 @@
 # Bash completion for Starpoint. Install by sourcing this file from
 # ~/.bash_completion or copying it into /etc/bash_completion.d/.
+#
+# Keep in sync with internal/cli/help.go (commandFlags); a test checks it.
 _starpoint() {
-  local cur prev commands options
+  local cur prev cmd i commands globals providers flags
   cur=${COMP_WORDS[COMP_CWORD]}
   prev=${COMP_WORDS[COMP_CWORD-1]}
-  commands='init sync list info explain doctor install remove transition update runs history prune recover help'
-  options='--json --provider --force --context --record --no-confirm --dry-run --version --help'
-  if [[ $COMP_CWORD == 1 ]]; then
-    COMPREPLY=( $(compgen -W "$commands $options" -- "$cur") )
-  elif [[ $prev == --provider || $prev == -p ]]; then
-    COMPREPLY=( $(compgen -W 'apt brew cargo dnf gem golang npm pacman pip pnpm rustup shell system uv yarn' -- "$cur") )
-  elif [[ $cur == -* ]]; then
-    COMPREPLY=( $(compgen -W "$options" -- "$cur") )
+  commands='init sync list ls info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover help'
+  globals='--json --provider --force --context --record --version --help'
+  providers='apt brew cargo dnf gem go npm pacman pip pnpm rustup system uv yarn'
+
+  if [[ $prev == --provider || $prev == -p ]]; then
+    COMPREPLY=( $(compgen -W "$providers" -- "$cur") )
+    return
+  fi
+  if [[ $prev == --context || $prev == --directory ]]; then
+    COMPREPLY=( $(compgen -d -- "$cur") )
+    return
+  fi
+
+  cmd=''
+  for (( i=1; i<COMP_CWORD; i++ )); do
+    if [[ ${COMP_WORDS[i]} != -* ]]; then cmd=${COMP_WORDS[i]}; break; fi
+  done
+  if [[ -z $cmd ]]; then
+    COMPREPLY=( $(compgen -W "$commands $globals" -- "$cur") )
+    return
+  fi
+
+  case $cmd in
+    init) flags='--force' ;;
+    sync) flags='--dry-run --no-confirm' ;;
+    list|ls) flags='--managed --provider' ;;
+    info|show) flags='' ;;
+    explain) flags='--provider' ;;
+    doctor) flags='--all' ;;
+    install|add|i) flags='--version --channel --project --provider --dry-run --no-confirm' ;;
+    remove|uninstall|rm) flags='--provider --dry-run --no-confirm' ;;
+    transition|move) flags='--all --reverse --dry-run --no-confirm' ;;
+    update|upgrade) flags='--self --dry-run --no-confirm' ;;
+    runs|history) flags='--package --directory' ;;
+    prune) flags='--dry-run --no-confirm' ;;
+    recover) flags='--discard --no-confirm' ;;
+    help) COMPREPLY=( $(compgen -W "$commands" -- "$cur") ); return ;;
+    *) flags='' ;;
+  esac
+  if [[ $cur == -* ]]; then
+    COMPREPLY=( $(compgen -W "$flags --help --json" -- "$cur") )
+  elif [[ $cmd == install || $cmd == add || $cmd == i ]]; then
+    COMPREPLY=( $(compgen -W ". $providers" -- "$cur") )
   fi
 }
 complete -F _starpoint starpoint

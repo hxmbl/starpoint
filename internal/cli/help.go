@@ -37,6 +37,29 @@ var aliases = map[string]string{
 // the spelling is not a command.
 func canonicalCommand(name string) string { return aliases[name] }
 
+// commandFlags lists each command's own options. It is the reference the shell
+// completions under completions/ are checked against, so adding a flag here
+// without completing it fails a test.
+var commandFlags = map[string][]string{
+	"init":       {"--force"},
+	"sync":       {"--dry-run", "--no-confirm"},
+	"list":       {"--managed", "--provider"},
+	"info":       {},
+	"explain":    {"--provider"},
+	"doctor":     {"--all"},
+	"install":    {"--version", "--channel", "--project", "--provider", "--dry-run", "--no-confirm"},
+	"remove":     {"--provider", "--dry-run", "--no-confirm"},
+	"transition": {"--all", "--reverse", "--dry-run", "--no-confirm"},
+	"update":     {"--self", "--dry-run", "--no-confirm"},
+	"runs":       {"--package", "--directory"},
+	"prune":      {"--dry-run", "--no-confirm"},
+	"recover":    {"--discard", "--no-confirm"},
+	"help":       {},
+}
+
+// globalFlags are accepted anywhere on the command line.
+var globalFlags = []string{"--json", "--provider", "--force", "--context", "--record", "--version", "--help"}
+
 // isHelpFlag reports whether an argument asks for help.
 func isHelpFlag(a string) bool { return a == "--help" || a == "-h" }
 
@@ -129,8 +152,11 @@ configuration. Starpoint picks the provider and asks when the choice is
 ambiguous. A provider may be named before or after the package.
 
 'starpoint install .' installs what the project in the current directory
-needs: the packages declared in its .starpoint.toml, and the toolchain its
-ecosystem expects.
+needs: the packages declared in its .starpoint.toml, its toolchain (recorded in
+the project's .starpoint.toml), and its dependencies through the ecosystem's
+own tool (npm ci / pnpm install / yarn install, uv sync / pip install -r,
+cargo fetch, go mod download, bundle install). The dependency command is shown
+and confirmed first; --dry-run only prints it.
 
 Aliases: add, i
 

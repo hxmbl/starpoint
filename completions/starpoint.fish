@@ -1,14 +1,34 @@
 # Fish completion for Starpoint. Install with:
 #   mkdir -p ~/.config/fish/completions
 #   cp completions/starpoint.fish ~/.config/fish/completions/
+#
+# Keep in sync with internal/cli/help.go (commandFlags); a test checks it.
+set -l commands init sync list ls info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover help
+set -l providers apt brew cargo dnf gem go npm pacman pip pnpm rustup system uv yarn
+
 complete -c starpoint -f
-complete -c starpoint -n '__fish_use_subcommand' -a 'init sync list info explain doctor install remove transition update runs history prune recover help'
-complete -c starpoint -n '__fish_use_subcommand' -l json -d 'Machine-readable output'
-complete -c starpoint -n '__fish_use_subcommand' -l provider -r -a 'apt brew cargo dnf gem golang npm pacman pip pnpm rustup shell system uv yarn'
-complete -c starpoint -n '__fish_use_subcommand' -l force -d 'Replace existing configuration'
-complete -c starpoint -n '__fish_use_subcommand' -l context -r -d 'Override working directory'
-complete -c starpoint -n '__fish_use_subcommand' -l record -d 'Force recording execution'
-complete -c starpoint -n '__fish_use_subcommand' -l no-confirm -d 'Skip confirmation'
-complete -c starpoint -n '__fish_use_subcommand' -l dry-run -d 'Preview changes'
-complete -c starpoint -n '__fish_use_subcommand' -l version -d 'Print version'
-complete -c starpoint -n '__fish_use_subcommand' -l help -d 'Show help'
+complete -c starpoint -n "not __fish_seen_subcommand_from $commands" -a "$commands"
+
+# Global options
+complete -c starpoint -l json -d 'Machine-readable output'
+complete -c starpoint -l provider -r -a "$providers" -d 'Restrict or choose the provider'
+complete -c starpoint -l force -d 'Replace existing configuration (init)'
+complete -c starpoint -l context -r -F -d 'Override working directory'
+complete -c starpoint -l record -d 'Force recording execution'
+complete -c starpoint -l version -d 'Print version (install: pin a version)'
+complete -c starpoint -l help -s h -d 'Show help'
+
+# Per-command options
+complete -c starpoint -n '__fish_seen_subcommand_from sync prune install add i remove uninstall rm transition move update upgrade' -l dry-run -d 'Preview; change nothing'
+complete -c starpoint -n '__fish_seen_subcommand_from sync prune install add i remove uninstall rm transition move update upgrade recover' -l no-confirm -d 'Do not ask first'
+complete -c starpoint -n '__fish_seen_subcommand_from list ls' -l managed -d 'Only entries with a recorded provider'
+complete -c starpoint -n '__fish_seen_subcommand_from doctor transition move' -l all -d 'Show everything'
+complete -c starpoint -n '__fish_seen_subcommand_from install add i' -l channel -r -d 'Release channel'
+complete -c starpoint -n '__fish_seen_subcommand_from install add i' -l project -d 'Record in the project configuration'
+complete -c starpoint -n '__fish_seen_subcommand_from install add i' -a '.' -d 'The current project'
+complete -c starpoint -n '__fish_seen_subcommand_from transition move' -l reverse -d 'Reverse the last transition'
+complete -c starpoint -n '__fish_seen_subcommand_from update upgrade' -l self -d 'Also update Starpoint'
+complete -c starpoint -n '__fish_seen_subcommand_from runs history' -l package -r -d 'Only this package'
+complete -c starpoint -n '__fish_seen_subcommand_from runs history' -l directory -r -F -d 'Only this directory'
+complete -c starpoint -n '__fish_seen_subcommand_from recover' -l discard -d 'Remove leftover files'
+complete -c starpoint -n '__fish_seen_subcommand_from help' -a "$commands"

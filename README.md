@@ -105,19 +105,20 @@ simply reported as left unchanged.
 | --- | --- |
 | `starpoint init [--force]` | Create `~/.starpoint.toml`; exits 1 without changing anything if it exists, `--force` replaces it |
 | `starpoint sync [--dry-run] [--no-confirm]` | Converge the machine onto the configuration |
-| `starpoint transition [pkg...]` | Show or perform provider transitions (alias: `move`) |
+| `starpoint transition [pkg...] [--all] [--dry-run] [--no-confirm]` | Show or perform provider transitions (alias: `move`) |
 | `starpoint transition --reverse <package>` | Reverse the most recent transition when safe |
-| `starpoint doctor` | Inspect Starpoint, config, providers, ownership, inconsistencies |
-| `starpoint list [--json]` | Show managed software, its location, scope and provider |
-| `starpoint info <package>` | Show one package's state in detail |
-| `starpoint install <package> [provider]` | Install and record (alias: `add`) |
-| `starpoint install .` | Install the current project's declared packages and dependencies; record its toolchain in the project config |
-| `starpoint remove <package>` | Uninstall and delete from config (alias: `uninstall`) |
-| `starpoint update [--self] [--dry-run] [--no-confirm]` | Update managed software; asks before moving past a pin |
+| `starpoint doctor [--all]` | Inspect Starpoint, config, providers, ownership, inconsistencies, PATH |
+| `starpoint list [--managed] [--provider <name>]` | Show managed software, its location, scope and provider (alias: `ls`) |
+| `starpoint info <package>` | Show one package's state in detail (alias: `show`) |
 | `starpoint explain <package>` | Explain how Starpoint resolves ownership |
-| `starpoint prune` | Preview and remove orphaned user-scoped installations |
-| `starpoint recover [--discard]` | Inspect and clear files left by an interrupted run |
-| `starpoint runs` | Show where Starpoint has been run |
+| `starpoint install <package> [provider]` | Install and record (aliases: `add`, `i`); `--version`, `--channel`, `--project`, `--dry-run`, `--no-confirm` |
+| `starpoint install .` | Install the current project's declared packages and dependencies; record its toolchain in the project config |
+| `starpoint remove <package> [provider]` | Uninstall and delete from config (aliases: `uninstall`, `rm`); `--dry-run`, `--no-confirm` |
+| `starpoint update [--self] [--dry-run] [--no-confirm]` | Update managed software; asks before moving past a pin (alias: `upgrade`) |
+| `starpoint prune [--dry-run] [--no-confirm]` | Preview and remove orphaned user-scoped installations |
+| `starpoint recover [--discard] [--no-confirm]` | Inspect and clear files left by an interrupted run |
+| `starpoint runs [--package <name>] [--directory <dir>]` | Show where Starpoint has been run (alias: `history`) |
+| `starpoint help [command]` | General help, or one command's help (same as `<command> --help`) |
 
 A provider may be named after the package names, before them, or with
 `--provider`, and a version may be written inline:
@@ -204,9 +205,20 @@ place, so a crash mid-write cannot leave a half-written config: the rename is th
 only step that publishes it. If a run is interrupted between those steps, the
 leftover `.tmp` file makes Starpoint refuse to modify configuration rather than
 layer new writes on top of a change the user never saw. `starpoint recover` reports
-what was left behind and, with `--discard`, clears it. Bash, zsh, and fish completion
-definitions are in `completions/`; JSON response shapes are documented in
-[`docs/json-schema.md`](docs/json-schema.md).
+what was left behind and, with `--discard`, clears it. JSON response shapes are
+documented in [`docs/json-schema.md`](docs/json-schema.md).
+
+Shell completions live in `completions/` and complete every command spelling,
+each command's own flags, and provider names after `--provider`:
+
+```
+# bash
+cp completions/starpoint.bash ~/.local/share/bash-completion/completions/starpoint
+# zsh (any directory on $fpath, before compinit runs)
+cp completions/starpoint.zsh ~/.zfunc/_starpoint
+# fish
+cp completions/starpoint.fish ~/.config/fish/completions/
+```
 
 ### Asking every provider at once
 
