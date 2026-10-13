@@ -45,17 +45,33 @@ type Locator struct {
 // OnPath returns every executable visible in PATH, preserving duplicate names
 // from different directories. Symlinks are attributed using both their visible
 // path and resolved target; Path always remains the entry users execute.
+//
+// A directory is read once, however many times PATH names it and whichever
+// spelling it uses: /bin and /usr/bin on a merged-/usr system, a trailing slash,
+// or a symlinked directory all resolve to the same place. Reading it twice
+// reported every file in it as a duplicate of itself. A later entry with the
+// same name is a duplicate only when it is a different file; two links to one
+// program are not a shadowing problem.
 func (l *Locator) OnPath() []Found {
 	path := l.SearchPath
 	if path == "" {
 		path = os.Getenv("PATH")
 	}
 	var out []Found
-	seenNames := map[string]bool{}
+	firstTarget := map[string]string{}
+	seenDirs := map[string]bool{}
 	for _, dir := range filepath.SplitList(path) {
 		if dir == "" {
 			dir = "."
 		}
+		key := filepath.Clean(dir)
+		if real, err := filepath.EvalSymlinks(key); err == nil {
+			key = real
+		}
+		if seenDirs[key] {
+			continue
+		}
+		seenDirs[key] = true
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue
@@ -66,10 +82,17 @@ func (l *Locator) OnPath() []Found {
 			if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
 				continue
 			}
-			duplicate := seenNames[entry.Name()]
-			seenNames[entry.Name()] = true
-			scope, owner, ok := l.AttributeExecutable(full)
 			target, targetErr := filepath.EvalSymlinks(full)
+			resolved := full
+			if targetErr == nil {
+				resolved = target
+			}
+			first, seen := firstTarget[entry.Name()]
+			if !seen {
+				firstTarget[entry.Name()] = resolved
+			}
+			duplicate := seen && first != resolved
+			scope, owner, ok := l.AttributeExecutable(full)
 			linkInfo, _ := os.Lstat(full)
 			found := Found{Path: full, Attributed: ok, Duplicate: duplicate, Symlink: linkInfo != nil && linkInfo.Mode()&os.ModeSymlink != 0}
 			if targetErr == nil && target != full {
@@ -91,6 +114,33 @@ func (l *Locator) OnPath() []Found {
 		return out[i].Path < out[j].Path
 	})
 	return out
+}
+
+// PATHSummary condenses a PATH inventory for people. The full inventory is a
+// few thousand rows on an ordinary machine; what is worth reading is the count,
+// the names that are shadowed by an earlier entry, and the files nobody owns.
+type PATHSummary struct {
+	Executables int `json:"executables"`
+	Directories int `json:"directories"`
+	Shadowed    int `json:"shadowed"`
+	Unknown     int `json:"unknown_owner"`
+}
+
+// Summarize counts an inventory.
+func Summarize(found []Found) PATHSummary {
+	dirs := map[string]bool{}
+	s := PATHSummary{Executables: len(found)}
+	for _, f := range found {
+		dirs[filepath.Dir(f.Path)] = true
+		if f.Duplicate {
+			s.Shadowed++
+		}
+		if !f.Attributed {
+			s.Unknown++
+		}
+	}
+	s.Directories = len(dirs)
+	return s
 }
 
 // New builds a Locator backed by the real filesystem.

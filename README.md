@@ -151,7 +151,10 @@ placement reliably; see `docs/next-tasks.md`.
 ### Operations and completion
 
 `doctor` reports provider health, configuration and ownership, interrupted config
-writes, plus executables found on `PATH` whose owner is unknown. `list` shows
+writes, plus a summary of the executables on `PATH`: counts, names shadowed by
+an earlier entry, and executables whose owner is unknown. `doctor --all` lists
+every entry; `--json` always carries the full inventory. A directory PATH names
+twice (or via a symlink, such as `/bin` → `/usr/bin`) is read once. `list` shows
 configured software and unaccounted executables. Provider transitions use
 observed inventory and executable resolution to resume after interruption;
 `starpoint runs` exposes transition history and `transition --reverse` attempts

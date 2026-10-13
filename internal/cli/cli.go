@@ -633,8 +633,14 @@ func joinProviders(fs []engine.Finding) string {
 
 // cmdDoctor inspects everything.
 func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) error {
+	showAll := false
 	for _, a := range args {
-		return fmt.Errorf("%w: unknown option %q for doctor", ErrUsage, a)
+		switch a {
+		case "--all", "-a":
+			showAll = true
+		default:
+			return fmt.Errorf("%w: unknown option %q for doctor", ErrUsage, a)
+		}
 	}
 	globalPath, err := env.globalPath()
 	if err != nil {
@@ -651,8 +657,10 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 		Starpoint:     report.StarpointInfo{Version: Version},
 		Providers:     []report.ProviderHealth{},
 		PATHInventory: env.loc().OnPath(),
+		ShowAllPATH:   showAll,
 		Healthy:       true,
 	}
+	rep.PATHSummary = locator.Summarize(rep.PATHInventory)
 	rep.Config = report.DocumentInfo(doc, globalPath, isWritable(globalPath))
 	for _, file := range doc.Projects {
 		rep.Config.Files = append(rep.Config.Files, file.Path)

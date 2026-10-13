@@ -108,11 +108,16 @@ Options:
   --provider <name>   Restrict the candidates, as install would
   --json              Machine-readable output
 `,
-	"doctor": `Usage: starpoint doctor
+	"doctor": `Usage: starpoint doctor [--all]
 
 Check Starpoint, its configuration, providers, ownership, transitions and PATH.
 
+The PATH inventory is summarised by default: counts, names shadowed by an
+earlier PATH entry, and executables with an unknown owner. --all lists every
+executable. --json always carries the full inventory.
+
 Options:
+  --all, -a    List the whole PATH inventory
   --json       Machine-readable output
 `,
 	"install": `Usage: starpoint install <package>[@version] [provider] [options]
