@@ -208,9 +208,9 @@ func TestContextRelevantPackages(t *testing.T) {
 
 func TestContextInProjectRoot(t *testing.T) {
 	tests := []struct {
-		name          string
-		workingDir    string
-		projectRoot   string
+		name           string
+		workingDir     string
+		projectRoot    string
 		expectedInRoot bool
 	}{
 		{"In project root", "/project", "/project", true},
