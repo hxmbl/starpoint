@@ -192,6 +192,14 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	cmd, cmdArgs := rest[0], rest[1:]
 	w := report.New(env.Stdout, asJSON)
 
+	// `starpoint <command> --help` is help for that command, wherever the flag
+	// sits. It must be decided before dispatch: a command that took it as an
+	// argument would treat it as a package name.
+	if canonicalCommand(cmd) != "" && wantsHelp(cmdArgs) {
+		printCommandHelp(env.Stdout, cmd)
+		return 0
+	}
+
 	var err error
 	switch cmd {
 	case "init":
@@ -203,6 +211,9 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	case "info", "show":
 		err = cmdInfo(ctx, env, w, cmdArgs)
 	case "explain":
+		// explain reads the restriction from the environment, the way the
+		// resolver input is built for every other command.
+		env.restrict = append(env.restrict, providers...)
 		err = cmdExplain(ctx, env, w, cmdArgs)
 	case "doctor":
 		err = cmdDoctor(ctx, env, w, cmdArgs)
@@ -221,6 +232,10 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	case "recover":
 		err = cmdRecover(env, w, cmdArgs)
 	case "help":
+		if len(cmdArgs) > 0 && canonicalCommand(cmdArgs[0]) != "" {
+			printCommandHelp(env.Stdout, cmdArgs[0])
+			return 0
+		}
 		printUsage(env.Stdout)
 		return 0
 	default:
@@ -231,8 +246,8 @@ func Run(ctx context.Context, env *Env, args []string) int {
 
 	if err != nil {
 		if errors.Is(err, ErrUsage) {
-			fmt.Fprintf(env.Stderr, "error: %s\n", err)
-			printUsage(env.Stderr)
+			fmt.Fprintf(env.Stderr, "error: %s\n\n", err)
+			printCommandHelp(env.Stderr, cmd)
 			return 2
 		}
 		if asJSON {
@@ -523,6 +538,9 @@ func cmdInfo(ctx context.Context, env *Env, w *report.Writer, args []string) err
 		return fmt.Errorf("%w: info needs a package name", ErrUsage)
 	}
 	name := args[0]
+	if err := rejectOption("info", name); err != nil {
+		return err
+	}
 	doc, eng, opts, _, err := env.setup(ctx, nil)
 	if err != nil {
 		return err
@@ -789,6 +807,9 @@ func cmdExplain(ctx context.Context, env *Env, w *report.Writer, args []string) 
 		return fmt.Errorf("%w: explain needs a package name", ErrUsage)
 	}
 	name := args[0]
+	if err := rejectOption("explain", name); err != nil {
+		return err
+	}
 
 	globalPath, err := env.globalPath()
 	if err != nil {
@@ -956,6 +977,9 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		case "--project":
 			asProject = true
 		default:
+			if err := rejectOption("install", args[i]); err != nil {
+				return err
+			}
 			names = append(names, args[i])
 		}
 	}
@@ -1257,6 +1281,9 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		case "--no-confirm", "-y", "--yes":
 			noConfirm = true
 		default:
+			if err := rejectOption("remove", args[i]); err != nil {
+				return err
+			}
 			names = append(names, args[i])
 		}
 	}

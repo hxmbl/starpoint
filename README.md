@@ -107,6 +107,9 @@ refused rather than assumed.
 
 Global options work anywhere on the line: `--json`, `--provider <name>`
 (repeatable, restricts automatic resolution), `--force`, `--version`, `--help`.
+`--help` (or `-h`) after a command prints that command's help, as does
+`starpoint help <command>`; it is never taken as a package name. Any other
+unrecognised `-`-prefixed token is a usage error rather than a package name.
 
 ### Output
 
