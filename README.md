@@ -191,6 +191,15 @@ be installable by a provider that does not have it yet — but it is stated plai
 and qualified when a provider is installed yet unable to enumerate its inventory,
 because that weakens the claim.
 
+When nothing on the machine and nothing about the name settles who should own
+it, Starpoint asks. That includes the common case of one system package manager
+beside language providers: `starpoint install cowsay` on a machine with apt, uv
+and npm offers apt as the default but asks, because "the Debian package" and "the
+PyPI package" are different choices. Without a terminal the command fails and
+names `--provider`. A provider named on the command line is recorded with the
+reason `chosen by the user on the command line`, a prompt answer as `provider
+chosen interactively`.
+
 `starpoint info <package>` uses the same lookup for software it does not manage,
 so it names *every* provider that has it rather than the first one that answered.
 On this machine, `starpoint info rake` reports that `system` provides it and that

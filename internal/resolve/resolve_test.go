@@ -488,3 +488,60 @@ func TestIncumbentStillWinsForNamesWithoutAKnownOwner(t *testing.T) {
 		t.Errorf("existing ownership must be kept for an unrecognised name, got %q", got.Provider)
 	}
 }
+
+// The audit: `install cowsay` on a machine with apt, uv, pip, cargo and npm
+// picked apt with high confidence because apt was the only *system* package
+// manager, and said "only one package manager is available".
+func TestOneSystemManagerBesideLanguageProvidersIsAmbiguous(t *testing.T) {
+	reg, health := buildRegistry(t,
+		spec{name: "apt", kind: provider.KindApt, caps: fullCaps(model.ScopeGlobal), available: true},
+		spec{name: uv.Name, kind: provider.KindPython, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: cargo.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: rustup.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+	)
+	got := New(reg).Resolve(Input{Package: model.Package{Name: "cowsay"}, Available: health})
+	if !got.Ambiguous {
+		t.Fatalf("an unknown name with several viable providers must be asked about, got %+v", got)
+	}
+	if got.Provider != "apt" {
+		t.Errorf("the system package manager should be the offered default, got %q", got.Provider)
+	}
+	if got.Confidence == model.ConfidenceHigh || got.Confidence == model.ConfidenceCertain {
+		t.Errorf("a guess is not high confidence: %q", got.Confidence)
+	}
+	alts := strings.Join(got.Alternatives, ",")
+	if alts != "cargo,uv" {
+		t.Errorf("language providers are the alternatives (rustup installs toolchains only), got %q", alts)
+	}
+	if strings.Contains(got.Reason, "only one package manager") {
+		t.Errorf("the reason must not claim there is one package manager: %q", got.Reason)
+	}
+	if !strings.Contains(got.Reason, "only system package manager") {
+		t.Errorf("the reason should say what is true, got %q", got.Reason)
+	}
+}
+
+func TestOneSystemManagerAloneSaysSo(t *testing.T) {
+	reg, health := buildRegistry(t,
+		spec{name: brew.Name, kind: provider.KindBrew, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: rustup.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+	)
+	got := New(reg).Resolve(Input{Package: model.Package{Name: "ripgrep"}, Available: health})
+	if got.Ambiguous || got.Provider != brew.Name {
+		t.Fatalf("brew is the only plausible home, got %+v", got)
+	}
+	if got.Reason != "only one system package manager is available" {
+		t.Errorf("reason = %q", got.Reason)
+	}
+}
+
+func TestAKnownEcosystemIsStillNotAmbiguous(t *testing.T) {
+	reg, health := buildRegistry(t,
+		spec{name: "apt", kind: provider.KindApt, caps: fullCaps(model.ScopeGlobal), available: true},
+		spec{name: uv.Name, kind: provider.KindPython, caps: fullCaps(model.ScopeUser), available: true},
+	)
+	got := New(reg).Resolve(Input{Package: model.Package{Name: "ruff"}, Available: health})
+	if got.Ambiguous || got.Provider != uv.Name {
+		t.Errorf("a name that identifies its ecosystem is decided, got %+v", got)
+	}
+}

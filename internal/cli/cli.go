@@ -1009,6 +1009,12 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		}
 		pkg.Channel = channel
 		pkg.Provider = singleProvider(opts.Allowed)
+		if pkg.Provider != "" {
+			// The user named the provider for this command. That is a human
+			// decision and is recorded as one, not as something the
+			// configuration said.
+			pkg.Reason = "chosen by the user on the command line"
+		}
 		if asProject {
 			pkg.Scope = model.ScopeProject
 		}

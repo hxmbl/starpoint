@@ -153,3 +153,47 @@ func TestExplainMatchesWhatInstallRecords(t *testing.T) {
 		t.Errorf("install recorded something else:\n%s", h.configBody())
 	}
 }
+
+func TestAnUnknownNameIsAskedAboutWhenSeveralProvidersCouldHaveIt(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	h.mustRun("install", "cowsay", "--no-confirm")
+	if len(h.choices) != 1 {
+		t.Fatalf("the provider choice should have been asked once, got %v", h.choices)
+	}
+	if !strings.Contains(h.choices[0], "brew") || !strings.Contains(h.choices[0], "uv") {
+		t.Errorf("the question should list the candidates: %q", h.choices[0])
+	}
+	if !strings.Contains(h.configBody(), `reason = "provider chosen interactively"`) {
+		t.Errorf("the choice should be recorded as the user's:\n%s", h.configBody())
+	}
+
+	h2 := newHarness(t, "schema = 1\n")
+	h2.env.Choose = nil
+	code, _, errOut := h2.run("install", "cowsay", "--no-confirm")
+	if code == 0 || !strings.Contains(errOut, "--provider") {
+		t.Errorf("without a terminal the ambiguity must fail and name --provider, got %d %q", code, errOut)
+	}
+	if len(h2.brew.InstallCalls)+len(h2.uv.InstallCalls) != 0 {
+		t.Error("nothing may be installed on a guess")
+	}
+}
+
+func TestAProviderNamedOnTheCommandLineIsRecordedAsTheUsersChoice(t *testing.T) {
+	for _, args := range [][]string{
+		{"install", "cowsay", "uv", "--no-confirm"},
+		{"install", "cowsay", "--provider", "uv", "--no-confirm"},
+	} {
+		h := newHarness(t, "schema = 1\n")
+		h.mustRun(args...)
+		body := h.configBody()
+		if !strings.Contains(body, `reason = "chosen by the user on the command line"`) {
+			t.Errorf("%v: reason not recorded as the user's choice:\n%s", args, body)
+		}
+		if strings.Contains(body, "configuration explicitly selects") {
+			t.Errorf("%v: the configuration did not select anything:\n%s", args, body)
+		}
+		if len(h.choices) != 0 {
+			t.Errorf("%v: a named provider needs no question", args)
+		}
+	}
+}

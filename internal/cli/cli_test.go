@@ -44,6 +44,8 @@ type harness struct {
 	questions []string
 	// confirm overrides the answer given to confirmations.
 	confirm *bool
+	// choices records every provider question the harness was asked.
+	choices []string
 }
 
 // ask makes the harness answer every confirmation with the given answer.
@@ -124,6 +126,12 @@ func newHarness(t *testing.T, configBody string) *harness {
 			h.questions = append(h.questions, question)
 			return true, nil
 		},
+		// An ambiguous provider choice is asked about; the harness user accepts
+		// the offered default, as pressing enter at the prompt would.
+		Choose: func(question string, options []string) (string, error) {
+			h.choices = append(h.choices, question)
+			return options[0], nil
+		},
 	}
 	// Hook into newEngine to set tracker. Resolve the locator at call time so a
 	// test that swaps PATH resolution mid-harness still reaches the live locator.
@@ -132,9 +140,11 @@ func newHarness(t *testing.T, configBody string) *harness {
 		eng.SetTracker(tracker)
 		return eng
 	}
-	return &harness{t: t, stdout: out, stderr: errBuf, config: cfg, env: env,
-		brew: brewP, uv: uvP, rustup: rustupP, cargo: cargoP, npm: npmP, sys: sys,
-		apt: aptP, tracker: tracker}
+	// The closures above capture h, so h itself is what the test gets back.
+	h.config, h.env = cfg, env
+	h.brew, h.uv, h.rustup, h.cargo, h.npm, h.sys, h.apt = brewP, uvP, rustupP, cargoP, npmP, sys, aptP
+	h.tracker = tracker
+	return h
 }
 
 // setLocator installs a scripted PATH resolution so tests do not depend on the

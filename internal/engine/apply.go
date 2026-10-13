@@ -613,6 +613,12 @@ func (e *Engine) plan(ctx context.Context, pkg model.Package, opts Options) (*ad
 	available := e.health(ctx)
 	existing := e.findExisting(ctx, pkg, available)
 	resolution := e.resolver.Resolve(e.resolveInput(pkg, existing, available, opts))
+	if pkg.Reason != "" && resolution.Forced {
+		// The provider came from the caller with its own reason (named on the
+		// command line, or picked at a prompt); report that rather than the
+		// resolver's generic "configuration selects it".
+		resolution.Reason = pkg.Reason
+	}
 
 	resolved := pkg
 	resolved.Provider = resolution.Provider
