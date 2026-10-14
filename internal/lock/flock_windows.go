@@ -3,6 +3,7 @@
 package lock
 
 import (
+	"errors"
 	"os"
 	"syscall"
 	"unsafe"
@@ -47,7 +48,11 @@ func flockUnlock(fd uintptr) error {
 	return nil
 }
 
+// errorLockViolation is Windows' ERROR_LOCK_VIOLATION (33). The syscall
+// package does not export it, so it is declared here.
+const errorLockViolation syscall.Errno = 33
+
 func isLockConflictImpl(err error) bool {
-	// Windows returns ERROR_LOCK_VIOLATION for lock conflicts
-	return err == syscall.ERROR_LOCK_VIOLATION
+	// Windows returns ERROR_LOCK_VIOLATION for lock conflicts.
+	return errors.Is(err, errorLockViolation)
 }
