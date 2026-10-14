@@ -1,4 +1,4 @@
-module github.com/starpoint/starpoint
+module github.com/hxmbl/starpoint
 
 go 1.27.0
 

@@ -19,10 +19,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/exec"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/shell"
+	"github.com/hxmbl/starpoint/internal/exec"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/shell"
 )
 
 // Name is the provider identifier persisted in configuration.
@@ -299,7 +299,7 @@ func (p *Provider) resolveGlobalDir(ctx context.Context) (string, error) {
 		return "", shell.Failure(p.Name(), "list", "could not locate yarn's global directory", err)
 	}
 	if res.Failed() {
-		return "", shell.Failure(p.Name(), "list", shell.FirstLine(res.Field()), nil)
+		return "", shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 	}
 	p.globalDir = strings.TrimSpace(shell.FirstLine(res.Stdout))
 	return p.globalDir, nil
@@ -338,7 +338,7 @@ func (p *Provider) classify(op string, res exec.Result) error {
 		strings.Contains(text, "registry.yarnpkg.com"):
 		return shell.Err(Name, op, provider.ErrNetwork, "could not reach the registry", nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "yarn exited nonzero"
 		}

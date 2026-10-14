@@ -2,11 +2,14 @@ package uv
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/testsupport"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/testsupport"
 )
 
 const toolListOutput = `ruff v0.5.4
@@ -163,5 +166,62 @@ func TestEmptyOutputIsHandled(t *testing.T) {
 	insts := p.parseToolList("")
 	if len(insts) != 0 {
 		t.Errorf("expected no tools, got %+v", insts)
+	}
+}
+
+func TestExistingExecutableIsAConflictThatNamesTheFile(t *testing.T) {
+	// uv prints progress first. The error used to be reported as "Resolved 1
+	// package in 1ms", which is the one line that explains nothing.
+	p, r := newProvider(t)
+	r.SetFail(2, "Resolved 1 package in 1ms\nerror: Executable already exists: cowsay (use `--force` to overwrite)",
+		"uv", "tool", "install", "cowsay")
+	_, err := p.Install(context.Background(), provider.Request{Package: model.Package{Name: "cowsay"}})
+	pe, ok := provider.AsProviderError(err)
+	if !ok {
+		t.Fatalf("expected a provider error, got %v", err)
+	}
+	if pe.Kind != provider.ErrConflict {
+		t.Errorf("classified as %q, want conflict", pe.Kind)
+	}
+	if !strings.Contains(err.Error(), "Executable already exists: cowsay") {
+		t.Errorf("the error must carry uv's explanation, got %q", err.Error())
+	}
+}
+
+func TestOtherFailuresCarryTheMeaningfulStderr(t *testing.T) {
+	p, r := newProvider(t)
+	r.SetFail(2, "Resolved 3 packages in 2ms\nerror: Failed to install entrypoint\n  Caused by: Permission denied (os error 13)",
+		"uv", "tool", "install", "cowsay")
+	_, err := p.Install(context.Background(), provider.Request{Package: model.Package{Name: "cowsay"}})
+	if err == nil || !strings.Contains(err.Error(), "Permission denied") {
+		t.Errorf("the cause should be in the error, got %v", err)
+	}
+}
+
+func TestToolBinPathIgnoresFilesUvDidNotLink(t *testing.T) {
+	home := t.TempDir()
+	bin := filepath.Join(home, ".local", "bin")
+	t.Setenv("UV_TOOL_BIN_DIR", "")
+	t.Setenv("XDG_BIN_HOME", "")
+	testsupport.WriteFile(t, filepath.Join(bin, "cowsay"), "#!/bin/sh\n")
+	p := New(testsupport.NewFakeRunner(), home)
+	if got := p.toolBinPath("cowsay"); got != "" {
+		t.Errorf("a plain file (pip's console script) is not uv's, got %q", got)
+	}
+
+	toolExe := filepath.Join(home, ".local", "share", "uv", "tools", "black", "bin", "black")
+	testsupport.WriteFile(t, toolExe, "#!/bin/sh\n")
+	if err := os.Symlink(toolExe, filepath.Join(bin, "black")); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.toolBinPath("black"); got != filepath.Join(bin, "black") {
+		t.Errorf("a link into uv's tool directory is uv's, got %q", got)
+	}
+	if got := p.ExecutableDir(context.Background()); got != bin {
+		t.Errorf("ExecutableDir = %q, want %q", got, bin)
+	}
+	t.Setenv("UV_TOOL_BIN_DIR", "/custom/bin")
+	if got := p.ExecutableDir(context.Background()); got != "/custom/bin" {
+		t.Errorf("UV_TOOL_BIN_DIR should win, got %q", got)
 	}
 }

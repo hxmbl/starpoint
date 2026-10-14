@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/engine"
-	"github.com/starpoint/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/engine"
+	"github.com/hxmbl/starpoint/internal/model"
 )
 
 // change is one thing a command is about to do to the machine.

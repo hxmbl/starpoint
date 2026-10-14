@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/model"
 )
 
 // Kind classifies a project by the ecosystem it belongs to.

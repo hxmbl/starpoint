@@ -3,13 +3,15 @@ package report
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/config"
-	"github.com/starpoint/starpoint/internal/engine"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/engine"
+	"github.com/hxmbl/starpoint/internal/locator"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
 )
 
 func TestListHumanOutputHasColumns(t *testing.T) {
@@ -366,5 +368,55 @@ func TestSyncConvergenceRequiresHealthyStates(t *testing.T) {
 	}
 	if payload["converged"] != false {
 		t.Errorf("converged must be false while a package is unsatisfied: %s", buf.String())
+	}
+}
+
+func TestDoctorSummarisesThePATHInventoryByDefault(t *testing.T) {
+	var inv []locator.Found
+	for i := 0; i < 40; i++ {
+		inv = append(inv, locator.Found{Path: fmt.Sprintf("/usr/bin/tool%02d", i), Attributed: true,
+			Installation: &model.Installation{Provider: "system"}})
+	}
+	inv = append(inv,
+		locator.Found{Path: "/opt/x/bin/mystery", Reason: "ownership unknown"},
+		locator.Found{Path: "/opt/y/bin/tool01", Duplicate: true, Attributed: true,
+			Installation: &model.Installation{Provider: "brew"}},
+	)
+	rep := DoctorReport{PATHInventory: inv, PATHSummary: locator.Summarize(inv), Healthy: true}
+
+	var buf bytes.Buffer
+	if err := New(&buf, false).Doctor(rep); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "42 executables") || !strings.Contains(out, "1 shadowed") {
+		t.Errorf("the summary should count the inventory:\n%s", out)
+	}
+	if !strings.Contains(out, "/opt/x/bin/mystery") || !strings.Contains(out, "/opt/y/bin/tool01") {
+		t.Errorf("unknown and shadowed entries should be shown:\n%s", out)
+	}
+	if strings.Contains(out, "/usr/bin/tool05") {
+		t.Errorf("ordinary attributed entries belong behind --all:\n%s", out)
+	}
+	if !strings.Contains(out, "doctor --all") {
+		t.Errorf("the way to the full list should be named:\n%s", out)
+	}
+
+	buf.Reset()
+	rep.ShowAllPATH = true
+	if err := New(&buf, false).Doctor(rep); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "/usr/bin/tool05") {
+		t.Error("--all must list every entry")
+	}
+
+	buf.Reset()
+	rep.ShowAllPATH = false
+	if err := New(&buf, true).Doctor(rep); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "/usr/bin/tool05") || !strings.Contains(buf.String(), `"path_summary"`) {
+		t.Error("JSON keeps the full inventory and the summary")
 	}
 }

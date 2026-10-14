@@ -58,7 +58,7 @@ All JSON output, including errors, includes a top-level `schema_version` field. 
   "desired": "Installation | null",
   "current": "Installation | null",
   "elsewhere": ["Installation"],
-  "status": "correct | missing | provider-differs | version-differs | version-unsatisfiable",
+  "status": "correct | missing | provider-differs | version-differs | version-unsatisfiable | unmanaged",
   "notes": ["string"]
 }
 ```
@@ -193,10 +193,32 @@ The following examples show payload fields; the actual response also has the top
     }
   ],
   "ownership": ["State"],
+  "path_inventory": [
+    {
+      "installation": "Installation | null",
+      "path": "string",
+      "attributed": "boolean",
+      "reason": "string | null",
+      "duplicate": "boolean",
+      "symlink": "boolean",
+      "target": "string | null"
+    }
+  ],
+  "path_summary": {
+    "executables": "number",
+    "directories": "number",
+    "shadowed": "number",
+    "unknown_owner": "number"
+  },
   "problems": ["Warning"],
   "healthy": "boolean"
 }
 ```
+
+`path_inventory` is always complete, whatever the human output shows. Each PATH
+directory is read once even when PATH names it several times or through a
+symlink; `duplicate` is true only for a different file shadowed by an earlier
+entry with the same name.
 
 ### `starpoint install` / `starpoint remove` / `starpoint update`
 
@@ -208,6 +230,20 @@ The following examples show payload fields; the actual response also has the top
   "config_path": "string | null",
   "actions": ["ActionResult"],
   "warnings": ["Warning"]
+}
+```
+
+`update` adds `pin_conflicts`, one per pinned package with a newer version
+available:
+
+```json
+{
+  "package": "string",
+  "provider": "string",
+  "pinned": "string",
+  "available": "string",
+  "resolution": "kept | updated | pending",
+  "config_path": "string | null"
 }
 ```
 

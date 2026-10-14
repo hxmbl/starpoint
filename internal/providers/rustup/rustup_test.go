@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/exec"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/testsupport"
+	"github.com/hxmbl/starpoint/internal/exec"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/testsupport"
 )
 
 // Fixtures captured from rustup 1.29.1 on x86_64-apple-darwin.

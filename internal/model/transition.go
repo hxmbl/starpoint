@@ -72,6 +72,12 @@ type Verification struct {
 	Resolved bool `json:"resolved"`
 	// Version is what the software reported about itself, when available.
 	Version string `json:"version,omitempty"`
+	// OnDisk is the executable found on disk when PATH did not resolve the name.
+	OnDisk string `json:"on_disk,omitempty"`
+	// Missing is true when the name is a command but no executable was found on
+	// PATH or at any location the provider reported. An inventory entry without
+	// a file behind it is not a working installation.
+	Missing bool `json:"missing,omitempty"`
 	// Method names the strongest evidence used, for reporting.
 	Method string `json:"method,omitempty"`
 	// Note explains a partial or surprising result.
@@ -87,7 +93,7 @@ type Verification struct {
 // would break it. When the name cannot be looked up on PATH at all, the provider's
 // own inventory is accepted with a note rather than treated as failure.
 func (v Verification) OK() bool {
-	if !v.Present {
+	if !v.Present || v.Missing {
 		return false
 	}
 	if v.PathOwner != "" && v.PathOwner != v.Provider {
@@ -105,9 +111,13 @@ func (v Verification) Reason() string {
 	switch {
 	case !v.Present:
 		return v.Provider + " does not report it as installed"
+	case v.Missing:
+		return v.Provider + " lists it, but its executable is not on PATH or anywhere " + v.Provider + " reported"
 	case v.PathOwner != "" && v.PathOwner != v.Provider:
 		return fmt.Sprintf("%s is installed but the command resolves to %s's copy at %s",
 			v.Provider, v.PathOwner, v.OnPath)
+	case v.Resolved && v.OnDisk != "":
+		return fmt.Sprintf("confirmed: %s is installed and its executable exists at %s", v.Provider, v.OnDisk)
 	case v.Resolved:
 		return fmt.Sprintf("confirmed: %s is installed and the command resolves to it", v.Provider)
 	default:

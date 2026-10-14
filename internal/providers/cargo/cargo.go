@@ -13,10 +13,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/exec"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/shell"
+	"github.com/hxmbl/starpoint/internal/exec"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/shell"
 )
 
 // Name is the provider identifier persisted in configuration.
@@ -81,7 +81,7 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 		return nil, shell.Failure(p.Name(), "list", "could not list installed crates", err)
 	}
 	if res.Failed() {
-		return nil, shell.Failure(p.Name(), "list", shell.FirstLine(res.Field()), nil)
+		return nil, shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 	}
 	return p.parseList(res.Stdout), nil
 }
@@ -213,7 +213,7 @@ func classify(op string, res exec.Result) error {
 	case strings.Contains(text, "permission denied"):
 		return shell.Err(Name, op, provider.ErrPermission, "cargo needs write access to its install directory", nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "cargo exited nonzero"
 		}
@@ -277,4 +277,27 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 		return shell.Failure(p.Name(), "verify", "executable failed verification", nil)
 	}
 	return nil
+}
+
+var _ provider.LatestVersionProvider = (*Provider)(nil)
+
+// LatestVersion asks crates.io through `cargo search`, whose lines read
+// `name = "x.y.z"    # description`. Only an exact name match counts.
+func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string, error) {
+	res, err := p.runner.Run(ctx, "cargo", "search", pkg.Name, "--limit", "1")
+	if err != nil {
+		return "", shell.Failure(p.Name(), "latest", "could not run cargo search", err)
+	}
+	if res.Failed() {
+		return "", shell.Failure(p.Name(), "latest", shell.Diagnostic(res.Field()), nil)
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		name, rest, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(name) != pkg.Name {
+			continue
+		}
+		rest = strings.SplitN(rest, "#", 2)[0]
+		return strings.Trim(strings.TrimSpace(rest), `"`), nil
+	}
+	return "", nil
 }

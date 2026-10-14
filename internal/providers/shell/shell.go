@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/provider"
 )
 
 // ExecutableForPackage resolves the executable that verifies a package, given an
@@ -103,6 +103,67 @@ func FirstLine(s string) string {
 		}
 	}
 	return ""
+}
+
+// Diagnostic condenses a failed command's output into the part a user needs.
+//
+// Package managers print progress before they print the problem: uv's first
+// line is usually "Resolved 1 package in 1ms" and the reason it failed comes
+// after. Reporting only the first line hides the one thing worth reading, so
+// this prefers lines that announce themselves as errors (and the hints that
+// follow them) and otherwise falls back to the last lines, which is where a
+// tool that does not label its errors puts them.
+func Diagnostic(s string) string {
+	var lines []string
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			lines = append(lines, t)
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	var picked []string
+	for _, line := range lines {
+		if looksLikeDiagnostic(line) {
+			picked = append(picked, line)
+		}
+		if len(picked) == maxDiagnosticLines {
+			break
+		}
+	}
+	if len(picked) == 0 {
+		start := len(lines) - 3
+		if start < 0 {
+			start = 0
+		}
+		picked = lines[start:]
+	}
+	out := strings.Join(picked, "; ")
+	if len(out) > maxDiagnosticLen {
+		out = out[:maxDiagnosticLen-3] + "..."
+	}
+	return out
+}
+
+const (
+	maxDiagnosticLines = 5
+	maxDiagnosticLen   = 600
+)
+
+// looksLikeDiagnostic reports whether a line is an error, or the advice that
+// accompanies one, rather than progress output.
+func looksLikeDiagnostic(line string) bool {
+	lower := strings.ToLower(strings.TrimLeft(line, "×✗!*-> \t"))
+	for _, prefix := range []string{
+		"error", "fatal", "e:", "err!", "caused by", "hint:", "help:",
+		"failed", "could not", "cannot", "unable to", "no matching", "permission denied",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return strings.Contains(lower, "error:")
 }
 
 // Fields splits a line into fields, dropping empties.

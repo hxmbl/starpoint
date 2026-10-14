@@ -13,13 +13,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/config"
-	"github.com/starpoint/starpoint/internal/engine"
-	"github.com/starpoint/starpoint/internal/locator"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/project"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/resolve"
+	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/engine"
+	"github.com/hxmbl/starpoint/internal/locator"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/project"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/resolve"
 )
 
 // Writer renders results.
@@ -115,7 +115,7 @@ func (w *Writer) List(states []model.State, pathInventory ...[]locator.Found) er
 		for _, f := range unaccounted {
 			detail := f.Reason
 			if f.Duplicate {
-				detail = strings.TrimSpace(detail + "; duplicate name later on PATH")
+				detail = strings.TrimSpace(detail + "; shadowed by an earlier PATH entry")
 			}
 			if f.Symlink {
 				detail = strings.TrimSpace(detail + "; symlink → " + f.Target)
@@ -421,8 +421,13 @@ type DoctorReport struct {
 	Providers     []ProviderHealth `json:"providers"`
 	Ownership     []model.State    `json:"ownership"`
 	PATHInventory []locator.Found  `json:"path_inventory"`
-	Problems      []model.Warning  `json:"problems,omitempty"`
-	Healthy       bool             `json:"healthy"`
+	// PATHSummary counts the inventory; the full list stays in PATHInventory.
+	PATHSummary locator.PATHSummary `json:"path_summary"`
+	// ShowAllPATH asks the human renderer for every inventory row instead of
+	// the summary. JSON always carries the full inventory.
+	ShowAllPATH bool            `json:"-"`
+	Problems    []model.Warning `json:"problems,omitempty"`
+	Healthy     bool            `json:"healthy"`
 }
 
 // StarpointInfo describes the running binary.
@@ -498,27 +503,17 @@ func (w *Writer) Doctor(rep DoctorReport) error {
 			return err
 		}
 	}
-	fmt.Fprintf(w.out, "\nPATH inventory (%d executable entries)\n", len(rep.PATHInventory))
-	if len(rep.PATHInventory) > 0 {
-		rows := [][]string{{"BINARY", "LOCATION", "OWNER", "DETAIL"}}
-		for _, f := range rep.PATHInventory {
-			owner, detail := "unknown", f.Reason
-			if f.Installation != nil {
-				owner = f.Installation.Provider
+	if rep.ShowAllPATH {
+		fmt.Fprintf(w.out, "\nPATH inventory (%d executable entries)\n", len(rep.PATHInventory))
+		if len(rep.PATHInventory) > 0 {
+			if err := w.pathRows(rep.PATHInventory); err != nil {
+				return err
 			}
-			if f.Duplicate {
-				detail = strings.TrimSpace(detail + " duplicate name; later PATH entry")
-			}
-			if f.Symlink {
-				detail = strings.TrimSpace(detail + " symlink → " + f.Target)
-			}
-			rows = append(rows, []string{filepath.Base(f.Path), f.Path, owner, dash(detail)})
+		} else {
+			fmt.Fprintln(w.out, "  No executable entries found on PATH.")
 		}
-		if err := w.table(rows); err != nil {
-			return err
-		}
-	} else {
-		fmt.Fprintln(w.out, "  No executable entries found on PATH.")
+	} else if err := w.pathSummary(rep); err != nil {
+		return err
 	}
 
 	if len(rep.Problems) > 0 {
@@ -535,6 +530,76 @@ func (w *Writer) Doctor(rep DoctorReport) error {
 		fmt.Fprintln(w.out, "\nNo problems found.")
 	}
 	return nil
+}
+
+// pathSummaryLimit caps each list in the summarised PATH inventory.
+const pathSummaryLimit = 15
+
+// pathSummary renders the PATH inventory as counts plus the rows worth reading:
+// names shadowed by an earlier PATH entry, then executables nobody owns.
+func (w *Writer) pathSummary(rep DoctorReport) error {
+	sum := rep.PATHSummary
+	if sum.Executables == 0 && len(rep.PATHInventory) > 0 {
+		sum = locator.Summarize(rep.PATHInventory)
+	}
+	fmt.Fprintf(w.out, "\nPATH inventory\n")
+	if sum.Executables == 0 {
+		fmt.Fprintln(w.out, "  No executable entries found on PATH.")
+		return nil
+	}
+	fmt.Fprintf(w.out, "  %d executables in %d directories; %d shadowed by an earlier PATH entry; %d with unknown owner\n",
+		sum.Executables, sum.Directories, sum.Shadowed, sum.Unknown)
+	var shadowed, unknown []locator.Found
+	for _, f := range rep.PATHInventory {
+		if f.Duplicate {
+			shadowed = append(shadowed, f)
+		} else if !f.Attributed {
+			unknown = append(unknown, f)
+		}
+	}
+	for _, group := range []struct {
+		title string
+		rows  []locator.Found
+	}{
+		{"Shadowed", shadowed},
+		{"Unknown owner", unknown},
+	} {
+		if len(group.rows) == 0 {
+			continue
+		}
+		rows := group.rows
+		if len(rows) > pathSummaryLimit {
+			rows = rows[:pathSummaryLimit]
+		}
+		fmt.Fprintf(w.out, "  %s (%d):\n", group.title, len(group.rows))
+		if err := w.pathRows(rows); err != nil {
+			return err
+		}
+		if more := len(group.rows) - len(rows); more > 0 {
+			fmt.Fprintf(w.out, "    ... and %d more\n", more)
+		}
+	}
+	fmt.Fprintln(w.out, "  Run 'starpoint doctor --all' for every entry; --json always includes the full inventory.")
+	return nil
+}
+
+// pathRows renders inventory rows as a table.
+func (w *Writer) pathRows(found []locator.Found) error {
+	rows := [][]string{{"BINARY", "LOCATION", "OWNER", "DETAIL"}}
+	for _, f := range found {
+		owner, detail := "unknown", f.Reason
+		if f.Installation != nil {
+			owner = f.Installation.Provider
+		}
+		if f.Duplicate {
+			detail = strings.TrimSpace(detail + " duplicate name; shadowed by an earlier PATH entry")
+		}
+		if f.Symlink {
+			detail = strings.TrimSpace(detail + " symlink → " + f.Target)
+		}
+		rows = append(rows, []string{filepath.Base(f.Path), f.Path, owner, dash(detail)})
+	}
+	return w.table(rows)
 }
 
 // Result renders the outcome of install or remove.

@@ -11,25 +11,26 @@ import (
 	"fmt"
 	"io"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/starpoint/starpoint/internal/config"
-	"github.com/starpoint/starpoint/internal/engine"
-	"github.com/starpoint/starpoint/internal/history"
-	"github.com/starpoint/starpoint/internal/locator"
-	"github.com/starpoint/starpoint/internal/lock"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/project"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers"
-	"github.com/starpoint/starpoint/internal/recovery"
-	"github.com/starpoint/starpoint/internal/report"
-	"github.com/starpoint/starpoint/internal/resolve"
-	"github.com/starpoint/starpoint/internal/tracking"
+	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/engine"
+	"github.com/hxmbl/starpoint/internal/history"
+	"github.com/hxmbl/starpoint/internal/locator"
+	"github.com/hxmbl/starpoint/internal/lock"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/project"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers"
+	"github.com/hxmbl/starpoint/internal/recovery"
+	"github.com/hxmbl/starpoint/internal/report"
+	"github.com/hxmbl/starpoint/internal/resolve"
+	"github.com/hxmbl/starpoint/internal/tracking"
 )
 
 // Version is the build version, overridable at link time.
@@ -65,6 +66,10 @@ type Env struct {
 	// command that was told not to ask would read as one that asked and was
 	// refused, and would then decline to do the work it was told to do.
 	confirmAsked bool
+	// RunInDir runs a command in a directory with output streamed to the
+	// given writers. Nil means the real command. Tests replace it so
+	// `install .` can be exercised without npm or cargo.
+	RunInDir func(ctx context.Context, dir string, stdout, stderr io.Writer, name string, args ...string) error
 	// newEngine is overridden in tests to inject a tracker
 	newEngineFn func() *engine.Engine
 }
@@ -192,10 +197,18 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	cmd, cmdArgs := rest[0], rest[1:]
 	w := report.New(env.Stdout, asJSON)
 
+	// `starpoint <command> --help` is help for that command, wherever the flag
+	// sits. It must be decided before dispatch: a command that took it as an
+	// argument would treat it as a package name.
+	if canonicalCommand(cmd) != "" && wantsHelp(cmdArgs) {
+		printCommandHelp(env.Stdout, cmd)
+		return 0
+	}
+
 	var err error
 	switch cmd {
 	case "init":
-		err = cmdInit(ctx, env, w, force)
+		err = cmdInit(ctx, env, w, cmdArgs, force)
 	case "sync":
 		err = cmdSync(ctx, env, w, cmdArgs, providers)
 	case "list", "ls":
@@ -203,6 +216,9 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	case "info", "show":
 		err = cmdInfo(ctx, env, w, cmdArgs)
 	case "explain":
+		// explain reads the restriction from the environment, the way the
+		// resolver input is built for every other command.
+		env.restrict = append(env.restrict, providers...)
 		err = cmdExplain(ctx, env, w, cmdArgs)
 	case "doctor":
 		err = cmdDoctor(ctx, env, w, cmdArgs)
@@ -221,6 +237,10 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	case "recover":
 		err = cmdRecover(env, w, cmdArgs)
 	case "help":
+		if len(cmdArgs) > 0 && canonicalCommand(cmdArgs[0]) != "" {
+			printCommandHelp(env.Stdout, cmdArgs[0])
+			return 0
+		}
 		printUsage(env.Stdout)
 		return 0
 	default:
@@ -231,8 +251,8 @@ func Run(ctx context.Context, env *Env, args []string) int {
 
 	if err != nil {
 		if errors.Is(err, ErrUsage) {
-			fmt.Fprintf(env.Stderr, "error: %s\n", err)
-			printUsage(env.Stderr)
+			fmt.Fprintf(env.Stderr, "error: %s\n\n", err)
+			printCommandHelp(env.Stderr, cmd)
 			return 2
 		}
 		if asJSON {
@@ -294,20 +314,29 @@ func printUsage(w io.Writer) {
 
 Usage:
   starpoint <command> [options]
+  starpoint <command> --help      Help for one command
 
 Commands:
-  init                 Create the global configuration (~/.starpoint.toml)
-  sync                 Make installed state match the configuration
-  list                 Show managed software, where it is, and who owns it
-  info <package>       Show one package's state in detail
-  doctor               Inspect Starpoint, configuration, providers and ownership
-  install <package>    Install software and record it in the configuration
-  remove <package>     Remove software and delete it from the configuration
-  transition [pkg...]  Move ownership between providers, or show pending moves
-  update               Update managed software, respecting explicit pins
-  runs, history        Show execution history of package operations
-  prune                Remove orphaned software from Starpoint-managed providers
-  recover              Inspect and clear files left by an interrupted run
+  init [--force]                 Create the global configuration (~/.starpoint.toml)
+  sync [--dry-run] [--no-confirm]
+                                 Make installed state match the configuration
+  list, ls                       Show managed software, where it is, and who owns it
+  info, show <package>           Show one package's state in detail
+  explain <package>              Show how Starpoint decides which provider owns a package
+  doctor [--all]                 Inspect Starpoint, configuration, providers, ownership, PATH
+  install, add <package>         Install software and record it in the configuration
+  install .                      Install the current project's packages and dependencies
+  remove, uninstall <package>    Remove software and delete it from the configuration
+  transition, move [pkg...]      Move ownership between providers, or show pending moves
+                                 (--reverse undoes the last move of a package)
+  update, upgrade [--self]       Update managed software; asks before moving past a pin
+                                 (--self also updates Starpoint through its provider)
+  runs, history                  Show execution history of package operations
+  prune [--dry-run] [--no-confirm]
+                                 Remove orphaned user-scoped software
+  recover [--discard]            Inspect, and with --discard clear, files left by an
+                                 interrupted run
+  help [command]                 Show this help, or help for one command
 
 A provider may be named after the package names, or with --provider:
   starpoint install ripgrep brew
@@ -329,23 +358,29 @@ Global options:
 
 Anything that installs, removes or updates software asks first. Answer with
 --no-confirm to skip the question; a stream that provides no answer at all is
-refused rather than assumed.
+refused rather than assumed. --dry-run shows what would happen and changes
+nothing.
 
 Examples:
   starpoint init
   starpoint install ruff
   starpoint install ripgrep@14.1.0 brew
+  starpoint install .
   starpoint sync --dry-run
+  starpoint update --dry-run
   starpoint transition
   starpoint list --json
   starpoint explain ruff
+  starpoint doctor --all
   starpoint runs --package ruff
-  starpoint runs --directory /path/to/project
 `)
 }
 
 // cmdInit creates the global configuration.
-func cmdInit(ctx context.Context, env *Env, w *report.Writer, force bool) error {
+func cmdInit(ctx context.Context, env *Env, w *report.Writer, args []string, force bool) error {
+	for _, a := range args {
+		return fmt.Errorf("%w: unknown argument %q for init", ErrUsage, a)
+	}
 	path, err := env.globalPath()
 	if err != nil {
 		return err
@@ -363,7 +398,10 @@ func cmdInit(ctx context.Context, env *Env, w *report.Writer, force bool) error 
 		existing = config.File{Path: path, Raw: config.Raw{Schema: config.SchemaVersion}}
 	}
 	if existing.Exists && !force {
-		return w.Init(path, false, false)
+		// Declining is a failure from the caller's point of view: a script that
+		// runs `starpoint init` expecting a fresh configuration must be able to
+		// tell that it did not get one.
+		return fmt.Errorf("%s already exists; use 'starpoint init --force' to replace it", path)
 	}
 
 	raw := existing.Raw
@@ -523,6 +561,9 @@ func cmdInfo(ctx context.Context, env *Env, w *report.Writer, args []string) err
 		return fmt.Errorf("%w: info needs a package name", ErrUsage)
 	}
 	name := args[0]
+	if err := rejectOption("info", name); err != nil {
+		return err
+	}
 	doc, eng, opts, _, err := env.setup(ctx, nil)
 	if err != nil {
 		return err
@@ -554,20 +595,24 @@ func cmdInfo(ctx context.Context, env *Env, w *report.Writer, args []string) err
 	// is exactly what a user asking "where did this come from?" needs to avoid.
 	survey := eng.Survey(ctx, model.Package{Name: name}, opts)
 	owners := survey.Owners()
+	// The desired provider is what `starpoint add` would record, which is the
+	// same decision explain shows. Reporting the current owner here instead
+	// made info and explain contradict each other.
+	desired := eng.Decide(ctx, doc, model.Package{Name: name}, opts)
+	adopt := "run 'starpoint add " + name + "' to record it"
+	if desired.Provider != "" {
+		adopt += " (it would be recorded with " + desired.Provider + ")"
+	}
 	if len(owners) > 0 {
+		current := *owners[0].Installation
 		st := model.State{
 			Package: model.Package{Name: name},
-			Res: model.Resolution{
-				Provider:   owners[0].Provider,
-				Reason:     "found on this machine",
-				Confidence: model.ConfidenceCertain,
-			},
-			Current: owners[0].Installation,
-			Desired: owners[0].Installation,
-			Status:  model.StatusMissing,
+			Res:     desired,
+			Current: &current,
+			Status:  model.StatusUnmanaged,
 			Notes: []string{
 				"installed but not managed by Starpoint",
-				"run 'starpoint add " + name + "' to record it",
+				adopt,
 			},
 		}
 		if len(owners) > 1 {
@@ -584,9 +629,9 @@ func cmdInfo(ctx context.Context, env *Env, w *report.Writer, args []string) err
 	if found.Path != "" {
 		if err := w.Info(model.State{
 			Package: model.Package{Name: name},
-			Res:     model.Resolution{Provider: "", Reason: "found on PATH", Confidence: model.ConfidenceSpeculat},
+			Res:     desired,
 			Current: &model.Installation{Name: name, Path: found.Path},
-			Status:  model.StatusMissing,
+			Status:  model.StatusUnmanaged,
 			Notes: []string{
 				"present at " + found.Path + " but Starpoint cannot tell which provider installed it",
 				"run 'starpoint add " + name + " --provider <name>' to record ownership",
@@ -615,8 +660,14 @@ func joinProviders(fs []engine.Finding) string {
 
 // cmdDoctor inspects everything.
 func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) error {
+	showAll := false
 	for _, a := range args {
-		return fmt.Errorf("%w: unknown option %q for doctor", ErrUsage, a)
+		switch a {
+		case "--all", "-a":
+			showAll = true
+		default:
+			return fmt.Errorf("%w: unknown option %q for doctor", ErrUsage, a)
+		}
 	}
 	globalPath, err := env.globalPath()
 	if err != nil {
@@ -633,8 +684,10 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 		Starpoint:     report.StarpointInfo{Version: Version},
 		Providers:     []report.ProviderHealth{},
 		PATHInventory: env.loc().OnPath(),
+		ShowAllPATH:   showAll,
 		Healthy:       true,
 	}
+	rep.PATHSummary = locator.Summarize(rep.PATHInventory)
 	rep.Config = report.DocumentInfo(doc, globalPath, isWritable(globalPath))
 	for _, file := range doc.Projects {
 		rep.Config.Files = append(rep.Config.Files, file.Path)
@@ -784,72 +837,26 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 }
 
 // cmdExplain shows the provider-resolution reasoning chain for a package.
+//
+// It asks the engine for the same decision install and info use, so the three
+// can never disagree about which provider a package belongs to.
 func cmdExplain(ctx context.Context, env *Env, w *report.Writer, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("%w: explain needs a package name", ErrUsage)
 	}
 	name := args[0]
-
-	globalPath, err := env.globalPath()
+	if err := rejectOption("explain", name); err != nil {
+		return err
+	}
+	doc, eng, opts, _, err := env.setup(ctx, nil)
 	if err != nil {
 		return err
 	}
-	doc, err := config.Load(config.LoadOptions{GlobalPath: globalPath, Dir: env.WorkDir, DiscoverProjects: true})
-	if err != nil {
-		return err
-	}
-
-	reg := env.registry()
-	eng := engine.New(reg, env.loc())
-
-	// Check if the package is in the configuration
 	pkg, inConfig := doc.Package(name)
 	if !inConfig {
-		pkg = model.Package{Name: name}
+		pkg = model.ParseSpec(name)
 	}
-
-	// Get provider health
-	available := map[string]provider.Health{}
-	for _, h := range reg.Available(ctx) {
-		available[h.Name] = h
-	}
-
-	// Get existing installation
-	var existing *model.Installation
-	if inConfig {
-		plan, _, err := eng.Plan(ctx, doc, engine.Options{Dir: env.WorkDir})
-		if err != nil {
-			return err
-		}
-		for _, st := range plan.States {
-			if st.Package.Name == name && st.Current != nil {
-				existing = st.Current
-				break
-			}
-		}
-	}
-
-	// Detect project ecosystem
-	var eco provider.Kind
-	proj := project.Detect(env.WorkDir)
-	if proj.Kind != project.KindUnknown {
-		eco = projectEcosystem(proj.Kind)
-	}
-
-	// Build resolver input
-	resolver := resolve.New(reg)
-	in := resolve.Input{
-		Package:   pkg,
-		Existing:  existing,
-		Available: available,
-		Allowed:   env.restrict,
-		Ecosystem: eco,
-		Locator:   env.loc(),
-	}
-
-	// Get explanation
-	expl := resolver.Explain(in)
-	return w.Explain(expl)
+	return w.Explain(eng.Explain(ctx, doc, pkg, opts))
 }
 
 // looksLikeVersion reports whether a name is a bare version number such as
@@ -956,6 +963,9 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		case "--project":
 			asProject = true
 		default:
+			if err := rejectOption("install", args[i]); err != nil {
+				return err
+			}
 			names = append(names, args[i])
 		}
 	}
@@ -985,9 +995,15 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 	// `starpoint install .` is "install what this project needs", and it has no
 	// package name to look up or ask about.
 	if len(names) == 1 && (names[0] == "." || names[0] == "./") && named == "" {
-		res, err := installProject(ctx, env, eng, doc, opts, proj, version, channel)
+		res, deps, err := installProject(ctx, env, eng, doc, opts, proj, version, channel, w.JSON())
 		if err != nil {
+			if w.JSON() && res != nil {
+				_ = w.Render(map[string]any{"operations": []*engine.Result{res}, "dependencies": deps})
+			}
 			return err
+		}
+		if w.JSON() {
+			return w.Render(map[string]any{"operations": []*engine.Result{res}, "dependencies": deps})
 		}
 		return reportInstall(w, []*engine.Result{res}, nil)
 	}
@@ -1016,6 +1032,12 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		}
 		pkg.Channel = channel
 		pkg.Provider = singleProvider(opts.Allowed)
+		if pkg.Provider != "" {
+			// The user named the provider for this command. That is a human
+			// decision and is recorded as one, not as something the
+			// configuration said.
+			pkg.Reason = "chosen by the user on the command line"
+		}
 		if asProject {
 			pkg.Scope = model.ScopeProject
 		}
@@ -1125,27 +1147,71 @@ func (e *Env) askProvider(ctx context.Context, eng *engine.Engine, doc *config.D
 	return e.Choose(question, options)
 }
 
+// dependencyReport is what `install .` did about the project's dependencies.
+type dependencyReport struct {
+	// Command is the ecosystem command chosen, nil when none applies.
+	Command *project.DependencyInstall `json:"command,omitempty"`
+	// Skipped explains why nothing ran.
+	Skipped string `json:"skipped,omitempty"`
+	// Ran reports whether the command was run and succeeded.
+	Ran bool `json:"ran"`
+	// DryRun echoes the mode.
+	DryRun bool `json:"dry_run"`
+}
+
 // installProject handles `starpoint install .`.
 //
-// The project's own Starpoint configuration is the source of truth. Everything
-// Starpoint can infer from a marker file is reported and, at most, adopted — a
-// toolchain is never installed implicitly, because inferring "this project is
-// Rust therefore install rustc" from a Cargo.toml is exactly the kind of
-// confident nonsense this project exists to avoid.
+// "Install what this project needs" is three things, in order:
+//
+//  1. The packages the project's own .starpoint.toml declares.
+//  2. The toolchain the ecosystem expects (node, cargo, go, ...). It is recorded
+//     when its owner can be identified, never installed: inferring "this is a
+//     Rust project, so install rustc" from a Cargo.toml is a decision with
+//     consequences far beyond the project. It is recorded in the project's
+//     .starpoint.toml (created if needed), because the project is what needs
+//     it; the global configuration stays the user's own statement of intent.
+//  3. The project's dependencies, through the ecosystem's own installer chosen
+//     from the files the project has (npm ci, pnpm install, uv sync, cargo
+//     fetch, ...). Starpoint does not resolve dependencies itself.
+//
+// The dependency command is described and confirmed before anything changes,
+// so declining leaves the machine and every configuration file untouched.
 func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *config.Document, opts engine.Options,
-	proj *project.Info, version, channel string) (*engine.Result, error) {
+	proj *project.Info, version, channel string, asJSON bool) (*engine.Result, *dependencyReport, error) {
 	if proj == nil || proj.Kind == project.KindUnknown {
-		return nil, fmt.Errorf("no project detected here; run 'starpoint install <package>' to name software explicitly")
+		return nil, nil, fmt.Errorf("no project detected here; run 'starpoint install <package>' to name software explicitly")
 	}
-	fmt.Fprintf(env.Stdout, "Project: %s project at %s (via %s)\n", proj.Kind, proj.Root, proj.Marker)
+	// Narration goes to stderr under --json so stdout stays one JSON document.
+	out := env.Stdout
+	if asJSON {
+		out = env.Stderr
+	}
+	fmt.Fprintf(out, "Project: %s project at %s (via %s)\n", proj.Kind, proj.Root, proj.Marker)
 
 	result := &engine.Result{DryRun: opts.DryRun}
-	projectConfig := filepath.Join(proj.Root, ".starpoint.toml")
+	projectConfig := filepath.Join(proj.Root, config.ProjectFileName)
+
+	deps, why := proj.Dependencies(osexec.LookPath)
+	report := &dependencyReport{Command: deps, Skipped: why, DryRun: opts.DryRun}
+	if deps != nil {
+		if err := env.confirmChanges([]change{{
+			verb:   "Run",
+			target: deps.String(),
+			detail: "in " + deps.Dir + " (" + deps.Reason + ")",
+			after:  "the project's dependencies are installed by " + deps.Tool + "; the toolchain is recorded in " + projectConfig,
+		}}, opts); err != nil {
+			return nil, nil, err
+		}
+		if env.declined() {
+			report.Skipped = "declined"
+			return result, report, nil
+		}
+	}
 
 	// Everything the project has declared is what it wants. Install it.
 	declared, _ := doc.ProjectFileFor(proj.Root)
 	if !proj.HasProjectConfig {
-		fmt.Fprintf(env.Stdout, "No %s yet; add entries to declare what this project needs.\n", projectConfig)
+		fmt.Fprintf(out, "No %s yet; add entries to declare what this project needs.\n", projectConfig)
 	} else {
 		for _, pkg := range declared.Raw.Packages {
 			if version != "" {
@@ -1156,25 +1222,19 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 			}
 			res, err := eng.Add(ctx, doc, pkg, opts)
 			if err != nil {
-				return result, err
+				return result, report, err
 			}
-			// Record execution for context-aware installation
-			provider := pkg.Provider
-			if provider == "" && len(res.Applied) > 0 {
-				provider = res.Applied[0].State.Res.Provider
-			}
-			// Tracking is now handled in the engine
 			result.Applied = append(result.Applied, res.Applied...)
 			result.ConfigChanged = result.ConfigChanged || res.ConfigChanged
 			result.ConfigPath = res.ConfigPath
 		}
 		if len(declared.Raw.Packages) == 0 {
-			fmt.Fprintf(env.Stdout, "%s declares no packages yet.\n", projectConfig)
+			fmt.Fprintf(out, "%s declares no packages yet.\n", projectConfig)
 		}
 	}
 
-	// The toolchain the ecosystem expects is reported, and adopted when its owner
-	// can be identified.
+	// The toolchain the ecosystem expects is reported, and adopted into the
+	// project's configuration when its owner can be identified.
 	for _, tool := range proj.ExpectedTools() {
 		found := env.loc().Locate(tool.Name)
 		switch {
@@ -1182,35 +1242,33 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 			// Present but unattributable. Starpoint records what it can attribute;
 			// claiming ownership of an unexplained binary would put a lie in the
 			// source of truth.
-			fmt.Fprintf(env.Stdout, "  %s: %s (owner unknown; add it with --provider if you want it managed)\n",
+			fmt.Fprintf(out, "  %s: %s (owner unknown; add it with --provider if you want it managed)\n",
 				tool.Name, found.Path)
 		case found.Installation != nil:
-			fmt.Fprintf(env.Stdout, "  %s: %s (%s)\n", tool.Name, found.Installation.Provider, found.Path)
+			fmt.Fprintf(out, "  %s: %s (%s)\n", tool.Name, found.Installation.Provider, found.Path)
 			if _, managed := doc.Package(tool.Name); managed {
 				continue
 			}
 			if opts.DryRun {
+				fmt.Fprintf(out, "    would be recorded in %s\n", projectConfig)
 				continue
 			}
-			// A toolchain is machine software, not something a project owns, so
-			// recording it in the project's configuration would be a lie. It goes
-			// to the global file, attributed to the marker that revealed it.
 			// AdoptOnly matters: a language toolchain is never in its own
 			// provider's package list, so an install attempt here would be both
 			// wrong and slow.
-			globalOpts := opts
-			globalOpts.Dir = ""
-			globalOpts.AdoptOnly = true
+			doc.EnsureProjectFile(proj.Root)
+			projectOpts := opts
+			projectOpts.Dir = proj.Root
+			projectOpts.AdoptOnly = true
 			res, err := eng.Add(ctx, doc, model.Package{
 				Name:     tool.Name,
 				Provider: found.Installation.Provider,
 				Scope:    found.Installation.Scope,
 				Reason:   "adopted from " + proj.Marker + " in " + proj.Root,
-			}, globalOpts)
+			}, projectOpts)
 			if err != nil {
-				return result, err
+				return result, report, err
 			}
-			// Tracking is now handled in the engine
 			result.Applied = append(result.Applied, res.Applied...)
 			result.ConfigChanged = result.ConfigChanged || res.ConfigChanged
 			result.ConfigPath = res.ConfigPath
@@ -1219,7 +1277,7 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 			if tool.Bootstrap {
 				msg += "; it is this ecosystem's toolchain, so Starpoint will not install it for you"
 			}
-			fmt.Fprintf(env.Stdout, "  %s\n", msg)
+			fmt.Fprintf(out, "  %s\n", msg)
 			result.Warnings = append(result.Warnings, model.Warning{
 				Severity: model.SeverityWarn,
 				Package:  tool.Name,
@@ -1233,10 +1291,42 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 		if _, ok := doc.Package(req.Name); ok {
 			continue
 		}
-		fmt.Fprintf(env.Stdout, "  %s is implied by %s but not declared; add it to %s to manage it\n",
+		fmt.Fprintf(out, "  %s is implied by %s but not declared; add it to %s to manage it\n",
 			req.Name, proj.Marker, projectConfig)
 	}
-	return result, nil
+
+	// Finally, the dependencies themselves.
+	if deps == nil {
+		fmt.Fprintf(out, "Dependencies: %s\n", why)
+		return result, report, nil
+	}
+	if opts.DryRun {
+		fmt.Fprintf(out, "Would run: %s (in %s; %s)\n", deps.String(), deps.Dir, deps.Reason)
+		return result, report, nil
+	}
+	fmt.Fprintf(out, "Running: %s (in %s)\n", deps.String(), deps.Dir)
+	if err := env.runInDir(ctx, deps.Dir, out, env.Stderr, deps.Tool, deps.Args...); err != nil {
+		return result, report, fmt.Errorf("installing dependencies with '%s' in %s: %w", deps.String(), deps.Dir, err)
+	}
+	report.Ran = true
+	return result, report, nil
+}
+
+// runInDir runs a command in a directory with its output streamed, which is
+// what a dependency install needs: it can take minutes and its progress is the
+// user's only sign of life.
+func (e *Env) runInDir(ctx context.Context, dir string, stdout, stderr io.Writer, name string, args ...string) error {
+	if e.RunInDir != nil {
+		return e.RunInDir(ctx, dir, stdout, stderr, name, args...)
+	}
+	if _, err := osexec.LookPath(name); err != nil {
+		return fmt.Errorf("%s is not on PATH; install it (for example 'starpoint install %s') and run this again", name, name)
+	}
+	cmd := osexec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
 }
 
 func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, allowed []string) error {
@@ -1257,6 +1347,9 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		case "--no-confirm", "-y", "--yes":
 			noConfirm = true
 		default:
+			if err := rejectOption("remove", args[i]); err != nil {
+				return err
+			}
 			names = append(names, args[i])
 		}
 	}
@@ -1544,12 +1637,35 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	// Updating changes the machine without being asked about a specific package,
 	// so the set of packages it would touch is shown first. A plan with nothing in
 	// it is not worth a question.
-	wouldUpdate, err := eng.UpdatePlan(ctx, doc, opts)
+	previewRes, err := eng.UpdatePreview(ctx, doc, opts)
 	if err != nil {
 		return err
 	}
+
+	// A pin holding a package back is the user's decision to revisit, not
+	// Starpoint's. Each one is explained and asked about; anything but an
+	// explicit yes keeps the pin. --no-confirm keeps every pin, because
+	// silently rewriting the source of truth is the one thing an unattended
+	// update must not do.
+	if !opts.DryRun && !opts.NoConfirm && env.Confirm != nil {
+		for _, c := range previewRes.PinConflicts {
+			fmt.Fprintf(env.Stdout, "!!! There is a new version available for %s (%s), but config says %s\n",
+				c.Package, c.Available, c.Pinned)
+			ok, err := env.Confirm("Update anyway?")
+			if err != nil {
+				return err
+			}
+			if ok {
+				if opts.UpdatePinned == nil {
+					opts.UpdatePinned = map[string]bool{}
+				}
+				opts.UpdatePinned[c.Package] = true
+			}
+		}
+	}
+
 	var preview []change
-	for _, a := range wouldUpdate {
+	for _, a := range previewRes.Applied {
 		preview = append(preview, change{
 			verb:   "Update",
 			target: a.State.Package.Spec(),
@@ -1581,18 +1697,33 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	}
 	if w.JSON() {
 		_ = w.Render(map[string]any{
-			"operation": "update",
-			"dry_run":   res.DryRun,
-			"actions":   res.Applied,
-			"warnings":  res.Warnings,
+			"operation":     "update",
+			"dry_run":       res.DryRun,
+			"actions":       res.Applied,
+			"warnings":      res.Warnings,
+			"pin_conflicts": res.PinConflicts,
 		})
 		return updateErr
+	}
+	for _, c := range res.PinConflicts {
+		if c.Resolution == "updated" {
+			continue // reported below as an applied update
+		}
+		outcome := "the pin was kept"
+		if c.Resolution == "pending" {
+			outcome = "update would ask whether to move the pin"
+		}
+		fmt.Fprintf(env.Stdout, "!!! There is a new version available for %s (%s), but config says %s; %s\n",
+			c.Package, c.Available, c.Pinned, outcome)
 	}
 	for _, a := range res.Applied {
 		fmt.Fprintf(env.Stdout, "%s", strings.TrimSpace(actionLine("updated", a)))
 		fmt.Fprintln(env.Stdout)
 	}
 	for _, warn := range res.Warnings {
+		if strings.HasPrefix(warn.Message, "there is a new version available") {
+			continue // already shown as a pin conflict above
+		}
 		fmt.Fprintf(env.Stdout, "  %s\n", warn.Message)
 	}
 	if len(res.Applied) == 0 && len(res.Warnings) == 0 {

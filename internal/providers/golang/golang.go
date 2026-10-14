@@ -14,10 +14,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/exec"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/shell"
+	"github.com/hxmbl/starpoint/internal/exec"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/shell"
 )
 
 // Name is the provider identifier persisted in configuration.
@@ -260,7 +260,7 @@ func classify(op string, res exec.Result) error {
 	switch {
 	case strings.Contains(text, "malformed module path"), strings.Contains(text, "malformed import path"),
 		strings.Contains(text, "version \"@"), strings.Contains(text, "invalid version"):
-		return shell.Err(Name, op, provider.ErrUnsupported, shell.FirstLine(res.Field()), nil)
+		return shell.Err(Name, op, provider.ErrUnsupported, shell.Diagnostic(res.Field()), nil)
 	case strings.Contains(text, "unknown revision"), strings.Contains(text, "module lookup disabled"),
 		strings.Contains(text, "no matching versions"), strings.Contains(text, "not a known dependency"),
 		strings.Contains(text, "does not contain"), strings.Contains(text, "unrecognized import path"), strings.Contains(text, "reading"):
@@ -271,7 +271,7 @@ func classify(op string, res exec.Result) error {
 		strings.Contains(text, "proxy.golang.org"):
 		return shell.Err(Name, op, provider.ErrNetwork, "could not reach the Go module proxy", nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "go exited nonzero"
 		}

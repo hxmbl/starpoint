@@ -8,14 +8,15 @@ package brew
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/exec"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/shell"
+	"github.com/hxmbl/starpoint/internal/exec"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/shell"
 )
 
 // Name is the provider identifier persisted in configuration.
@@ -269,7 +270,7 @@ func classify(name, op string, res exec.Result) error {
 	case strings.Contains(text, "curl"), strings.Contains(text, "network"), strings.Contains(text, "connection"):
 		return shell.Err(name, op, provider.ErrNetwork, "could not reach the Homebrew index", nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "brew exited nonzero"
 		}
@@ -329,4 +330,38 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 		return shell.Failure(p.Name(), "verify", "executable failed verification", nil)
 	}
 	return nil
+}
+
+var _ provider.LatestVersionProvider = (*Provider)(nil)
+
+// LatestVersion reads the stable version Homebrew would install from
+// `brew info --json=v2`.
+func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string, error) {
+	res, err := p.runner.Run(ctx, "brew", "info", "--json=v2", pkg.Name)
+	if err != nil {
+		return "", shell.Failure(p.Name(), "latest", "could not run brew info", err)
+	}
+	if res.Failed() {
+		return "", shell.Failure(p.Name(), "latest", shell.Diagnostic(res.Field()), nil)
+	}
+	var info struct {
+		Formulae []struct {
+			Versions struct {
+				Stable string `json:"stable"`
+			} `json:"versions"`
+		} `json:"formulae"`
+		Casks []struct {
+			Version string `json:"version"`
+		} `json:"casks"`
+	}
+	if err := json.Unmarshal([]byte(res.Stdout), &info); err != nil {
+		return "", shell.Failure(p.Name(), "latest", "could not parse brew info output", err)
+	}
+	if len(info.Formulae) > 0 {
+		return info.Formulae[0].Versions.Stable, nil
+	}
+	if len(info.Casks) > 0 {
+		return info.Casks[0].Version, nil
+	}
+	return "", nil
 }

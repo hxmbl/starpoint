@@ -15,10 +15,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/exec"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/shell"
+	"github.com/hxmbl/starpoint/internal/exec"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/shell"
 )
 
 // Name is the provider identifier persisted in configuration.
@@ -112,7 +112,7 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 		return nil, shell.Failure(p.Name(), "list", "could not list installed gems", err)
 	}
 	if res.Failed() {
-		return nil, shell.Failure(p.Name(), "list", shell.FirstLine(res.Field()), nil)
+		return nil, shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 	}
 	// `gem list` does not say which home a gem is in, so the placement reported
 	// is the one that applies by default: the system home when the per-user home
@@ -256,9 +256,9 @@ func (p *Provider) classify(op string, res exec.Result) error {
 		return shell.Err(Name, op, provider.ErrNetwork, "could not reach rubygems.org", nil)
 	case strings.Contains(text, "can't satisfy your requirement"),
 		strings.Contains(text, "conflict"), strings.Contains(text, "depends on"):
-		return shell.Err(Name, op, provider.ErrConflict, shell.FirstLine(res.Field()), nil)
+		return shell.Err(Name, op, provider.ErrConflict, shell.Diagnostic(res.Field()), nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "gem exited nonzero"
 		}
@@ -278,4 +278,29 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 		return shell.Failure(p.Name(), "verify", "executable failed verification", nil)
 	}
 	return nil
+}
+
+var _ provider.LatestVersionProvider = (*Provider)(nil)
+
+// LatestVersion asks rubygems.org through `gem search --remote --exact`, whose
+// result line reads "name (x.y.z)".
+func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string, error) {
+	res, err := p.runner.Run(ctx, "gem", "search", "--remote", "--exact", pkg.Name)
+	if err != nil {
+		return "", shell.Failure(p.Name(), "latest", "could not run gem search", err)
+	}
+	if res.Failed() {
+		return "", shell.Failure(p.Name(), "latest", shell.Diagnostic(res.Field()), nil)
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, pkg.Name+" (") {
+			continue
+		}
+		inner := strings.TrimSuffix(strings.TrimPrefix(line, pkg.Name+" ("), ")")
+		if fields := strings.FieldsFunc(inner, func(r rune) bool { return r == ',' || r == ' ' }); len(fields) > 0 {
+			return fields[0], nil
+		}
+	}
+	return "", nil
 }

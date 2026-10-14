@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/model"
 )
 
 func TestErrorCarriesKindAndUnwraps(t *testing.T) {
@@ -176,8 +176,8 @@ func TestContextAwareProvider(t *testing.T) {
 		stubProvider: stubProvider{
 			name: "npm",
 			health: Health{
-				Name:          "npm",
-				ContextAware:  true,
+				Name:         "npm",
+				ContextAware: true,
 				Capabilities: Capabilities{
 					CanInstallInContext: true,
 				},

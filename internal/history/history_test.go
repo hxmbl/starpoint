@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/starpoint/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/model"
 )
 
 func TestNew(t *testing.T) {

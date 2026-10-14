@@ -6,8 +6,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/providers/npm"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/providers/npm"
 )
 
 // pathLocator builds a locator with a scripted PATH lookup and no filesystem

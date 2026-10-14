@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/model"
 )
 
 // Kind groups providers by the world they operate in. It exists for reporting
@@ -237,6 +237,31 @@ type ExecutableMappingProvider interface {
 // as executable names during self-verification.
 type PackageExecutableProvider interface {
 	ExecutableForPackage(packageName string) (string, bool)
+}
+
+// ExecutableDirProvider is implemented by providers that expose the commands
+// they install in one known directory, such as uv's tool bin directory or pip's
+// user-base bin directory.
+//
+// It exists because two providers can write the same file. uv and pip both put
+// console scripts in ~/.local/bin on Linux, so moving a tool between them is not
+// "install the new copy, then remove the old one": the install overwrites the
+// old copy's executable and the removal then deletes the new one. Knowing where
+// a provider will put an executable is what lets the core see that coming.
+//
+// An empty string means the provider cannot say.
+type ExecutableDirProvider interface {
+	ExecutableDir(ctx context.Context) string
+}
+
+// LatestVersionProvider is implemented by providers that can say which version
+// of a package they would install now. `update` uses it to tell a pin that is
+// merely satisfied from a pin that is holding a package back.
+//
+// An empty version with a nil error means the provider does not know the
+// package.
+type LatestVersionProvider interface {
+	LatestVersion(ctx context.Context, pkg model.Package) (string, error)
 }
 
 // Health is the result of probing a provider.

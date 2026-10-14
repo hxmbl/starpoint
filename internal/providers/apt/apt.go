@@ -10,10 +10,10 @@ import (
 	"context"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/exec"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/shell"
+	"github.com/hxmbl/starpoint/internal/exec"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/shell"
 )
 
 // Name is the provider identifier persisted in configuration.
@@ -85,7 +85,7 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 		return nil, shell.Failure(p.Name(), "list", "could not enumerate dpkg packages", err)
 	}
 	if res.Failed() {
-		return nil, shell.Failure(p.Name(), "list", shell.FirstLine(res.Field()), nil)
+		return nil, shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 	}
 	var out []model.Installation
 	for _, line := range strings.Split(res.Stdout, "\n") {
@@ -189,9 +189,9 @@ func classify(op string, res exec.Result) error {
 		return shell.Err(Name, op, provider.ErrNetwork, "could not reach the APT archives", nil)
 	case strings.Contains(text, "held broken packages"), strings.Contains(text, "depends:"),
 		strings.Contains(text, "but it is not going to be installed"):
-		return shell.Err(Name, op, provider.ErrConflict, shell.FirstLine(res.Field()), nil)
+		return shell.Err(Name, op, provider.ErrConflict, shell.Diagnostic(res.Field()), nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "apt-get exited nonzero"
 		}
@@ -265,4 +265,27 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 
 func (p *Provider) ExecutableForPackage(packageName string) (string, bool) {
 	return shell.ExecutableForPackage(p.ExecutableToPackage(), packageName)
+}
+
+var _ provider.LatestVersionProvider = (*Provider)(nil)
+
+// LatestVersion reads the candidate version from `apt-cache policy`.
+func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string, error) {
+	res, err := p.runner.Run(ctx, "apt-cache", "policy", pkg.Name)
+	if err != nil {
+		return "", shell.Failure(p.Name(), "latest", "could not run apt-cache policy", err)
+	}
+	if res.Failed() {
+		return "", shell.Failure(p.Name(), "latest", shell.Diagnostic(res.Field()), nil)
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if ok && key == "Candidate" {
+			if v := strings.TrimSpace(value); v != "(none)" {
+				return v, nil
+			}
+			return "", nil
+		}
+	}
+	return "", nil
 }

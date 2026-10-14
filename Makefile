@@ -6,7 +6,7 @@
 GO ?= go
 BIN ?= bin/starpoint
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -X github.com/starpoint/starpoint/internal/cli.Version=$(VERSION)
+LDFLAGS := -X github.com/hxmbl/starpoint/internal/cli.Version=$(VERSION)
 
 .PHONY: all check build test fmt fmt-check vet tidy clean run
 

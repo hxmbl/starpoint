@@ -5,24 +5,25 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/engine"
-	"github.com/starpoint/starpoint/internal/locator"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/apt"
-	"github.com/starpoint/starpoint/internal/providers/brew"
-	"github.com/starpoint/starpoint/internal/providers/cargo"
-	"github.com/starpoint/starpoint/internal/providers/npm"
-	"github.com/starpoint/starpoint/internal/providers/rustup"
-	"github.com/starpoint/starpoint/internal/providers/system"
-	"github.com/starpoint/starpoint/internal/providers/uv"
-	"github.com/starpoint/starpoint/internal/testsupport"
-	"github.com/starpoint/starpoint/internal/tracking"
+	"github.com/hxmbl/starpoint/internal/engine"
+	"github.com/hxmbl/starpoint/internal/locator"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/apt"
+	"github.com/hxmbl/starpoint/internal/providers/brew"
+	"github.com/hxmbl/starpoint/internal/providers/cargo"
+	"github.com/hxmbl/starpoint/internal/providers/npm"
+	"github.com/hxmbl/starpoint/internal/providers/rustup"
+	"github.com/hxmbl/starpoint/internal/providers/system"
+	"github.com/hxmbl/starpoint/internal/providers/uv"
+	"github.com/hxmbl/starpoint/internal/testsupport"
+	"github.com/hxmbl/starpoint/internal/tracking"
 )
 
 // harness drives the CLI with fake providers and a temporary configuration.
@@ -44,6 +45,10 @@ type harness struct {
 	questions []string
 	// confirm overrides the answer given to confirmations.
 	confirm *bool
+	// choices records every provider question the harness was asked.
+	choices []string
+	// ran records commands run by `install .`, as "dir: command".
+	ran []string
 }
 
 // ask makes the harness answer every confirmation with the given answer.
@@ -114,6 +119,7 @@ func newHarness(t *testing.T, configBody string) *harness {
 		// /Users/..." turns up in a test about fake providers.
 		Locator: &locator.Locator{
 			LookPath: func(string) (string, error) { return "", errNotOnPath },
+			Stat:     fakeStat,
 		},
 		// The default is a user at a terminal who types yes. Tests that care about
 		// the question itself override this; tests that do not should not have to
@@ -123,6 +129,17 @@ func newHarness(t *testing.T, configBody string) *harness {
 			h.questions = append(h.questions, question)
 			return true, nil
 		},
+		// An ambiguous provider choice is asked about; the harness user accepts
+		// the offered default, as pressing enter at the prompt would.
+		Choose: func(question string, options []string) (string, error) {
+			h.choices = append(h.choices, question)
+			return options[0], nil
+		},
+		// Dependency installs are recorded, never run.
+		RunInDir: func(_ context.Context, dir string, _, _ io.Writer, name string, args ...string) error {
+			h.ran = append(h.ran, dir+": "+strings.TrimSpace(name+" "+strings.Join(args, " ")))
+			return nil
+		},
 	}
 	// Hook into newEngine to set tracker. Resolve the locator at call time so a
 	// test that swaps PATH resolution mid-harness still reaches the live locator.
@@ -131,9 +148,11 @@ func newHarness(t *testing.T, configBody string) *harness {
 		eng.SetTracker(tracker)
 		return eng
 	}
-	return &harness{t: t, stdout: out, stderr: errBuf, config: cfg, env: env,
-		brew: brewP, uv: uvP, rustup: rustupP, cargo: cargoP, npm: npmP, sys: sys,
-		apt: aptP, tracker: tracker}
+	// The closures above capture h, so h itself is what the test gets back.
+	h.config, h.env = cfg, env
+	h.brew, h.uv, h.rustup, h.cargo, h.npm, h.sys, h.apt = brewP, uvP, rustupP, cargoP, npmP, sys, aptP
+	h.tracker = tracker
+	return h
 }
 
 // setLocator installs a scripted PATH resolution so tests do not depend on the
@@ -146,10 +165,21 @@ func (h *harness) setLocator(paths map[string]string) {
 			}
 			return "", errNotOnPath
 		},
+		Stat: fakeStat,
 	}
 }
 
 var errNotOnPath = errors.New("not on PATH")
+
+// fakeStat treats the paths fake providers install to as present on disk, so
+// verification (which wants an executable behind an inventory entry) sees the
+// software the fakes claim to have installed.
+func fakeStat(path string) (os.FileInfo, error) {
+	if strings.HasPrefix(path, "/fake/") {
+		return os.Stat(os.Args[0])
+	}
+	return os.Stat(path)
+}
 
 func (h *harness) run(args ...string) (int, string, string) {
 	h.t.Helper()
@@ -232,9 +262,12 @@ func TestInitCreatesGlobalConfig(t *testing.T) {
 
 func TestInitRefusesToOverwriteWithoutForce(t *testing.T) {
 	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"ripgrep\"\n")
-	out := h.mustRun("init")
-	if !strings.Contains(out, "already exists") {
-		t.Errorf("init should decline to overwrite: %s", out)
+	code, _, errOut := h.run("init")
+	if code == 0 {
+		t.Error("declining to overwrite must exit non-zero")
+	}
+	if !strings.Contains(errOut, "already exists") || !strings.Contains(errOut, "--force") {
+		t.Errorf("init should explain why it declined: %s", errOut)
 	}
 	if !strings.Contains(h.configBody(), "ripgrep") {
 		t.Error("the existing configuration must be left untouched")
@@ -261,10 +294,27 @@ func TestInitPrintsDocumentationAndWritesAValidFile(t *testing.T) {
 	}
 }
 
-func TestInitIsIdempotent(t *testing.T) {
-	h := newHarness(t, "schema = 1\n")
-	h.mustRun("init")
-	h.mustRun("init")
+func TestInitTwiceFailsTheSecondTimeAndChangesNothing(t *testing.T) {
+	h := newHarness(t, "")
+	h.mustRun("init", "--force")
+	before := h.configBody()
+	if code, _, _ := h.run("init"); code != 1 {
+		t.Errorf("a second init must exit 1, got %d", code)
+	}
+	if h.configBody() != before {
+		t.Error("the declined init must not touch the file")
+	}
+	code, _, errOut := h.run("init", "--json")
+	if code != 1 || !strings.Contains(errOut, `"error"`) {
+		t.Errorf("JSON callers get the error envelope, got %d %q", code, errOut)
+	}
+}
+
+func TestInitRejectsUnknownArguments(t *testing.T) {
+	h := newHarness(t, "")
+	if code, _, _ := h.run("init", "--frc"); code != 2 {
+		t.Errorf("a typo must be a usage error, got %d", code)
+	}
 }
 
 func TestInstallRecordsPackageAndProvider(t *testing.T) {

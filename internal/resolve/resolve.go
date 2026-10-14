@@ -22,11 +22,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/locator"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/rustup"
-	"github.com/starpoint/starpoint/internal/providers/system"
+	"github.com/hxmbl/starpoint/internal/locator"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/rustup"
+	"github.com/hxmbl/starpoint/internal/providers/system"
 )
 
 // Input is everything the resolver needs to make a decision.
@@ -371,9 +371,27 @@ func (r *Resolver) Explain(in Input) Explanation {
 		}
 	}
 	if len(systemCandidates) == 1 {
+		// One system package manager is not the same as one viable provider.
+		// When language providers could also install an unrecognised name, the
+		// choice between "the OS package" and "the PyPI/npm/crates package" is
+		// exactly the ambiguity the spec says to ask about, so it is reported
+		// as such with the system manager as the default answer.
+		languages := languageCandidates(candidates, systemCandidates)
+		if len(languages) > 0 {
+			final = model.Resolution{
+				Provider: systemCandidates[0],
+				Reason: fmt.Sprintf("%s is the only system package manager, but %s could also provide it and nothing identifies which ecosystem it belongs to",
+					systemCandidates[0], strings.Join(languages, ", ")),
+				Confidence:   model.ConfidenceLow,
+				Ambiguous:    true,
+				Alternatives: languages,
+			}
+			record("system package manager", "ambiguous", systemCandidates[0], final.Reason, true)
+			return Explanation{Package: in.Package, Final: final, Steps: steps}
+		}
 		final = model.Resolution{
 			Provider:     systemCandidates[0],
-			Reason:       "only one package manager is available",
+			Reason:       "only one system package manager is available",
 			Confidence:   model.ConfidenceHigh,
 			Alternatives: r.others(candidates, systemCandidates[0]),
 		}
@@ -444,6 +462,24 @@ func (r *Resolver) candidates(in Input) []string {
 		return installable
 	}
 	return other
+}
+
+// languageCandidates returns the candidates that are neither system package
+// managers nor a toolchain-only owner, sorted. rustup installs toolchains, not
+// arbitrary software, so it is never a plausible home for an unrecognised name.
+func languageCandidates(candidates, system []string) []string {
+	skip := map[string]bool{rustup.Name: true}
+	for _, s := range system {
+		skip[s] = true
+	}
+	var out []string
+	for _, c := range candidates {
+		if !skip[c] {
+			out = append(out, c)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // existingReason explains who already has the software. Some providers report a

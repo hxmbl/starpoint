@@ -15,6 +15,8 @@ config → desired state → provider resolution → current state → diff → 
 ## Quick start
 
 ```sh
+go install github.com/hxmbl/starpoint/cmd/starpoint@latest
+# or, from a checkout:
 go build -o starpoint ./cmd/starpoint
 
 ./starpoint init                  # create ~/.starpoint.toml
@@ -51,6 +53,30 @@ A project may also have its own `.starpoint.toml`. It applies when you run
 Starpoint inside that directory and takes precedence over the global file for
 the packages it declares.
 
+`starpoint install .` installs what the project in the current directory needs:
+
+1. the packages its `.starpoint.toml` declares;
+2. the toolchain its ecosystem expects (node/npm, cargo/rustc, go, python3,
+   ruby/gem), recorded — never installed — in the project's `.starpoint.toml`,
+   which is created if needed, when the owner can be identified;
+3. its dependencies, through the ecosystem's own tool run in the project root:
+
+| Project | Command |
+| --- | --- |
+| Node with `packageManager` in package.json | that manager (`pnpm install`, `yarn install`, `npm ci`/`npm install`) |
+| Node with pnpm-lock.yaml / yarn.lock / package-lock.json | `pnpm install` / `yarn install` / `npm ci` |
+| Node without a lockfile | `npm install` |
+| Python with uv.lock, or `[tool.uv]` in pyproject.toml | `uv sync` |
+| Python with requirements.txt | `pip3 install -r requirements.txt` (or `pip`) |
+| Rust (Cargo.toml) | `cargo fetch` |
+| Go (go.mod) | `go mod download` |
+| Ruby (Gemfile) | `bundle install` |
+
+The command is shown and confirmed before anything changes (declining changes
+nothing at all), `--dry-run` prints it without running it, and `--no-confirm`
+runs it unattended. A Python project with neither uv configuration nor
+requirements.txt is reported rather than guessed at.
+
 ### What Starpoint writes
 
 `provider` is the ownership decision. Once written it is authoritative: `sync`
@@ -59,29 +85,42 @@ different provider by editing that field, Starpoint understands it as a
 transition — it installs the new copy, verifies it, and only then removes the
 old one. It never installs a second copy and leaves the first behind.
 
-`version` is a hard pin. Starpoint will not move it. If a provider cannot deliver
-it, or an update would contradict it, Starpoint reports the conflict instead of
-editing the configuration to make the problem go away.
+`version` is a hard pin. Starpoint will not move it on its own. If a provider
+cannot deliver it, Starpoint reports the conflict instead of editing the
+configuration to make the problem go away. When `starpoint update` finds a newer
+version than a pin allows, it explains the conflict and asks:
+
+```
+!!! There is a new version available for ruff (0.6.0), but config says 0.5.0
+Update anyway? [y/N]
+```
+
+Yes updates the package and rewrites the pin to the version now installed; no
+(or `--no-confirm`, or no terminal) keeps the pin; `--dry-run` reports the
+conflict. `--json` lists them under `pin_conflicts`. Newer versions are known for
+pip, npm, pnpm, Homebrew, Cargo, RubyGems and APT; for other providers a pin is
+simply reported as left unchanged.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `starpoint init [--force]` | Create `~/.starpoint.toml` |
+| `starpoint init [--force]` | Create `~/.starpoint.toml`; exits 1 without changing anything if it exists, `--force` replaces it |
 | `starpoint sync [--dry-run] [--no-confirm]` | Converge the machine onto the configuration |
-| `starpoint transition [pkg...]` | Show or perform provider transitions (alias: `move`) |
+| `starpoint transition [pkg...] [--all] [--dry-run] [--no-confirm]` | Show or perform provider transitions (alias: `move`) |
 | `starpoint transition --reverse <package>` | Reverse the most recent transition when safe |
-| `starpoint doctor` | Inspect Starpoint, config, providers, ownership, inconsistencies |
-| `starpoint list [--json]` | Show managed software, its location, scope and provider |
-| `starpoint info <package>` | Show one package's state in detail |
-| `starpoint install <package> [provider]` | Install and record (alias: `add`) |
-| `starpoint install .` | Handle the current project |
-| `starpoint remove <package>` | Uninstall and delete from config (alias: `uninstall`) |
-| `starpoint update [--self]` | Update managed software, respecting pins |
+| `starpoint doctor [--all]` | Inspect Starpoint, config, providers, ownership, inconsistencies, PATH |
+| `starpoint list [--managed] [--provider <name>]` | Show managed software, its location, scope and provider (alias: `ls`) |
+| `starpoint info <package>` | Show one package's state in detail (alias: `show`) |
 | `starpoint explain <package>` | Explain how Starpoint resolves ownership |
-| `starpoint prune` | Preview and remove orphaned user-scoped installations |
-| `starpoint recover [--discard]` | Inspect and clear files left by an interrupted run |
-| `starpoint runs` | Show where Starpoint has been run |
+| `starpoint install <package> [provider]` | Install and record (aliases: `add`, `i`); `--version`, `--channel`, `--project`, `--dry-run`, `--no-confirm` |
+| `starpoint install .` | Install the current project's declared packages and dependencies; record its toolchain in the project config |
+| `starpoint remove <package> [provider]` | Uninstall and delete from config (aliases: `uninstall`, `rm`); `--dry-run`, `--no-confirm` |
+| `starpoint update [--self] [--dry-run] [--no-confirm]` | Update managed software; asks before moving past a pin (alias: `upgrade`) |
+| `starpoint prune [--dry-run] [--no-confirm]` | Preview and remove orphaned user-scoped installations |
+| `starpoint recover [--discard] [--no-confirm]` | Inspect and clear files left by an interrupted run |
+| `starpoint runs [--package <name>] [--directory <dir>]` | Show where Starpoint has been run (alias: `history`) |
+| `starpoint help [command]` | General help, or one command's help (same as `<command> --help`) |
 
 A provider may be named after the package names, before them, or with
 `--provider`, and a version may be written inline:
@@ -107,6 +146,9 @@ refused rather than assumed.
 
 Global options work anywhere on the line: `--json`, `--provider <name>`
 (repeatable, restricts automatic resolution), `--force`, `--version`, `--help`.
+`--help` (or `-h`) after a command prints that command's help, as does
+`starpoint help <command>`; it is never taken as a package name. Any other
+unrecognised `-`-prefixed token is a usage error rather than a package name.
 
 ### Output
 
@@ -126,7 +168,7 @@ Implemented in this release:
 | `dnf` | global | RPM inventory and versioned package installation. |
 | `pacman` | global | Pacman inventory and repository installation. Arch repositories serve current versions only, so it cannot honour a version pin and says so rather than building a command that cannot work. |
 | `uv` | user | Python tools and interpreters, `==` pins. |
-| `pip` | user | Python packages, installed with `--user` so pip never needs root. |
+| `pip` | user | Python packages, installed with `--user` so pip never needs root. Locations come from `pip show -f`: the console script when there is one, otherwise the package directory. |
 | `rustup` | user | Rust toolchains: `rustc`, `cargo`, `rustfmt` and friends, plus the toolchains themselves. |
 | `cargo` | user | Crates from `cargo install`, `--version` pins. |
 | `npm` | user | Global packages, `name@version` and dist-tags. |
@@ -148,7 +190,10 @@ placement reliably; see `docs/next-tasks.md`.
 ### Operations and completion
 
 `doctor` reports provider health, configuration and ownership, interrupted config
-writes, plus executables found on `PATH` whose owner is unknown. `list` shows
+writes, plus a summary of the executables on `PATH`: counts, names shadowed by
+an earlier entry, and executables whose owner is unknown. `doctor --all` lists
+every entry; `--json` always carries the full inventory. A directory PATH names
+twice (or via a symlink, such as `/bin` → `/usr/bin`) is read once. `list` shows
 configured software and unaccounted executables. Provider transitions use
 observed inventory and executable resolution to resume after interruption;
 `starpoint runs` exposes transition history and `transition --reverse` attempts
@@ -162,9 +207,20 @@ place, so a crash mid-write cannot leave a half-written config: the rename is th
 only step that publishes it. If a run is interrupted between those steps, the
 leftover `.tmp` file makes Starpoint refuse to modify configuration rather than
 layer new writes on top of a change the user never saw. `starpoint recover` reports
-what was left behind and, with `--discard`, clears it. Bash, zsh, and fish completion
-definitions are in `completions/`; JSON response shapes are documented in
-[`docs/json-schema.md`](docs/json-schema.md).
+what was left behind and, with `--discard`, clears it. JSON response shapes are
+documented in [`docs/json-schema.md`](docs/json-schema.md).
+
+Shell completions live in `completions/` and complete every command spelling,
+each command's own flags, and provider names after `--provider`:
+
+```
+# bash
+cp completions/starpoint.bash ~/.local/share/bash-completion/completions/starpoint
+# zsh (any directory on $fpath, before compinit runs)
+cp completions/starpoint.zsh ~/.zfunc/_starpoint
+# fish
+cp completions/starpoint.fish ~/.config/fish/completions/
+```
 
 ### Asking every provider at once
 
@@ -184,6 +240,15 @@ About to change your machine:
 be installable by a provider that does not have it yet — but it is stated plainly,
 and qualified when a provider is installed yet unable to enumerate its inventory,
 because that weakens the claim.
+
+When nothing on the machine and nothing about the name settles who should own
+it, Starpoint asks. That includes the common case of one system package manager
+beside language providers: `starpoint install cowsay` on a machine with apt, uv
+and npm offers apt as the default but asks, because "the Debian package" and "the
+PyPI package" are different choices. Without a terminal the command fails and
+names `--provider`. A provider named on the command line is recorded with the
+reason `chosen by the user on the command line`, a prompt answer as `provider
+chosen interactively`.
 
 `starpoint info <package>` uses the same lookup for software it does not manage,
 so it names *every* provider that has it rather than the first one that answered.
@@ -218,7 +283,9 @@ one is confirmed working:
 - **Confirmed** means two things agree: the target provider reports the software,
   and the command on `PATH` resolves to that provider's copy. A provider that
   says it installed something while a different provider still owns the command is
-  treated as *not* installed, because it is not.
+  treated as *not* installed, because it is not. When the command is not on `PATH`
+  at all, the executable must exist on disk where the provider reported it (or in
+  its bin directory); an inventory entry with no file behind it does not count.
 - **Every early exit leaves the old command working.** A failed install, a failed
   verification and a failed removal all leave the incumbent in place, so the worst
   outcome of a transition is a duplicate rather than a hole.
@@ -226,6 +293,15 @@ one is confirmed working:
   both copies present means the old one still needs removing, only the new one means
   it is done, only the old one means nothing happened. Running `starpoint transition`
   again finishes an interrupted transition instead of starting over.
+- **Shared executable paths are handed over, not raced.** uv and `pip --user`
+  both write console scripts to `~/.local/bin`, so installing the new copy first
+  would overwrite (or be refused by) the old one, and removing the old copy would
+  then delete the new one. When the target's executable path is already occupied,
+  Starpoint removes the old copy first, installs and verifies the new one, and
+  reinstalls the old copy (at its previous version where the provider can pin) if
+  anything fails. After any removal the new copy is verified again and reinstalled
+  if the removal took its executable with it; `completed` is never reported over a
+  missing command.
 - **A provider that cannot remove** gets a completed transition with the leftover
   named, not a failure. Ownership did move; `doctor` reports the duplicate.
 
@@ -298,9 +374,9 @@ suite substitutes a scripted command runner and in-memory providers.
 - Additional ecosystems such as Bun, Deno, Nix, mise/asdf, winget, Chocolatey,
   Composer, Maven/Gradle, NuGet, SwiftPM, CocoaPods, vcpkg, Conda, Flatpak and
   Snap remain candidates. See `docs/next-tasks.md`.
-- A universal project dependency system. `starpoint install .` works from a
-  narrow, documented rule set rather than pretending one command can understand
-  every ecosystem.
+- A universal project dependency system. `starpoint install .` delegates to each
+  ecosystem's own installer, chosen by a narrow, documented rule set, rather
+  than pretending one command can understand every ecosystem.
 
 ## Known limitations
 

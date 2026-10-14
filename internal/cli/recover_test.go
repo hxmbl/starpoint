@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/locator"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/locator"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
 )
 
 // A crash between writing the config's temp file and renaming it leaves a

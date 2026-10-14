@@ -2,16 +2,17 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/starpoint/starpoint/internal/config"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/system"
+	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/system"
 )
 
 // Verify asks a provider whether an installation actually works.
@@ -61,7 +62,22 @@ func (e *Engine) Verify(ctx context.Context, name string, p provider.Provider) m
 
 	found := e.locator.Locate(name)
 	if found.Path == "" {
-		v.Note = "no executable by this name is on PATH"
+		// Not on PATH is common (a fresh ~/.local/bin, an isolated HOME) and is
+		// not a failure in itself. But "the provider says so" is not evidence
+		// that the command exists: uv and pip can both list a tool whose
+		// executable another tool has just deleted. Something has to be on disk.
+		for _, candidate := range e.executableCandidates(ctx, name, inst, p) {
+			if e.locator.Exists(candidate) {
+				v.Resolved = true
+				v.OnDisk = candidate
+				v.Method = p.Name() + " inventory and file on disk"
+				v.Note = "no executable by this name is on PATH, but it exists at " + candidate
+				return v
+			}
+		}
+		v.Missing = true
+		v.Note = "no executable by this name is on PATH, and " + p.Name() +
+			" reported no install path that exists on disk"
 		return v
 	}
 	v.OnPath = found.Path
@@ -79,6 +95,26 @@ func (e *Engine) Verify(ctx context.Context, name string, p provider.Provider) m
 		v.Note = "PATH resolves inside the provider's own install directory"
 	}
 	return v
+}
+
+// executableCandidates lists the places an installation's executable could be,
+// in order of authority: the path the provider reported, then the provider's
+// executable directory. A path another provider owns is not a candidate.
+func (e *Engine) executableCandidates(ctx context.Context, name string, inst *model.Installation, p provider.Provider) []string {
+	var out []string
+	if inst != nil && inst.Path != "" {
+		out = append(out, inst.Path)
+	}
+	if dp, ok := p.(provider.ExecutableDirProvider); ok {
+		if dir := dp.ExecutableDir(ctx); dir != "" {
+			candidate := filepath.Join(dir, name)
+			if _, owner, attributed := e.locator.AttributeExecutable(candidate); !attributed ||
+				owner == p.Name() || owner == system.Name {
+				out = append(out, candidate)
+			}
+		}
+	}
+	return out
 }
 
 // executableShaped reports whether a name could be run as a command, and so
@@ -256,6 +292,13 @@ func (e *Engine) IncompleteTransitions(ctx context.Context, doc *config.Document
 // target's copy is confirmed working. Every early exit leaves both the old command
 // and the configuration intact, so the transition can simply be run again.
 //
+// The one exception is two providers that write the same executable path (uv
+// and pip --user both use ~/.local/bin). There "install, then remove" destroys
+// the command: the install overwrites the old copy's file, or refuses to, and
+// the removal then deletes the new one. For that case the old copy is removed
+// first and reinstalled if the new provider cannot take over, so every failure
+// still ends with a working command. See handOver.
+//
 // The phases are derived rather than assumed, so calling this on an interrupted
 // transition resumes it instead of starting over.
 func (e *Engine) ExecuteTransition(ctx context.Context, st model.State, opts Options) (model.Transition, error) {
@@ -277,6 +320,19 @@ func (e *Engine) ExecuteTransition(ctx context.Context, st model.State, opts Opt
 	}
 
 	target, _ := e.reg.Get(t.To.Name)
+
+	// Two providers that would write the same executable cannot both hold the
+	// software at once, so the usual order does not apply.
+	if t.Phase == model.TransitionPlanned {
+		if shared, ok := e.sharedExecutable(ctx, t, pkg, target); ok {
+			if opts.DryRun {
+				t.Note = fmt.Sprintf("%s and %s both install %s; the %s copy will be removed first and reinstalled if %s cannot take over",
+					t.From.Name, t.To.Name, shared, t.From.Name, t.To.Name)
+				return t, nil
+			}
+			return e.handOver(ctx, st, t, shared, opts)
+		}
+	}
 
 	// Phase 1: install into the target. Skipped when it already has the software,
 	// which is what makes a resumed transition idempotent.
@@ -315,6 +371,7 @@ func (e *Engine) ExecuteTransition(ctx context.Context, st model.State, opts Opt
 	}
 
 	// Phase 3: remove the incumbent.
+	removed := false
 	if t.From.Name != "" {
 		old, ok := e.reg.Get(t.From.Name)
 		if !ok || !old.Capabilities().Remove || t.From.Name == system.Name {
@@ -332,21 +389,38 @@ func (e *Engine) ExecuteTransition(ctx context.Context, st model.State, opts Opt
 				t.From.Name, pkg.Name)
 			return t, err
 		}
-		t.OldRemoved = true
+		removed = true
 	}
 
+	from := t.From.Name
 	t = e.TransitionFor(ctx, st, opts)
-	if t.OldRemoved {
-		t.Phase = model.TransitionCompleted
-		t.Recoverable = false
-		t.Note = "ownership moved from " + t.From.Name + " to " + t.To.Name
-		t.Timestamp = time.Now().Unix()
-		t.Reversible = t.From.Name != "" && t.To.Name != ""
-		// Record in history
-		if e.history != nil {
-			if err := e.history.Record(t, opts.ConfigPath); err != nil {
-				t.Note = strings.TrimSpace(t.Note + "; transition completed but history could not be saved: " + err.Error())
+
+	// Phase 4: verify again. Removing the old copy can take the new copy's
+	// executable with it when an undetected path is shared, and reporting
+	// "completed" over a missing command is the failure this guards against.
+	repaired := false
+	if removed && !t.Verification.OK() {
+		var err error
+		t, err = e.repairTarget(ctx, st, target, opts)
+		if err != nil || !t.Verification.OK() {
+			t.Phase = model.TransitionFailed
+			t.OldRemoved = true
+			t.Recoverable = true
+			t.Note = fmt.Sprintf("the %s copy was removed, but the %s copy no longer works: %s",
+				from, t.To.Name, t.Verification.Reason())
+			t.Advice = fmt.Sprintf("reinstall %s with 'starpoint sync' or with %s directly", pkg.Name, t.To.Name)
+			if err == nil {
+				err = fmt.Errorf("%s: %s", pkg.Name, t.Note)
 			}
+			return t, err
+		}
+		repaired = true
+	}
+
+	if t.OldRemoved {
+		t = e.complete(t, opts)
+		if repaired {
+			t.Note += "; " + t.To.Name + " was reinstalled because removing the " + from + " copy deleted its executable"
 		}
 	} else if t.Phase != model.TransitionCompleted && t.Phase != model.TransitionBlocked {
 		t.Phase = model.TransitionVerified
@@ -354,4 +428,138 @@ func (e *Engine) ExecuteTransition(ctx context.Context, st model.State, opts Opt
 		t.Note = "the new installation is confirmed; the previous copy is still present"
 	}
 	return t, nil
+}
+
+// complete marks a transition finished and records it for later reversal.
+func (e *Engine) complete(t model.Transition, opts Options) model.Transition {
+	t.Phase = model.TransitionCompleted
+	t.OldRemoved = true
+	t.Recoverable = false
+	t.Note = "ownership moved from " + t.From.Name + " to " + t.To.Name
+	t.Timestamp = time.Now().Unix()
+	t.Reversible = t.From.Name != "" && t.To.Name != ""
+	if e.history != nil {
+		if err := e.history.Record(t, opts.ConfigPath); err != nil {
+			t.Note = strings.TrimSpace(t.Note + "; transition completed but history could not be saved: " + err.Error())
+		}
+	}
+	return t
+}
+
+// sharedExecutable reports whether the target provider would write its
+// executable to a path the incumbent already occupies.
+//
+// It looks for the file the target would create in the target's executable
+// directory. Either the incumbent reported that exact path, or something is
+// already there; in both cases installing first would collide with it.
+func (e *Engine) sharedExecutable(ctx context.Context, t model.Transition, pkg model.Package, target provider.Provider) (string, bool) {
+	if e.locator == nil || t.From.Name == "" || t.Previous == nil || !executableShaped(pkg.Name) {
+		return "", false
+	}
+	if t.From.Name == system.Name || !t.From.Available {
+		return "", false
+	}
+	old, ok := e.reg.Get(t.From.Name)
+	if !ok || !old.Capabilities().Remove {
+		return "", false
+	}
+	dp, ok := target.(provider.ExecutableDirProvider)
+	if !ok {
+		return "", false
+	}
+	dir := dp.ExecutableDir(ctx)
+	if dir == "" {
+		return "", false
+	}
+	candidate := filepath.Join(dir, pkg.Name)
+	if prev := t.Previous.Path; prev != "" && (filepath.Clean(prev) == candidate || samePath(prev, candidate)) {
+		return candidate, true
+	}
+	if e.locator.Exists(candidate) {
+		return candidate, true
+	}
+	return "", false
+}
+
+// handOver moves software between two providers that write the same
+// executable path.
+//
+// The old copy is removed first, because neither order of "install, remove"
+// survives a shared path. That opens a window with no command, so every failure
+// after it reinstalls the old copy (at its previous version when the provider
+// can pin) before returning: the user ends up either with the new copy verified
+// on disk, or with the old one back.
+func (e *Engine) handOver(ctx context.Context, st model.State, t model.Transition, shared string, opts Options) (model.Transition, error) {
+	pkg := st.Package
+	from, to := t.From.Name, t.To.Name
+	old, _ := e.reg.Get(from)
+	target, _ := e.reg.Get(to)
+	previous := t.Previous
+
+	if err := old.Remove(ctx, pkg); err != nil {
+		t.Phase = model.TransitionFailed
+		t.Recoverable = true
+		t.Advice = fmt.Sprintf("could not remove the %s copy, which %s has to replace at %s; nothing was changed", from, to, shared)
+		return t, err
+	}
+
+	restore := func(cause error) (model.Transition, error) {
+		rollbackErr := e.reinstall(ctx, old, pkg, previous, opts)
+		r := e.TransitionFor(ctx, st, opts)
+		r.Phase = model.TransitionFailed
+		r.OldRemoved = false
+		r.Recoverable = true
+		if rollbackErr != nil {
+			r.OldRemoved = true
+			r.Recoverable = false
+			r.Advice = fmt.Sprintf("%s could not take over %s and reinstalling the %s copy also failed (%v); reinstall %s with %s",
+				to, shared, from, rollbackErr, pkg.Name, from)
+			return r, errors.Join(cause, fmt.Errorf("restoring the %s copy of %s: %w", from, pkg.Name, rollbackErr))
+		}
+		r.Note = fmt.Sprintf("%s and %s both install %s; the %s copy was restored", from, to, shared, from)
+		r.Advice = fmt.Sprintf("%s could not take over %s, so the %s copy was reinstalled and nothing else changed", to, shared, from)
+		return r, cause
+	}
+
+	if _, err := target.Install(ctx, provider.Request{Package: pkg, Dir: opts.Dir}); err != nil {
+		return restore(err)
+	}
+	after := e.TransitionFor(ctx, st, opts)
+	if !after.Verification.OK() {
+		// The new copy is not usable. Take it out again so the old copy can
+		// have its path back.
+		_ = target.Remove(ctx, pkg)
+		return restore(fmt.Errorf("%s installed %s but it could not be verified: %s",
+			to, pkg.Name, after.Verification.Reason()))
+	}
+	after = e.complete(after, opts)
+	after.Note += fmt.Sprintf("; both install %s, so the %s copy was removed first", shared, from)
+	return after, nil
+}
+
+// reinstall puts a previous installation back, pinned to the version it had
+// when the provider can honour a pin.
+func (e *Engine) reinstall(ctx context.Context, p provider.Provider, pkg model.Package, previous *model.Installation, opts Options) error {
+	restore := pkg
+	restore.Provider = p.Name()
+	restore.Version = ""
+	if previous != nil && previous.Version != "" && p.Capabilities().PinVersion {
+		restore.Version = previous.Version
+	}
+	_, err := p.Install(ctx, provider.Request{Package: restore, Dir: opts.Dir})
+	return err
+}
+
+// repairTarget reinstalls the target's copy from scratch. A plain install is
+// not enough: a package manager that still lists the package considers it
+// installed and will not recreate an executable something else deleted.
+func (e *Engine) repairTarget(ctx context.Context, st model.State, target provider.Provider, opts Options) (model.Transition, error) {
+	pkg := st.Package
+	if err := target.Remove(ctx, pkg); err != nil {
+		return e.TransitionFor(ctx, st, opts), err
+	}
+	if _, err := target.Install(ctx, provider.Request{Package: pkg, Dir: opts.Dir}); err != nil {
+		return e.TransitionFor(ctx, st, opts), err
+	}
+	return e.TransitionFor(ctx, st, opts), nil
 }

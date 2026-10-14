@@ -17,10 +17,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/exec"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/shell"
+	"github.com/hxmbl/starpoint/internal/exec"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/shell"
 )
 
 // Name is the provider identifier persisted in configuration.
@@ -146,7 +146,7 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 		if strings.Contains(strings.ToLower(res.Field()), "no global packages") {
 			return nil, nil
 		}
-		return nil, shell.Failure(p.Name(), "list", shell.FirstLine(res.Field()), nil)
+		return nil, shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 	}
 	var parsed lsResponse
 	if err := json.Unmarshal([]byte(p.stripNoise(res.Stdout)), &parsed); err != nil {
@@ -298,7 +298,7 @@ func (p *Provider) classify(op string, res exec.Result) error {
 		strings.Contains(text, "network"), strings.Contains(text, "registry.npmjs.org"):
 		return shell.Err(Name, op, provider.ErrNetwork, "could not reach the npm registry", nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "pnpm exited nonzero"
 		}
@@ -334,4 +334,18 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 		}
 	}
 	return nil
+}
+
+var _ provider.LatestVersionProvider = (*Provider)(nil)
+
+// LatestVersion asks the registry for the version pnpm would install.
+func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string, error) {
+	res, err := p.runner.Run(ctx, p.exec(), "view", pkg.Name, "version")
+	if err != nil {
+		return "", shell.Failure(p.Name(), "latest", "could not run pnpm view", err)
+	}
+	if res.Failed() {
+		return "", shell.Failure(p.Name(), "latest", shell.Diagnostic(res.Field()), nil)
+	}
+	return strings.TrimSpace(shell.FirstLine(p.stripNoise(res.Stdout))), nil
 }

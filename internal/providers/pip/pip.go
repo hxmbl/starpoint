@@ -16,12 +16,16 @@ package pip
 
 import (
 	"context"
+	"os"
+	pathpkg "path"
+	"path/filepath"
+	"runtime"
 	"strings"
 
-	"github.com/starpoint/starpoint/internal/exec"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/shell"
+	"github.com/hxmbl/starpoint/internal/exec"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/shell"
 )
 
 // Name is the provider identifier persisted in configuration.
@@ -35,9 +39,14 @@ type Provider struct {
 	binary string
 	// python is the interpreter pip belongs to, for diagnostics.
 	python string
+	// binDir caches the user-base bin directory once it is known.
+	binDir string
 }
 
-var _ provider.Provider = (*Provider)(nil)
+var (
+	_ provider.Provider              = (*Provider)(nil)
+	_ provider.ExecutableDirProvider = (*Provider)(nil)
+)
 
 // New builds a pip provider.
 func New(runner exec.Runner) *Provider { return &Provider{runner: runner} }
@@ -125,7 +134,7 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 		return nil, shell.Failure(p.Name(), "list", "could not list installed Python packages", err)
 	}
 	if res.Failed() {
-		return nil, shell.Failure(p.Name(), "list", shell.FirstLine(res.Field()), nil)
+		return nil, shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 	}
 	return p.parseFreeze(res.Stdout), nil
 }
@@ -159,12 +168,103 @@ func (p *Provider) Installed(ctx context.Context, pkg model.Package) (*model.Ins
 		return nil, err
 	}
 	for _, inst := range all {
-		if inst.Name == pkg.Name {
+		if strings.EqualFold(normalize(inst.Name), normalize(pkg.Name)) {
 			found := inst
+			found.Path = p.installPath(ctx, inst.Name)
 			return &found, nil
 		}
 	}
 	return nil, nil
+}
+
+// installPath reports where an installed distribution lives, from
+// `pip show -f`: its console script when it has one (that is what a user runs
+// and what verification needs to find), otherwise its top-level package.
+//
+// An empty result means pip could not say; that is reported as unknown rather
+// than guessed.
+func (p *Provider) installPath(ctx context.Context, name string) string {
+	res, err := p.runner.Run(ctx, p.binary, "show", "-f", name)
+	if err != nil || res.Failed() {
+		return ""
+	}
+	return pathFromShow(res.Stdout, name)
+}
+
+// pathFromShow picks the most useful location out of `pip show -f` output.
+// Files are listed relative to Location, so a console script appears as
+// ../../../bin/<name>.
+func pathFromShow(out, name string) string {
+	var (
+		location string
+		files    []string
+		inFiles  bool
+	)
+	for _, line := range strings.Split(out, "\n") {
+		if inFiles {
+			if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+				if f := strings.TrimSpace(line); f != "" {
+					files = append(files, f)
+				}
+				continue
+			}
+			inFiles = false
+		}
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(key) {
+		case "Location":
+			location = strings.TrimSpace(value)
+		case "Files":
+			inFiles = true
+		}
+	}
+	if location == "" {
+		return ""
+	}
+	resolve := func(rel string) string {
+		return filepath.Clean(filepath.Join(location, filepath.FromSlash(rel)))
+	}
+
+	var scripts []string
+	for _, f := range files {
+		slashed := filepath.ToSlash(f)
+		dir := pathpkg.Base(pathpkg.Dir(slashed))
+		if dir == "bin" || dir == "Scripts" {
+			scripts = append(scripts, resolve(f))
+		}
+	}
+	want := normalize(name)
+	for _, s := range scripts {
+		base := strings.TrimSuffix(filepath.Base(s), ".exe")
+		if normalize(base) == want {
+			return s
+		}
+	}
+	if len(scripts) > 0 {
+		return scripts[0]
+	}
+	for _, f := range files {
+		slashed := filepath.ToSlash(f)
+		if strings.HasPrefix(slashed, "..") {
+			continue
+		}
+		top := strings.SplitN(slashed, "/", 2)[0]
+		if strings.HasSuffix(top, ".dist-info") || strings.HasSuffix(top, ".egg-info") || top == "__pycache__" {
+			continue
+		}
+		return resolve(top)
+	}
+	return location
+}
+
+// normalize applies PEP 503 name normalisation, so "Pillow", "pillow" and
+// "python_dateutil"/"python-dateutil" compare equal.
+func normalize(name string) string {
+	name = strings.ToLower(name)
+	return strings.NewReplacer("_", "-", ".", "-").Replace(name)
 }
 
 // Install installs into the user site, which is the only location pip can write
@@ -243,9 +343,9 @@ func (p *Provider) classify(op string, res exec.Result) error {
 		return shell.Err(Name, op, provider.ErrNetwork, "could not reach PyPI", nil)
 	case strings.Contains(text, "conflict"), strings.Contains(text, "dependency"),
 		strings.Contains(text, "resolutionimpossible"):
-		return shell.Err(Name, op, provider.ErrConflict, shell.FirstLine(res.Field()), nil)
+		return shell.Err(Name, op, provider.ErrConflict, shell.Diagnostic(res.Field()), nil)
 	default:
-		msg := shell.FirstLine(res.Field())
+		msg := shell.Diagnostic(res.Field())
 		if msg == "" {
 			msg = "pip exited nonzero"
 		}
@@ -268,4 +368,83 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 		return shell.Failure(p.Name(), "verify", "executable failed verification", nil)
 	}
 	return nil
+}
+
+// ExecutableDir reports where `pip install --user` puts console scripts: the
+// bin directory of the interpreter's user base. On Linux that is ~/.local/bin,
+// the same directory uv links its tools into, which is why a move between the
+// two has to know about it.
+func (p *Provider) ExecutableDir(ctx context.Context) string {
+	if p.binDir != "" {
+		return p.binDir
+	}
+	if runtime.GOOS == "windows" {
+		// The Windows user scheme nests scripts under a versioned directory;
+		// rather than guess, report that the location is unknown.
+		return ""
+	}
+	base := os.Getenv("PYTHONUSERBASE")
+	if base == "" {
+		base = p.userBase(ctx)
+	}
+	if base == "" {
+		return ""
+	}
+	p.binDir = filepath.Join(base, "bin")
+	return p.binDir
+}
+
+// userBase asks the interpreter pip belongs to for its user base.
+func (p *Provider) userBase(ctx context.Context) string {
+	if _, _, err := p.locate(); err != nil {
+		return ""
+	}
+	var candidates []string
+	if res, err := p.runner.Run(ctx, p.binary, "--version"); err == nil && !res.Failed() {
+		if version := strings.TrimSpace(p.interpreterFrom(res.Stdout)); version != "" {
+			candidates = append(candidates, "python"+version)
+		}
+	}
+	candidates = append(candidates, "python3")
+	for _, python := range candidates {
+		if _, err := p.runner.LookPath(python); err != nil {
+			continue
+		}
+		res, err := p.runner.Run(ctx, python, "-m", "site", "--user-base")
+		if err != nil || res.Failed() {
+			continue
+		}
+		if base := strings.TrimSpace(shell.FirstLine(res.Stdout)); base != "" {
+			return base
+		}
+	}
+	return ""
+}
+
+var _ provider.LatestVersionProvider = (*Provider)(nil)
+
+// LatestVersion asks the index which version pip would install, from
+// `pip index versions`, whose first line is "name (x.y.z)".
+func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string, error) {
+	if _, _, err := p.locate(); err != nil {
+		return "", shell.Unsupported(p.Name(), "latest", "pip is not installed")
+	}
+	res, err := p.runner.Run(ctx, p.binary, "index", "versions", pkg.Name)
+	if err != nil {
+		return "", shell.Failure(p.Name(), "latest", "could not run pip index versions", err)
+	}
+	if res.Failed() {
+		return "", p.classify("latest", res)
+	}
+	return parenthesisedVersion(shell.FirstLine(res.Stdout)), nil
+}
+
+// parenthesisedVersion extracts "x.y.z" from "name (x.y.z)".
+func parenthesisedVersion(line string) string {
+	open := strings.Index(line, "(")
+	end := strings.Index(line, ")")
+	if open < 0 || end <= open {
+		return ""
+	}
+	return strings.TrimSpace(strings.Fields(line[open+1:end] + " ")[0])
 }

@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/starpoint/starpoint/internal/config"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/system"
+	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/system"
 )
 
 // Apply carries out a plan.
@@ -521,8 +521,27 @@ func (e *Engine) Update(ctx context.Context, doc *config.Document, opts Options)
 					pkg.Name, pkg.Version, resolution.Provider, shortOr(inst.Version, "an unknown version")))
 				continue
 			}
-			unchanged = append(unchanged, fmt.Sprintf("%s is pinned to %s; left unchanged",
-				pkg.Name, pkg.Version))
+			conflict, note, err := e.pinConflict(ctx, doc, p, pkg, resolution.Provider, opts)
+			switch {
+			case err != nil:
+				failures = append(failures, fmt.Sprintf("%s: %s", pkg.Name, err.Error()))
+			case conflict == nil:
+				unchanged = append(unchanged, note)
+			default:
+				res.PinConflicts = append(res.PinConflicts, *conflict)
+				if conflict.Resolution == "updated" {
+					res.ConfigChanged = true
+					res.ConfigPath = conflict.ConfigPath
+					res.Applied = append(res.Applied, model.PlannedAction{
+						Action: model.ActionUpdate,
+						State:  state,
+						Note: fmt.Sprintf("%s -> %s; pin rewritten in %s",
+							pkg.Version, conflict.Available, conflict.ConfigPath),
+					})
+				} else {
+					unchanged = append(unchanged, note)
+				}
+			}
 			continue
 		}
 		if !p.Capabilities().Update {
@@ -577,6 +596,88 @@ func (e *Engine) Update(ctx context.Context, doc *config.Document, opts Options)
 	return res, nil
 }
 
+// pinConflict checks a satisfied pin against the newest version the provider
+// would install.
+//
+// The configuration is the source of truth, so a newer version is a conflict
+// to explain, not a reason to move. Only a package the user approved in
+// opts.UpdatePinned is updated, and then the pin is rewritten to the version
+// actually installed so the configuration keeps describing the machine.
+func (e *Engine) pinConflict(ctx context.Context, doc *config.Document, p provider.Provider, pkg model.Package,
+	providerName string, opts Options) (*model.PinConflict, string, error) {
+	kept := fmt.Sprintf("%s is pinned to %s; left unchanged", pkg.Name, pkg.Version)
+	lp, ok := p.(provider.LatestVersionProvider)
+	if !ok {
+		return nil, kept + " (" + providerName + " cannot report newer versions)", nil
+	}
+	latest, err := lp.LatestVersion(ctx, pkg)
+	if err != nil || latest == "" || model.VersionMatches(pkg.Version, latest) ||
+		model.CompareVersions(latest, pkg.Version) <= 0 {
+		return nil, kept, nil
+	}
+	conflict := &model.PinConflict{
+		Package:    pkg.Name,
+		Provider:   providerName,
+		Pinned:     pkg.Version,
+		Available:  latest,
+		Resolution: "kept",
+	}
+	note := fmt.Sprintf("there is a new version available for %s (%s), but the configuration says %s; left unchanged",
+		pkg.Name, latest, pkg.Version)
+	if opts.DryRun {
+		conflict.Resolution = "pending"
+		return conflict, note, nil
+	}
+	if !opts.UpdatePinned[pkg.Name] {
+		return conflict, note, nil
+	}
+
+	target := pkg
+	target.Version = latest
+	var inst *model.Installation
+	if p.Capabilities().Update {
+		inst, err = p.Update(ctx, target)
+	} else {
+		inst, err = p.Install(ctx, provider.Request{Package: target, Dir: opts.Dir})
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("updating past the pin: %w", err)
+	}
+	newPin := latest
+	if inst != nil && inst.Version != "" {
+		newPin = inst.Version
+	}
+	conflict.Available = newPin
+	path, err := rewritePin(doc, pkg.Name, newPin)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s was updated to %s but the pin could not be rewritten: %w", pkg.Name, newPin, err)
+	}
+	conflict.Resolution = "updated"
+	conflict.ConfigPath = path
+	if e.tracker != nil {
+		_ = e.tracker.Record(pkg.Name, opts.Dir, time.Now())
+	}
+	return conflict, "", nil
+}
+
+// rewritePin sets a package's version in the file that declares it and saves.
+func rewritePin(doc *config.Document, name, version string) (string, error) {
+	f, ok := doc.Find(name)
+	if !ok {
+		return "", fmt.Errorf("%s is not declared in any configuration file", name)
+	}
+	for i := range f.Raw.Packages {
+		if f.Raw.Packages[i].Name == name {
+			f.Raw.Packages[i].Version = version
+		}
+	}
+	storeFile(doc, f)
+	if err := doc.Save(); err != nil {
+		return "", err
+	}
+	return f.Path, nil
+}
+
 func shortOr(s, fallback string) string {
 	if s == "" {
 		return fallback
@@ -613,6 +714,12 @@ func (e *Engine) plan(ctx context.Context, pkg model.Package, opts Options) (*ad
 	available := e.health(ctx)
 	existing := e.findExisting(ctx, pkg, available)
 	resolution := e.resolver.Resolve(e.resolveInput(pkg, existing, available, opts))
+	if pkg.Reason != "" && resolution.Forced {
+		// The provider came from the caller with its own reason (named on the
+		// command line, or picked at a prompt); report that rather than the
+		// resolver's generic "configuration selects it".
+		resolution.Reason = pkg.Reason
+	}
 
 	resolved := pkg
 	resolved.Provider = resolution.Provider
@@ -677,8 +784,15 @@ func (e *Engine) Preview(ctx context.Context, doc *config.Document, pkg model.Pa
 // would otherwise be free to disagree, and a preview that lists one set of
 // packages while the command updates another is worse than no preview at all.
 func (e *Engine) UpdatePlan(ctx context.Context, doc *config.Document, opts Options) ([]model.PlannedAction, error) {
+	res, err := e.UpdatePreview(ctx, doc, opts)
+	return res.Applied, err
+}
+
+// UpdatePreview is Update with dry-run forced on, returning the whole result so
+// the caller can see pin conflicts as well as the updates.
+func (e *Engine) UpdatePreview(ctx context.Context, doc *config.Document, opts Options) (*Result, error) {
 	preview := opts
 	preview.DryRun = true
 	res, _ := e.Update(ctx, doc, preview)
-	return res.Applied, nil
+	return res, nil
 }

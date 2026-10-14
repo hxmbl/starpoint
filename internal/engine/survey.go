@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
 )
 
 // SurveyTimeout bounds one round of concurrent lookups.

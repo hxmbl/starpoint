@@ -2,12 +2,13 @@ package pip
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
-	"github.com/starpoint/starpoint/internal/exec"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/testsupport"
+	"github.com/hxmbl/starpoint/internal/exec"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/testsupport"
 )
 
 // freeze is the shape `pip list --format=freeze` prints, captured from pip
@@ -231,5 +232,108 @@ func TestClassify(t *testing.T) {
 		if !ok || pe.Kind != tc.want {
 			t.Errorf("%q classified as %v, want %q", tc.stderr, err, tc.want)
 		}
+	}
+}
+
+func TestExecutableDirIsTheInterpretersUserBaseBin(t *testing.T) {
+	t.Setenv("PYTHONUSERBASE", "")
+	p, r := newProvider(t)
+	r.WithBin("python3.14")
+	r.Set("/home/u/.local\n", "python3.14", "-m", "site", "--user-base")
+	if got := p.ExecutableDir(context.Background()); got != "/home/u/.local/bin" {
+		t.Errorf("ExecutableDir = %q", got)
+	}
+
+	t.Setenv("PYTHONUSERBASE", "/opt/userbase")
+	p2, _ := newProvider(t)
+	if got := p2.ExecutableDir(context.Background()); got != "/opt/userbase/bin" {
+		t.Errorf("PYTHONUSERBASE should be honoured, got %q", got)
+	}
+}
+
+func TestExecutableDirIsUnknownWithoutAnInterpreter(t *testing.T) {
+	t.Setenv("PYTHONUSERBASE", "")
+	p, _ := newProvider(t)
+	if got := p.ExecutableDir(context.Background()); got != "" {
+		t.Errorf("with no interpreter to ask, the directory is unknown, got %q", got)
+	}
+}
+
+// showCowsay is `pip show -f cowsay` from pip 25.0.1 with a --user install.
+const showCowsay = `Name: cowsay
+Version: 6.1
+Summary: The famous cowsay for GNU/Linux is now available for python
+Location: /home/u/.local/lib/python3.12/site-packages
+Requires: 
+Required-by: 
+Files:
+  ../../../bin/cowsay
+  cowsay-6.1.dist-info/INSTALLER
+  cowsay-6.1.dist-info/RECORD
+  cowsay/__init__.py
+  cowsay/main.py
+`
+
+const showCertifi = `Name: certifi
+Version: 2026.7.22
+Location: /usr/local/lib/python3.14/site-packages
+Requires: 
+Files:
+  certifi-2026.7.22.dist-info/INSTALLER
+  certifi/__init__.py
+  certifi/cacert.pem
+`
+
+func TestInstalledReportsTheConsoleScriptPath(t *testing.T) {
+	p, r := newProvider(t)
+	r.Set("cowsay==6.1\n", "pip3", "list", "--format=freeze")
+	r.Set(showCowsay, "pip3", "show", "-f", "cowsay")
+	inst, err := p.Installed(context.Background(), model.Package{Name: "cowsay"})
+	if err != nil || inst == nil {
+		t.Fatalf("expected cowsay, got %v / %v", inst, err)
+	}
+	if inst.Path != "/home/u/.local/bin/cowsay" {
+		t.Errorf("Path = %q, want the console script", inst.Path)
+	}
+}
+
+func TestInstalledReportsTheTopLevelPackageForALibrary(t *testing.T) {
+	p, r := newProvider(t)
+	r.Set(showCertifi, "pip3", "show", "-f", "certifi")
+	inst, err := p.Installed(context.Background(), model.Package{Name: "certifi"})
+	if err != nil || inst == nil {
+		t.Fatalf("expected certifi, got %v / %v", inst, err)
+	}
+	if inst.Path != "/usr/local/lib/python3.14/site-packages/certifi" {
+		t.Errorf("Path = %q, want the package directory", inst.Path)
+	}
+}
+
+func TestInstalledLeavesThePathUnknownWhenShowFails(t *testing.T) {
+	p, _ := newProvider(t)
+	inst, err := p.Installed(context.Background(), model.Package{Name: "lit"})
+	if err != nil || inst == nil {
+		t.Fatalf("expected lit, got %v / %v", inst, err)
+	}
+	if inst.Path != "" {
+		t.Errorf("an unanswered show must not invent a path, got %q", inst.Path)
+	}
+}
+
+func TestInstalledMatchesNormalisedNames(t *testing.T) {
+	p, _ := newProvider(t)
+	inst, _ := p.Installed(context.Background(), model.Package{Name: "Pillow"})
+	if inst == nil || inst.Name != "pillow" {
+		t.Errorf("PEP 503 names should match regardless of case, got %+v", inst)
+	}
+}
+
+func TestPathFromShowPrefersTheScriptNamedAfterThePackage(t *testing.T) {
+	out := "Name: black\nLocation: /l/site-packages\nFiles:\n  ../../../bin/blackd\n  ../../../bin/black\n  black/__init__.py\n"
+	if got := pathFromShow(out, "black"); got != "/bin/black" && got != filepath.Clean("/l/site-packages/../../../bin/black") {
+		t.Errorf("got %q", got)
+	}
+	if got := pathFromShow("Name: x\n", "x"); got != "" {
+		t.Errorf("no location means no path, got %q", got)
 	}
 }

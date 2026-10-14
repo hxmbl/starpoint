@@ -10,6 +10,7 @@ package model
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -125,6 +126,10 @@ const (
 	// StatusUnpinnedConflict means the software is present through the desired
 	// provider but the requested version cannot be enforced by that provider.
 	StatusUnpinnedConflict Status = "version-unsatisfiable"
+	// StatusUnmanaged means the software is on the machine but not in the
+	// configuration. Nothing is wrong with it; Starpoint simply does not own
+	// it, and "missing" would be the opposite of the truth.
+	StatusUnmanaged Status = "unmanaged"
 )
 
 // Healthy reports whether the status needs no action.
@@ -325,4 +330,63 @@ func (p Package) Spec() string {
 		return p.Name
 	}
 	return p.Name + RawVersionSeparator + p.Version
+}
+
+// CompareVersions orders two version strings: negative when a is older than b,
+// zero when equal, positive when newer. Dotted (and dashed) segments are
+// compared numerically when both are numbers and lexically otherwise, and a
+// leading "v" is ignored, which is enough to tell "1.10" from "1.9" without
+// pretending to implement every ecosystem's version grammar.
+func CompareVersions(a, b string) int {
+	split := func(v string) []string {
+		v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+		return strings.FieldsFunc(v, func(r rune) bool { return r == '.' || r == '-' || r == '+' || r == '_' })
+	}
+	as, bs := split(a), split(b)
+	for i := 0; i < len(as) || i < len(bs); i++ {
+		var x, y string
+		if i < len(as) {
+			x = as[i]
+		}
+		if i < len(bs) {
+			y = bs[i]
+		}
+		if x == y {
+			continue
+		}
+		xn, xerr := strconv.Atoi(x)
+		yn, yerr := strconv.Atoi(y)
+		switch {
+		case xerr == nil && yerr == nil:
+			if xn != yn {
+				if xn < yn {
+					return -1
+				}
+				return 1
+			}
+		case x == "":
+			return -1
+		case y == "":
+			return 1
+		default:
+			return strings.Compare(x, y)
+		}
+	}
+	return 0
+}
+
+// PinConflict is a pinned package for which a newer version is available.
+//
+// The configuration is the source of truth, so the conflict is reported and
+// the user decides; Starpoint never moves a pin on its own.
+type PinConflict struct {
+	Package   string `json:"package"`
+	Provider  string `json:"provider"`
+	Pinned    string `json:"pinned"`
+	Available string `json:"available"`
+	// Resolution is "kept" (the pin stands), "updated" (the user approved and
+	// the pin was rewritten) or "pending" (a dry run, or not yet asked).
+	Resolution string `json:"resolution"`
+	// ConfigPath is the file whose pin was rewritten, when it was.
+	ConfigPath string `json:"config_path,omitempty"`
 }

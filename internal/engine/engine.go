@@ -16,14 +16,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/starpoint/starpoint/internal/config"
-	"github.com/starpoint/starpoint/internal/history"
-	"github.com/starpoint/starpoint/internal/locator"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
-	"github.com/starpoint/starpoint/internal/providers/system"
-	"github.com/starpoint/starpoint/internal/resolve"
-	"github.com/starpoint/starpoint/internal/tracking"
+	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/history"
+	"github.com/hxmbl/starpoint/internal/locator"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/system"
+	"github.com/hxmbl/starpoint/internal/resolve"
+	"github.com/hxmbl/starpoint/internal/tracking"
 )
 
 // Engine computes and applies convergence.
@@ -108,6 +108,9 @@ type Options struct {
 	// own package database, and mistaking one for the other turns a no-op into a
 	// destructive install.
 	AdoptOnly bool
+	// UpdatePinned names pinned packages the user agreed to move to the newest
+	// version during update. Their pin is rewritten in the configuration.
+	UpdatePinned map[string]bool
 	// SurveyTimeout bounds one round of concurrent provider lookups. Zero keeps
 	// the default.
 	SurveyTimeout time.Duration
@@ -128,6 +131,8 @@ type Result struct {
 	ConfigPath string `json:"config_path,omitempty"`
 	// Warnings are non-fatal problems.
 	Warnings []model.Warning `json:"warnings,omitempty"`
+	// PinConflicts are pinned packages with a newer version available.
+	PinConflicts []model.PinConflict `json:"pin_conflicts,omitempty"`
 	// DryRun echoes the mode.
 	DryRun bool `json:"dry_run"`
 }
@@ -517,6 +522,14 @@ func sortedProviders(m map[string]provider.Health) []string {
 func (e *Engine) Decide(ctx context.Context, doc *config.Document, pkg model.Package, opts Options) model.Resolution {
 	available := e.health(ctx)
 	return e.resolver.Resolve(e.resolveInput(pkg, e.findExisting(ctx, pkg, available), available, opts))
+}
+
+// Explain returns the resolver's full reasoning for a package, from exactly the
+// input Decide, install and sync use. explain and info must never describe a
+// different decision from the one install would make.
+func (e *Engine) Explain(ctx context.Context, doc *config.Document, pkg model.Package, opts Options) resolve.Explanation {
+	available := e.health(ctx)
+	return e.resolver.Explain(e.resolveInput(pkg, e.findExisting(ctx, pkg, available), available, opts))
 }
 
 // Duplicate records a second copy of software that Starpoint already tracks.

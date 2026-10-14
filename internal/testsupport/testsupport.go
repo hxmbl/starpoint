@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/starpoint/starpoint/internal/config"
-	"github.com/starpoint/starpoint/internal/exec"
-	"github.com/starpoint/starpoint/internal/model"
-	"github.com/starpoint/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/exec"
+	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/provider"
 )
 
 // FakeRunner is a scripted command runner. It records invocations so tests can
@@ -138,6 +138,17 @@ type FakeProvider struct {
 	// fake reports line up with the PATH a fake locator resolves, which matters
 	// whenever a test is exercising verification.
 	InstallPath string
+	// Latest is what LatestVersion reports per package; missing means unknown.
+	Latest map[string]string
+	// ExeDir is what ExecutableDir reports; empty means unknown.
+	ExeDir string
+	// RemoveHook runs after a successful Remove, for tests that model a
+	// package manager deleting more than its own files.
+	RemoveHook func(pkg model.Package)
+	// InstallGuard runs before Install; a non-nil error fails the install.
+	InstallGuard func(req provider.Request) error
+	// InstallHook runs after a successful Install.
+	InstallHook func(req provider.Request)
 
 	// InstalledDelay makes Installed take this long, honouring context
 	// cancellation. Tests use it to prove a slow provider cannot hang a command,
@@ -262,6 +273,11 @@ func (f *FakeProvider) Install(_ context.Context, req provider.Request) (*model.
 	if f.InstallError != nil {
 		return nil, f.InstallError
 	}
+	if f.InstallGuard != nil {
+		if err := f.InstallGuard(req); err != nil {
+			return nil, err
+		}
+	}
 	inst := model.Installation{
 		Name:     req.Package.Name,
 		Version:  req.Package.Version,
@@ -273,6 +289,9 @@ func (f *FakeProvider) Install(_ context.Context, req provider.Request) (*model.
 		inst.Version = "1.0.0"
 	}
 	f.Items[req.Package.Name] = inst
+	if f.InstallHook != nil {
+		f.InstallHook(req)
+	}
 	copied := inst
 	return &copied, nil
 }
@@ -286,8 +305,21 @@ func (f *FakeProvider) Remove(_ context.Context, pkg model.Package) error {
 		return f.RemoveError
 	}
 	delete(f.Items, pkg.Name)
+	if f.RemoveHook != nil {
+		f.RemoveHook(pkg)
+	}
 	return nil
 }
+
+// LatestVersion implements provider.LatestVersionProvider.
+func (f *FakeProvider) LatestVersion(_ context.Context, pkg model.Package) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Latest[pkg.Name], nil
+}
+
+// ExecutableDir implements provider.ExecutableDirProvider.
+func (f *FakeProvider) ExecutableDir(context.Context) string { return f.ExeDir }
 
 // Update changes the version.
 func (f *FakeProvider) Update(_ context.Context, pkg model.Package) (*model.Installation, error) {
@@ -301,7 +333,13 @@ func (f *FakeProvider) Update(_ context.Context, pkg model.Package) (*model.Inst
 	if !ok {
 		inst = model.Installation{Name: pkg.Name, Provider: f.ProviderName, Scope: f.Caps.DefaultScope, Version: "1.0.0"}
 	}
-	inst.Version = bump(inst.Version)
+	if pkg.Version != "" {
+		inst.Version = pkg.Version
+	} else if latest := f.Latest[pkg.Name]; latest != "" {
+		inst.Version = latest
+	} else {
+		inst.Version = bump(inst.Version)
+	}
 	f.Items[pkg.Name] = inst
 	copied := inst
 	return &copied, nil
