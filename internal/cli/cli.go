@@ -161,14 +161,10 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		force      bool
 		providers  []string
 		contextDir string
-		record     bool
 	)
-	rest, flagErr := extractGlobalFlags(args, &asJSON, &force, &providers, &contextDir, &record)
+	rest, flagErr := extractGlobalFlags(args, &asJSON, &force, &providers, &contextDir)
 	if contextDir != "" {
 		env.WorkDir = contextDir
-	}
-	if record {
-		// Force recording - this is a no-op for now, tracking happens automatically
 	}
 	if flagErr != nil {
 		fmt.Fprintf(env.Stderr, "error: %s\n", flagErr)
@@ -258,7 +254,7 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		if asJSON {
 			enc := json.NewEncoder(env.Stderr)
 			enc.SetIndent("", "  ")
-			_ = enc.Encode(map[string]any{"schema_version": 1, "error": err.Error()})
+			_ = enc.Encode(map[string]any{"schema_version": report.SchemaVersion, "error": err.Error()})
 		} else {
 			fmt.Fprintf(env.Stderr, "error: %s\n", err)
 		}
@@ -280,7 +276,7 @@ func leadingArgs(args []string) []string {
 
 // extractGlobalFlags pulls the global options out of an argument list and
 // returns what remains: the subcommand and its own arguments.
-func extractGlobalFlags(args []string, asJSON, force *bool, providers *[]string, contextDir *string, record *bool) ([]string, error) {
+func extractGlobalFlags(args []string, asJSON, force *bool, providers *[]string, contextDir *string) ([]string, error) {
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -300,8 +296,6 @@ func extractGlobalFlags(args []string, asJSON, force *bool, providers *[]string,
 			}
 			*contextDir = args[i+1]
 			i++
-		case "--record":
-			*record = true
 		default:
 			rest = append(rest, args[i])
 		}
@@ -576,15 +570,14 @@ func cmdInfo(ctx context.Context, env *Env, w *report.Writer, args []string) err
 		if st.Package.Name != name {
 			continue
 		}
+		// One response, not several: a pending ownership move is the most
+		// important thing to know about a package, so it travels alongside the
+		// package rather than as a second JSON document.
+		extra := map[string]any{}
 		if st.Status == model.StatusProviderDiffers {
-			// A pending move of ownership is the most important thing to know
-			// about a package, so it is shown rather than hidden behind a status.
-			if err := w.Info(st); err != nil {
-				return err
-			}
-			return w.TransitionDetail(eng.TransitionFor(ctx, st, opts))
+			extra["transition"] = eng.TransitionFor(ctx, st, opts)
 		}
-		return w.Info(st)
+		return w.Info(st, extra)
 	}
 	// The software may be on the machine without being in the configuration.
 	// Answering that is more useful than failing.
@@ -618,16 +611,13 @@ func cmdInfo(ctx context.Context, env *Env, w *report.Writer, args []string) err
 		if len(owners) > 1 {
 			st.Notes = append(st.Notes, "also present via "+joinProviders(owners[1:]))
 		}
-		if err := w.Info(st); err != nil {
-			return err
-		}
-		return w.Lookup(survey)
+		return w.Info(st, map[string]any{"lookup": survey})
 	}
 
 	// A provider inventory came up empty; path attribution is the last word.
 	found := env.loc().Locate(name)
 	if found.Path != "" {
-		if err := w.Info(model.State{
+		return w.Info(model.State{
 			Package: model.Package{Name: name},
 			Res:     desired,
 			Current: &model.Installation{Name: name, Path: found.Path},
@@ -636,10 +626,7 @@ func cmdInfo(ctx context.Context, env *Env, w *report.Writer, args []string) err
 				"present at " + found.Path + " but Starpoint cannot tell which provider installed it",
 				"run 'starpoint add " + name + " --provider <name>' to record ownership",
 			},
-		}); err != nil {
-			return err
-		}
-		return w.Lookup(survey)
+		}, map[string]any{"lookup": survey})
 	}
 
 	// Nothing anywhere. The refusal says which providers were asked, because
@@ -1696,13 +1683,7 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		res.Applied = append(res.Applied, selfRes...)
 	}
 	if w.JSON() {
-		_ = w.Render(map[string]any{
-			"operation":     "update",
-			"dry_run":       res.DryRun,
-			"actions":       res.Applied,
-			"warnings":      res.Warnings,
-			"pin_conflicts": res.PinConflicts,
-		})
+		_ = w.Update(res)
 		return updateErr
 	}
 	for _, c := range res.PinConflicts {
@@ -1871,7 +1852,7 @@ func cmdRuns(ctx context.Context, env *Env, w *report.Writer, args []string) err
 	}
 
 	// Filter the execution history
-	var filtered []tracking.RunRecord
+	filtered := []tracking.RunRecord{}
 	for _, rec := range tracker.AllRecords() {
 		if filterPackage != "" && rec.PackageName != filterPackage {
 			continue
@@ -1969,24 +1950,7 @@ func cmdPrune(ctx context.Context, env *Env, w *report.Writer, args []string, al
 		}
 	}
 
-	if w.JSON() {
-		return w.Render(map[string]any{
-			"operation": "prune",
-			"dry_run":   res.DryRun,
-			"warnings":  res.Warnings,
-		})
-	}
-
-	// Human-readable output
-	if len(res.Warnings) > 0 {
-		for _, warn := range res.Warnings {
-			fmt.Fprintf(env.Stdout, "  %s\n", warn.Message)
-		}
-	}
-	if len(res.Applied) == 0 && len(res.Warnings) == 0 {
-		fmt.Fprintln(env.Stdout, "No orphaned software found.")
-	}
-	return nil
+	return w.Prune(res, dryRun)
 }
 
 // cmdRecover inspects and clears files left behind by an interrupted run.

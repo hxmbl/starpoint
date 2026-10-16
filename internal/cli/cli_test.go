@@ -771,28 +771,26 @@ func TestExplainJSON(t *testing.T) {
 	out := h.mustRun("--json", "explain", "ruff")
 	var payload struct {
 		SchemaVersion int `json:"schema_version"`
-		Explain       struct {
-			Package struct {
-				Name string `json:"name"`
-			} `json:"package"`
-			Final struct {
-				Provider string `json:"provider"`
-			} `json:"final"`
-			Steps []struct {
-				Rule    string `json:"rule"`
-				Outcome string `json:"outcome"`
-				Applied bool   `json:"applied"`
-			} `json:"steps"`
-		} `json:"explain"`
+		Package       struct {
+			Name string `json:"name"`
+		} `json:"package"`
+		Final struct {
+			Provider string `json:"provider"`
+		} `json:"final"`
+		Steps []struct {
+			Rule    string `json:"rule"`
+			Outcome string `json:"outcome"`
+			Applied bool   `json:"applied"`
+		} `json:"steps"`
 	}
 	h.decode(out, &payload)
-	if payload.SchemaVersion != 1 {
+	if payload.SchemaVersion != 2 {
 		t.Errorf("unexpected schema version: %d", payload.SchemaVersion)
 	}
-	if payload.Explain.Package.Name != "ruff" {
+	if payload.Package.Name != "ruff" {
 		t.Errorf("unexpected JSON: %+v", payload)
 	}
-	if len(payload.Explain.Steps) == 0 {
+	if len(payload.Steps) == 0 {
 		t.Errorf("explain JSON should contain steps: %+v", payload)
 	}
 }
@@ -1184,15 +1182,6 @@ func TestContextFlagOverridesWorkDir(t *testing.T) {
 	}
 }
 
-func TestRecordFlagIsAccepted(t *testing.T) {
-	h := newHarness(t, "schema = 1\n")
-	// --record should be accepted even if it's a no-op for now
-	code, _, _ := h.run("--record", "install", "ripgrep")
-	if code != 0 {
-		t.Fatalf("install with --record should succeed")
-	}
-}
-
 func TestHistoryIsAliasForRuns(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")
 	h.mustRun("install", "ripgrep")
@@ -1208,10 +1197,6 @@ func TestHistoryIsAliasForRuns(t *testing.T) {
 		t.Errorf("history (alias) should show execution history:\n%s", out2)
 	}
 }
-
-// Execution tracking is now handled by the tracking package in the engine.
-// These tests would need to be updated to check the tracking system directly.
-// For now, we skip them since the tracking is now integrated at the engine level.
 
 func TestInstallDotWithContextRecordsProjectContext(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")

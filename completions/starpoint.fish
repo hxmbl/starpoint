@@ -14,7 +14,6 @@ complete -c starpoint -l json -d 'Machine-readable output'
 complete -c starpoint -l provider -r -a "$providers" -d 'Restrict or choose the provider'
 complete -c starpoint -l force -d 'Replace existing configuration (init)'
 complete -c starpoint -l context -r -F -d 'Override working directory'
-complete -c starpoint -l record -d 'Force recording execution'
 complete -c starpoint -l version -d 'Print version (install: pin a version)'
 complete -c starpoint -l help -s h -d 'Show help'
 

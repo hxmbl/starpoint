@@ -7,7 +7,7 @@ _starpoint() {
   cur=${COMP_WORDS[COMP_CWORD]}
   prev=${COMP_WORDS[COMP_CWORD-1]}
   commands='init sync list ls info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover help'
-  globals='--json --provider --force --context --record --version --help'
+  globals='--json --provider --force --context --version --help'
   providers='apt brew cargo dnf gem go npm pacman pip pnpm rustup system uv yarn'
 
   if [[ $prev == --provider || $prev == -p ]]; then

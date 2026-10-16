@@ -58,7 +58,7 @@ var commandFlags = map[string][]string{
 }
 
 // globalFlags are accepted anywhere on the command line.
-var globalFlags = []string{"--json", "--provider", "--force", "--context", "--record", "--version", "--help"}
+var globalFlags = []string{"--json", "--provider", "--force", "--context", "--version", "--help"}
 
 // isHelpFlag reports whether an argument asks for help.
 func isHelpFlag(a string) bool { return a == "--help" || a == "-h" }

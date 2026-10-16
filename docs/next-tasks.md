@@ -10,7 +10,7 @@ This file tracks work that remains after the current implementation. Completed i
 
 ## Remaining CLI and API work
 
-4. **Publish the JSON schema as a machine-readable artifact.** `docs/json-schema.md` documents schema version 1 and the command shapes. Generate or validate a formal JSON Schema document from the actual Go output types so external clients can validate payloads without duplicating the prose contract.
+4. **Publish the JSON schema as a machine-readable artifact.** `docs/json-schema.md` documents schema version 2 and the command shapes. Generate or validate a formal JSON Schema document from the actual Go output types so external clients can validate payloads without duplicating the prose contract.
 5. **Generate shell completions.** Bash, zsh, and fish completions are hand-written; a test (internal/cli/completions_test.go) checks them against the command, flag and provider tables. Generating them from those tables would remove the duplication. The zsh and fish files have not been exercised in a real shell in CI.
 6. **Improve PATH inventory controls.** `doctor` summarises the PATH inventory (counts, shadowed names, unknown owners; `--all` for everything) and PATH directories are de-duplicated by real path. `list` still prints every unaccounted executable; consider the same summary there and richer filters (by directory or owner) for very large PATHs, keeping the full data in machine output.
 
@@ -30,7 +30,7 @@ This file tracks work that remains after the current implementation. Completed i
 - `sync` does not adopt an installation merely because it exists. `starpoint install` is the explicit adoption path and records the selected provider in the source of truth.
 - An explicit provider in configuration wins. Otherwise an existing non-system owner is retained, known executable ownership mappings are considered, then ecosystem and project context guide a choice. Starpoint asks when multiple viable general providers remain ambiguous.
 - Transition phases are reconstructed from provider inventory and executable resolution. Re-running a transition resumes based on observed machine state; the history store supports audit and explicit reversal.
-- Prune removes only orphaned user-scoped software that a provider can enumerate and remove. It excludes system/global scope and configured package names.
+- Prune removes only orphaned user-scoped software that a provider can enumerate and remove. It excludes system/global scope and configured package names. It refuses when the configuration declares no packages, because there is then no source of truth to tell managed software from orphans, and it lists its candidates in both the human and JSON forms of `--dry-run`.
 
 ## Completed in this implementation
 
@@ -40,7 +40,10 @@ This file tracks work that remains after the current implementation. Completed i
 - Transition history and `starpoint transition --reverse`.
 - PATH executable inventory with symlink/duplicate reporting in `list` and `doctor`.
 - Resolver explanation through `starpoint explain <package>`.
-- Versioned JSON output envelope and command-shape documentation.
+- Versioned JSON output envelope and command-shape documentation. Every command emits one flat object under schema version 2, so the documented shape and the emitted shape cannot drift.
+- `info --json` emits a single document: the provider survey or a pending transition travels inside the same response instead of in a second JSON object.
+- `prune` refuses to run when the configuration declares no packages, and `--dry-run` lists the candidates in both human and JSON output.
+- Removed the vestigial `--record` flag, which was accepted but did nothing (recording is automatic), and the unused `internal/starpointcontext` package, which duplicated `internal/project`.
 - Bash, zsh, and fish completion scripts.
 - TOML writes that preserve comments and unrelated file content while updating package entries.
 - DNF and Pacman providers alongside the existing APT and Homebrew integrations. Neither can honour an arbitrary version pin, and both report that rather than claiming a capability they lack.

@@ -36,6 +36,49 @@ func New(out io.Writer, asJSON bool) *Writer {
 // JSON reports whether machine-readable output is requested.
 func (w *Writer) JSON() bool { return w.asJSON }
 
+// SchemaVersion is the version of the machine-readable response envelope. It is
+// independent of the TOML configuration `schema` field.
+//
+// Version 2 flattens every command payload into the top-level object.
+// Version 1 documented that same flat shape, but the implementation nested some
+// commands under their own key ("sync", "doctor", "explain") and others under
+// "data", so no consumer could rely on it. Version 2 makes the documented shape
+// the actual shape.
+const SchemaVersion = 2
+
+// respond emits one flat JSON object: schema_version plus the given fields.
+//
+// Every command response goes through here so the envelope cannot drift from
+// command to command, which is what made the version 1 contract unusable.
+func (w *Writer) respond(fields map[string]any) error {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	fields["schema_version"] = SchemaVersion
+	return w.emit(fields)
+}
+
+// flatten exposes a value's JSON fields as a map so a struct payload can be
+// merged into the response envelope. Values that do not marshal to an object
+// (a bare slice, a scalar) are nested under "data" rather than dropped.
+func flatten(v any) map[string]any {
+	if v == nil {
+		return map[string]any{}
+	}
+	if m, ok := v.(map[string]any); ok {
+		return m
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return map[string]any{"data": v}
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return map[string]any{"data": v}
+	}
+	return m
+}
+
 // ListItem is one row of `starpoint list`.
 type ListItem struct {
 	Name     string `json:"name"`
@@ -86,9 +129,9 @@ func (w *Writer) List(states []model.State, pathInventory ...[]locator.Found) er
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 
 	if w.asJSON {
-		payload := map[string]any{"schema_version": 1, "packages": items}
+		payload := map[string]any{"packages": items}
 		payload["unaccounted_path"] = unaccounted
-		return w.emit(payload)
+		return w.respond(payload)
 	}
 	if len(items) == 0 {
 		fmt.Fprintln(w.out, "No software in the configuration yet. Add some with: starpoint install <package>")
@@ -128,9 +171,18 @@ func (w *Writer) List(states []model.State, pathInventory ...[]locator.Found) er
 }
 
 // Info renders `starpoint info <package>`.
-func (w *Writer) Info(st model.State) error {
+//
+// extra carries the optional companions of a package: a pending "transition"
+// when ownership is moving, or the provider "lookup" survey that explained an
+// unmanaged package. Folding them into one response is what keeps info a single
+// JSON document; emitting them separately produced concatenated objects.
+func (w *Writer) Info(st model.State, extra map[string]any) error {
 	if w.asJSON {
-		return w.emit(map[string]any{"schema_version": 1, "package": st})
+		fields := map[string]any{"package": st}
+		for k, v := range extra {
+			fields[k] = v
+		}
+		return w.respond(fields)
 	}
 	var b strings.Builder
 	p := st.Package
@@ -168,8 +220,15 @@ func (w *Writer) Info(st model.State) error {
 		fmt.Fprintf(&b, "  Note:              %s\n", n)
 	}
 	if len(b.String()) > 0 {
-		_, err := io.WriteString(w.out, b.String())
-		return err
+		if _, err := io.WriteString(w.out, b.String()); err != nil {
+			return err
+		}
+	}
+	if t, ok := extra["transition"].(model.Transition); ok {
+		return w.writeTransitionDetail(t)
+	}
+	if s, ok := extra["lookup"].(engine.Survey); ok {
+		return w.writeLookup(s)
 	}
 	return nil
 }
@@ -232,7 +291,7 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 	}
 
 	if w.asJSON {
-		return w.emit(map[string]any{"schema_version": 1, "sync": out})
+		return w.respond(flatten(out))
 	}
 
 	if len(actions) == 0 {
@@ -304,11 +363,10 @@ func dedupeTransitions(in []model.Transition) []model.Transition {
 // Transitions renders `starpoint transition`.
 func (w *Writer) Transitions(ts []model.Transition, dryRun bool) error {
 	if w.asJSON {
-		return w.emit(map[string]any{
-			"schema_version": 1,
-			"dry_run":        dryRun,
-			"transitions":    ts,
-			"pending":        countPending(ts),
+		return w.respond(map[string]any{
+			"dry_run":     dryRun,
+			"transitions": ts,
+			"pending":     countPending(ts),
 		})
 	}
 	if len(ts) == 0 {
@@ -358,12 +416,10 @@ func (w *Writer) writeTransitions(ts []model.Transition) {
 	}
 }
 
-// TransitionDetail renders `starpoint info <package>` when a transition applies,
-// showing the phases and the evidence rather than a bare status.
-func (w *Writer) TransitionDetail(t model.Transition) error {
-	if w.asJSON {
-		return w.Render(map[string]any{"schema_version": 1, "transition": t})
-	}
+// writeTransitionDetail renders the transition section of `starpoint info`
+// when a pending ownership move applies, showing the phases and the evidence
+// rather than a bare status. The JSON form is folded into Info's response.
+func (w *Writer) writeTransitionDetail(t model.Transition) error {
 	from := t.From.Name
 	if from == "" {
 		from = "nothing"
@@ -451,7 +507,7 @@ type ConfigInfo struct {
 // Doctor renders `starpoint doctor`.
 func (w *Writer) Doctor(rep DoctorReport) error {
 	if w.asJSON {
-		return w.emit(map[string]any{"schema_version": 1, "doctor": rep, "providers": rep.Providers, "healthy": rep.Healthy})
+		return w.respond(flatten(rep))
 	}
 	fmt.Fprintln(w.out, "Starpoint")
 	fmt.Fprintf(w.out, "  Version:  %s\n", rep.Starpoint.Version)
@@ -606,13 +662,16 @@ func (w *Writer) pathRows(found []locator.Found) error {
 func (w *Writer) Result(op string, res *engine.Result) error {
 	changed := res.ConfigChanged && !res.DryRun
 	if w.asJSON {
-		return w.emit(map[string]any{
-			"schema_version": 1,
+		actions := make([]ActionResult, 0, len(res.Applied))
+		for _, a := range res.Applied {
+			actions = append(actions, actionResult(a))
+		}
+		return w.respond(map[string]any{
 			"operation":      op,
 			"dry_run":        res.DryRun,
 			"config_changed": changed,
 			"config_path":    res.ConfigPath,
-			"actions":        res.Applied,
+			"actions":        actions,
 			"warnings":       res.Warnings,
 		})
 	}
@@ -654,10 +713,73 @@ func (w *Writer) Result(op string, res *engine.Result) error {
 	return nil
 }
 
+// Update renders the machine-readable result of `starpoint update`. It shares
+// install and remove's action shape and adds the pin conflicts that update can
+// report but the others cannot.
+func (w *Writer) Update(res *engine.Result) error {
+	if !w.asJSON {
+		return nil
+	}
+	actions := make([]ActionResult, 0, len(res.Applied))
+	for _, a := range res.Applied {
+		actions = append(actions, actionResult(a))
+	}
+	return w.respond(map[string]any{
+		"operation":      "update",
+		"dry_run":        res.DryRun,
+		"config_changed": res.ConfigChanged && !res.DryRun,
+		"config_path":    res.ConfigPath,
+		"actions":        actions,
+		"warnings":       res.Warnings,
+		"pin_conflicts":  res.PinConflicts,
+	})
+}
+
+// Prune renders `starpoint prune`.
+//
+// A dry run is only useful if it says what would go, so both the human and the
+// machine forms list the candidates. Reporting an empty result was how a user
+// could be told "nothing to do" and still have the next real run delete things.
+func (w *Writer) Prune(res *engine.Result, dryRun bool) error {
+	actions := make([]ActionResult, 0, len(res.Applied))
+	for _, a := range res.Applied {
+		actions = append(actions, actionResult(a))
+	}
+	if w.asJSON {
+		return w.respond(map[string]any{
+			"operation": "prune",
+			"dry_run":   dryRun,
+			"actions":   actions,
+			"warnings":  res.Warnings,
+		})
+	}
+	for _, warn := range res.Warnings {
+		fmt.Fprintf(w.out, "  %s\n", warn.Message)
+	}
+	if len(actions) == 0 {
+		if len(res.Warnings) == 0 {
+			fmt.Fprintln(w.out, "No orphaned software found.")
+		}
+		return nil
+	}
+	verb := "Removed"
+	if dryRun {
+		verb = "Would remove"
+	}
+	for _, a := range actions {
+		pkg := a.Package
+		if a.Provider != "" {
+			pkg += " via " + a.Provider
+		}
+		fmt.Fprintf(w.out, "%s %s\n", verb, pkg)
+	}
+	return nil
+}
+
 // Init renders the outcome of `starpoint init`.
 func (w *Writer) Init(path string, created, replaced bool) error {
 	if w.asJSON {
-		return w.emit(map[string]any{"schema_version": 1, "path": path, "created": created, "replaced": replaced})
+		return w.respond(map[string]any{"path": path, "created": created, "replaced": replaced})
 	}
 	switch {
 	case replaced:
@@ -670,12 +792,13 @@ func (w *Writer) Init(path string, created, replaced bool) error {
 	return nil
 }
 
-// Render writes arbitrary structured data as JSON.
+// Render writes structured data as a single flat JSON response. A map or struct
+// contributes its fields to the top level; anything else is nested under "data".
 func (w *Writer) Render(v any) error {
 	if !w.asJSON {
 		return nil
 	}
-	return w.emit(map[string]any{"schema_version": 1, "data": v})
+	return w.respond(flatten(v))
 }
 
 // Warn writes a warning line in human mode.
@@ -837,7 +960,7 @@ func DocumentInfo(doc *config.Document, globalPath string, writable bool) Config
 // Explain renders the provider-resolution reasoning chain.
 func (w *Writer) Explain(expl resolve.Explanation) error {
 	if w.asJSON {
-		return w.emit(map[string]any{"schema_version": 1, "explain": expl})
+		return w.respond(flatten(expl))
 	}
 	fmt.Fprintf(w.out, "Package: %s\n\n", expl.Package.Describe())
 	fmt.Fprintf(w.out, "Selected provider: %s\n", expl.Final.Provider)
@@ -866,10 +989,10 @@ func (w *Writer) Explain(expl resolve.Explanation) error {
 	}
 	return nil
 }
-func (w *Writer) Lookup(s engine.Survey) error {
-	if w.asJSON {
-		return w.Render(map[string]any{"lookup": s})
-	}
+
+// writeLookup renders the provider survey that explained an unmanaged package.
+// The JSON form is folded into Info's response.
+func (w *Writer) writeLookup(s engine.Survey) error {
 	fmt.Fprintln(w.out, "\n  Provider lookup")
 	owners := s.Owners()
 	if len(owners) > 0 {

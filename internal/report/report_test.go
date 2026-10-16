@@ -107,7 +107,7 @@ func TestInfoShowsTheWholeRelationship(t *testing.T) {
 		Res:     model.Resolution{Provider: "uv", Reason: "Python software"},
 		Desired: &model.Installation{Name: "ruff", Path: "/home/u/.local/bin/ruff", Provider: "uv", Version: "0.6.0"},
 		Status:  model.StatusCorrect,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestInfoSaysSoWhenNothingIsInstalled(t *testing.T) {
 		Package: model.Package{Name: "nope"},
 		Res:     model.Resolution{Provider: "brew"},
 		Status:  model.StatusMissing,
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()

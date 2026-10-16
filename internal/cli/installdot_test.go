@@ -104,20 +104,18 @@ func TestInstallDotJSONReportsTheDependencyCommand(t *testing.T) {
 	nodeProject(t, h)
 	out := h.mustRun("install", ".", "--no-confirm", "--json")
 	var payload struct {
-		Data struct {
-			Dependencies struct {
-				Command struct {
-					Tool string   `json:"tool"`
-					Args []string `json:"args"`
-				} `json:"command"`
-				Ran bool `json:"ran"`
-			} `json:"dependencies"`
-		} `json:"data"`
+		Dependencies struct {
+			Command struct {
+				Tool string   `json:"tool"`
+				Args []string `json:"args"`
+			} `json:"command"`
+			Ran bool `json:"ran"`
+		} `json:"dependencies"`
 	}
 	if err := json.Unmarshal([]byte(out), &payload); err != nil {
 		t.Fatalf("stdout must be one JSON document: %v\n%s", err, out)
 	}
-	if deps := payload.Data.Dependencies; deps.Command.Tool != "npm" || !deps.Ran {
+	if deps := payload.Dependencies; deps.Command.Tool != "npm" || !deps.Ran {
 		t.Errorf("unexpected dependency report: %+v", deps)
 	}
 }

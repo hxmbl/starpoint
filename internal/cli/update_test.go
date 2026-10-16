@@ -69,17 +69,15 @@ func TestUpdateWithNoConfirmNeverMovesAPin(t *testing.T) {
 		t.Errorf("the pin must stand:\n%s", h.configBody())
 	}
 	var payload struct {
-		Data struct {
-			PinConflicts []model.PinConflict `json:"pin_conflicts"`
-		} `json:"data"`
+		PinConflicts []model.PinConflict `json:"pin_conflicts"`
 	}
 	if err := json.Unmarshal([]byte(out), &payload); err != nil {
 		t.Fatalf("decoding: %v\n%s", err, out)
 	}
-	if len(payload.Data.PinConflicts) != 1 {
+	if len(payload.PinConflicts) != 1 {
 		t.Fatalf("the conflict should be in the JSON: %s", out)
 	}
-	c := payload.Data.PinConflicts[0]
+	c := payload.PinConflicts[0]
 	if c.Package != "ruff" || c.Pinned != "0.5.0" || c.Available != "0.6.0" || c.Resolution != "kept" {
 		t.Errorf("unexpected conflict %+v", c)
 	}

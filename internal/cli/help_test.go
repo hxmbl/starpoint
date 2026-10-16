@@ -120,13 +120,11 @@ func TestInfoOnUnmanagedSoftwareSaysUnmanagedAndAgreesWithExplain(t *testing.T) 
 	}
 	firstJSON(t, h.mustRun("info", "git", "--json"), &info)
 	var explain struct {
-		Explain struct {
-			Final model.Resolution `json:"final"`
-		} `json:"explain"`
+		Final model.Resolution `json:"final"`
 	}
 	firstJSON(t, h.mustRun("explain", "git", "--json"), &explain)
-	if info.Package.Res.Provider != explain.Explain.Final.Provider {
-		t.Errorf("info wants %q but explain picks %q", info.Package.Res.Provider, explain.Explain.Final.Provider)
+	if info.Package.Res.Provider != explain.Final.Provider {
+		t.Errorf("info wants %q but explain picks %q", info.Package.Res.Provider, explain.Final.Provider)
 	}
 	if info.Package.Status != model.StatusUnmanaged {
 		t.Errorf("status = %q", info.Package.Status)
@@ -140,13 +138,11 @@ func TestExplainMatchesWhatInstallRecords(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")
 	h.brew.With(model.Installation{Name: "jq", Version: "1.7", Path: "/opt/homebrew/bin/jq"})
 	var explain struct {
-		Explain struct {
-			Final model.Resolution `json:"final"`
-		} `json:"explain"`
+		Final model.Resolution `json:"final"`
 	}
 	firstJSON(t, h.mustRun("explain", "jq", "--json"), &explain)
-	if explain.Explain.Final.Provider != "brew" {
-		t.Errorf("explain should see the existing brew copy, as install does; got %+v", explain.Explain.Final)
+	if explain.Final.Provider != "brew" {
+		t.Errorf("explain should see the existing brew copy, as install does; got %+v", explain.Final)
 	}
 	h.mustRun("install", "jq", "--no-confirm")
 	if !strings.Contains(h.configBody(), `provider = "brew"`) {

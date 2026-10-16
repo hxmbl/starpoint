@@ -9,6 +9,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -699,6 +700,16 @@ func (e *Engine) Prune(ctx context.Context, doc *config.Document, opts Options) 
 	managed := map[string]bool{}
 	for _, pkg := range doc.Packages() {
 		managed[pkg.Name] = true
+	}
+
+	// A configuration that declares nothing cannot tell managed software from
+	// orphans: every user-scoped package would look orphaned and be removed.
+	// That is how a missing or mistyped configuration becomes a wiped machine,
+	// so prune refuses rather than guessing. Removing everything is still
+	// possible one package at a time, where the intent is explicit.
+	if len(managed) == 0 {
+		return res, errors.New("refusing to prune: the configuration declares no packages, " +
+			"so there is no source of truth to tell managed software from orphans")
 	}
 
 	var failures []string

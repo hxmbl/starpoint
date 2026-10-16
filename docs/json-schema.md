@@ -1,12 +1,14 @@
 # Starpoint JSON Schema
 
-This document describes Starpoint's machine-readable output envelope and payloads. Every JSON response has an integer `schema_version` at the top level. Most command payloads are direct fields in that response; generic operation results and errors are nested under `data`.
+This document describes Starpoint's machine-readable output envelope and payloads. Every JSON response is a single flat object: an integer `schema_version` plus the command's own fields. Nothing is nested under a command name or under `data`.
 
 ## Schema Version
 
-Current schema version: `1`
+Current schema version: `2`
 
-All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Generic operation results use `{ "schema_version": 1, "data": { ... } }`; errors use `{ "schema_version": 1, "error": "..." }`.
+All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 2, ...command fields }`; errors are `{ "schema_version": 2, "error": "..." }`.
+
+Version 2 flattened the envelope. Version 1 documented this flat shape, but the implementation nested several commands under their own key (`sync`, `doctor`, `explain`) and others under `data`, and `info` could emit more than one document. Version 2 is the documented shape made real; the payload fields themselves are unchanged, but a consumer that checked `schema_version == 1` must update that check.
 
 ## Common Types
 
@@ -97,6 +99,8 @@ The following examples show payload fields; the actual response also has the top
 }
 ```
 
+`unaccounted_path` lists PATH executables with no known owner, the same entries the human table shows below the package list.
+
 ### `starpoint info <package>`
 
 ```json
@@ -104,6 +108,8 @@ The following examples show payload fields; the actual response also has the top
   "package": "State"
 }
 ```
+
+When ownership is moving, a `transition` field carries the pending `Transition`. When the package is installed but unmanaged, a `lookup` field carries the provider survey that explains it (`{ "package": "Package", "findings": ["Finding"], "duration_ms": "number", "timed_out": "boolean" }`). Both are optional and always appear in the same single document.
 
 ### `starpoint explain <package>`
 
@@ -298,6 +304,49 @@ by `recover --discard` and never cleaned up automatically; they appear in
 could not be removed, with `reason` explaining why; when it is non-empty the
 command exits non-zero.
 
+### `starpoint prune`
+
+```json
+{
+  "operation": "prune",
+  "dry_run": "boolean",
+  "actions": ["ActionResult"],
+  "warnings": ["Warning"]
+}
+```
+
+`prune` removes user-scoped software that no configuration declares. `--dry-run` reports the same `actions` it would perform. With no configuration, or a configuration that declares no packages, prune refuses rather than treat every user-scoped package as an orphan.
+
+### `starpoint runs`
+
+```json
+{
+  "executions": [
+    {
+      "package_name": "string",
+      "directory": "string",
+      "timestamp": "RFC3339 string",
+      "working_dir": "string | null"
+    }
+  ]
+}
+```
+
+### `starpoint install .`
+
+```json
+{
+  "operations": ["OperationResult"],
+  "dependencies": {
+    "command": {
+      "tool": "string",
+      "args": ["string"]
+    },
+    "ran": "boolean"
+  }
+}
+```
+
 ## Transition Schema
 
 ```json
@@ -353,7 +402,7 @@ command exits non-zero.
 
 Fields marked as stable in this document will not be removed or renamed without a schema version increment. New fields may be added at any time without a schema version increment.
 
-The implementation currently emits version `1` consistently from the report writer, including generic data and error responses. Keep this document and that envelope version aligned when changing machine output.
+The implementation emits version `2` from the report writer for every command, including errors. Every response goes through one envelope helper, so the version and the flat shape cannot drift per command. Keep this document and that envelope version aligned when changing machine output.
 
 Tools consuming Starpoint's JSON output should:
 1. Check the `schema_version` field to ensure compatibility
