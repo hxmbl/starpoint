@@ -4,9 +4,11 @@ This document describes Starpoint's machine-readable output envelope and payload
 
 ## Schema Version
 
-Current schema version: `5`
+Current schema version: `6`
 
-All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 5, ...command fields }`; errors are `{ "schema_version": 5, "error": "..." }`.
+All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 6, ...command fields }`; errors are `{ "schema_version": 6, "error": "..." }` on stderr, and a refusal adds `code`, `exit_code` and, when the command had a plan, `refused` (see "Errors and refusals").
+
+Version 6 adds refusals and the ownership and permission fixes of elevated runs. A command refused by a safety rule exits 3 (an unattended run that would delete or replace something, without `--allow-destructive`) or 4 (a changing command run as root, without `--allow-root`), and its error document gains a stable `code`, the `exit_code`, and `refused`: the operation and the `ActionResult`s it would have carried out, every planned effect included. `Effect.op` gains `chown` and `chmod`, and `Effect` gains an optional `error`. `Warning` gains the code `permission-fix-failed`; `running-elevated` now also says whose environment the run acts on. Every field a version 5 consumer read keeps its meaning. See "Migrating from schema 5 to 6".
 
 Version 5 makes every action say what it did. Each `ActionResult` gains its outcome (`result`), its provider and version `transitions`, the `config_changes` it makes, every `effect` on the machine (paths created, modified, replaced or deleted; packages installed, uninstalled or changed; commands that start or stop resolving; shell profiles that changed), a `destructive` flag, and the structured `warnings` that concern it. `Warning` gains a stable `code`. Every command that changes anything (`install`, `remove`, `install .`, `update`, `prune`, `transition`) carries the same operation fields (`operation`, `dry_run`, `config_changed`, `config_path`, `actions`, `warnings`, `summary`), and `sync` carries `summary` too. See "Actions and effects" below and "Migrating from schema 4 to 5".
 
@@ -87,7 +89,8 @@ consumer should act on the code and show the message. Codes in use:
 
 | Code | Meaning |
 | --- | --- |
-| `running-elevated` | Starpoint runs as root (euid 0) or with an elevated Windows token. `~`, `~/.local/bin`, the configuration and the shell profiles are the elevated account's, so effects may land outside the invoking user's environment. Reported, never refused. |
+| `running-elevated` | Starpoint runs as root (euid 0) or with an elevated Windows token. Under sudo or doas from an ordinary user, the run acts on that user's environment and gives them what it creates there; otherwise `~`, `~/.local/bin`, the configuration and the shell profiles are the elevated account's. A changing command only gets this far with `--allow-root` or an interactive confirmation. |
+| `permission-fix-failed` | An elevated run could not give a path to the invoking user (`chown`) or widen a shared path's permissions (`chmod`); the effect's `error` says why. The path may not be usable without root. |
 | `shared-executable` | Two providers write the same executable (uv and pip `--user` both use `~/.local/bin`); the old copy is removed before the new one installs, and restored if the new one fails. |
 | `not-on-path` | The directory a provider installs commands into is not on PATH. |
 | `command-removed` | A command that resolved on PATH before the action no longer does. |
@@ -189,7 +192,7 @@ entry did not have is not destructive; `reason` is commentary and never is.
 
 ```json
 {
-  "op": "create | modify | replace | delete",
+  "op": "create | modify | replace | delete | chown | chmod",
   "kind": "package | executable | symlink | file | directory | config | command | shell_profile",
   "path": "string | null",
   "name": "string | null",
@@ -199,7 +202,8 @@ entry did not have is not destructive; `reason` is commentary and never is.
   "destructive": "boolean",
   "environment": "boolean",
   "evidence": "observed | reported | planned",
-  "detail": "string | null"
+  "detail": "string | null",
+  "error": "string | null"
 }
 ```
 
@@ -220,6 +224,15 @@ on PATH (`from`/`to` are resolved paths), or a `shell_profile`.
   edited in place are not marked destructive but carry the
   `shell-profile-changed` warning. An `update` that rewrites its own
   executable is destructive in this sense: the previous version's file is gone.
+- `chown` and `chmod` are the fixes an elevated run makes after an action, on
+  the paths that action touched. `chown`: a path under the target user's home
+  (or a provider state directory there) that ended up owned by root was given
+  to that user; `from`/`to` are `uid:gid`. `chmod`: a path the action created
+  in a shared location was made readable (and, for directories and
+  executables, executable) by everyone; `from`/`to` are octal modes, and bits
+  are only ever added. A directory's fixes below it are counted in `detail`
+  rather than listed. Neither is destructive. `error` is set when the fix
+  failed, together with a `permission-fix-failed` warning.
 - `environment` marks effects that change what a shell sees: anything in a PATH
   directory, a command's resolution, a shell profile.
 - `evidence` says how Starpoint knows. `observed`: the location was read
@@ -231,10 +244,13 @@ on PATH (`from`/`to` are resolved paths), or a `shell_profile`.
 
 Effects are net changes between the start and the end of an action. Starpoint
 watches, around each provider operation: the provider's executable directory
-(uv, pip), the directory of the provider's own binary (where Homebrew, Cargo
-and npm put commands), the path and directory of every installation already
-known for the package, the directory of whatever the name resolves to on PATH,
-and the user's shell profiles. A move appears as a delete and a create, because
+(uv and pip's user bin; Cargo's `CARGO_INSTALL_ROOT/bin`, `CARGO_HOME/bin` or
+`~/.cargo/bin`; Go's `GOBIN`, first `GOPATH` entry's `bin` or `~/go/bin`), the
+directory of the provider's own binary (where Homebrew and npm put commands),
+the path and directory of every installation already known for the package,
+the directory of whatever the name resolves to on PATH, and the user's shell
+profiles. The set is bounded: a directory that resolves to the home directory,
+one of its ancestors or a filesystem root is never snapshotted. A move appears as a delete and a create, because
 Starpoint sees paths, not system calls. Something a provider writes outside
 those locations, and does not report, is not seen.
 
@@ -267,11 +283,11 @@ such as `running-elevated`, name no package and appear only at the top level.
 
 ### Example: a destructive removal
 
-`starpoint remove ruff --yes --json`, where uv had linked ruff into `~/.local/bin`:
+`starpoint remove ruff --yes --allow-destructive --json`, where uv had linked ruff into `~/.local/bin`:
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "operation": "remove",
   "dry_run": false,
   "config_changed": true,
@@ -323,6 +339,103 @@ such as `running-elevated`, name no package and appear only at the top level.
     "config_files": ["/home/u/.starpoint.toml"]
   }
 }
+```
+
+## Errors and refusals
+
+Every error is one JSON document on stderr:
+
+```json
+{ "schema_version": 6, "error": "string" }
+```
+
+A refusal is an error that a flag would have allowed. Nothing was changed. It
+adds a stable `code`, the process `exit_code`, and, for a command that had
+planned its work, `refused`:
+
+```json
+{
+  "schema_version": 6,
+  "error": "string",
+  "code": "destructive-unattended | elevated-refused",
+  "exit_code": 3,
+  "refused": {
+    "operation": "sync | install | remove | update | prune | transition",
+    "actions": ["ActionResult"],
+    "warnings": ["Warning"],
+    "summary": "Summary"
+  }
+}
+```
+
+| Code | Exit | Meaning |
+| --- | --- | --- |
+| `destructive-unattended` | 3 | The run is unattended (`--yes`/`--no-confirm`, `no_confirm = true`, or stdin is not a terminal) and would delete or replace something: an action in `refused.actions` has `destructive: true`. Rerun with `--allow-destructive` (and `--yes` when there is no terminal at all). |
+| `elevated-refused` | 4 | A command that changes anything ran as root or elevated, without `--allow-root` and without an interactive confirmation (only possible under sudo or doas at a terminal). `refused` is absent: the refusal happens before any planning. |
+
+Every action in `refused.actions` has `result: "planned"` and `dry_run: true`,
+and lists every planned effect and configuration change, destructive or not.
+
+Exit status for every command: `0` success, `1` failure, `2` usage error, `3`
+and `4` the refusals above.
+
+### Example: an unattended removal refused
+
+`starpoint remove ruff --yes --json`:
+
+```json
+{
+  "schema_version": 6,
+  "error": "refusing to remove unattended: it would delete or replace something (ruff) and --yes (or --no-confirm) was given. Nothing was changed. Review the planned changes, then rerun with --allow-destructive to allow it",
+  "code": "destructive-unattended",
+  "exit_code": 3,
+  "refused": {
+    "operation": "remove",
+    "actions": [
+      {
+        "action": "remove", "package": "ruff", "provider": "uv",
+        "result": "planned", "dry_run": true, "destructive": true,
+        "transitions": [],
+        "config_changes": [
+          { "path": "/home/u/.starpoint.toml", "change": "remove", "package": "ruff",
+            "fields": [{ "field": "provider", "from": "uv" }], "destructive": true, "applied": false }
+        ],
+        "effects": [
+          { "op": "delete", "kind": "package", "name": "ruff", "from": "0.5.0", "provider": "uv",
+            "path": "/home/u/.local/bin/ruff", "destructive": true, "evidence": "planned", "detail": "uv uninstalls ruff" },
+          { "op": "modify", "kind": "config", "path": "/home/u/.starpoint.toml", "name": "ruff",
+            "destructive": true, "evidence": "planned", "detail": "remove ruff" },
+          { "op": "delete", "kind": "symlink", "path": "/home/u/.local/bin/ruff", "provider": "uv",
+            "destructive": true, "environment": true, "evidence": "planned", "detail": "the install location uv reports" }
+        ],
+        "warnings": []
+      }
+    ],
+    "warnings": [],
+    "summary": {
+      "actions": 1, "by_action": { "remove": 1 }, "by_result": { "planned": 1 },
+      "effects": 3, "destructive": true, "destructive_effects": 3,
+      "destructive_packages": ["ruff"], "warnings": {},
+      "config_files": ["/home/u/.starpoint.toml"]
+    }
+  }
+}
+```
+
+### Example: ownership and permission fixes
+
+`sudo starpoint install ruff --allow-root --yes --json`, run by alice (uid
+1000), reports among the install's effects:
+
+```json
+{ "op": "create", "kind": "symlink", "path": "/home/alice/.local/bin/ruff", "provider": "uv",
+  "destructive": false, "environment": true, "evidence": "observed" },
+{ "op": "chown", "kind": "symlink", "path": "/home/alice/.local/bin/ruff", "from": "0:0", "to": "1000:1000",
+  "provider": "uv", "destructive": false, "evidence": "observed",
+  "detail": "given to alice, for whom the run acted, so it is not left owned by root" },
+{ "op": "chown", "kind": "directory", "path": "/home/alice/.local/share/uv/tools", "to": "1000:1000",
+  "provider": "uv", "destructive": false, "evidence": "observed",
+  "detail": "entries below given to alice; 214 entries below" }
 ```
 
 ## Command-Specific Schemas
@@ -865,6 +978,23 @@ consumer read is removed or renamed.
    `result`.
 8. `prune` reports a removal that failed as a `failed` action instead of only
    in the error message, and reports what it did remove before failing.
+
+## Migrating from schema 5 to 6
+
+Version 6 adds; nothing a version 5 consumer read is removed or renamed.
+
+1. The version number moved from 5 to 6.
+2. Errors can be refusals: exit status 3 or 4, with `code`, `exit_code` and
+   (for status 3) `refused` in the error document. A consumer that treated
+   every nonzero exit as "the command failed" keeps working; one that wants to
+   retry with the right flag reads `code`.
+3. Unattended runs that would delete or replace anything now fail with status
+   3 unless `--allow-destructive` is passed, where version 5 proceeded. This is
+   a behaviour change for scripts that pass `--yes` to `remove`, `sync`,
+   `transition`, `prune`, or an `install`/`update` that overwrites something.
+4. `Effect.op` gains `chown` and `chmod`, and `Effect` gains `error`. They only
+   appear on elevated runs.
+5. `Warning.code` gains `permission-fix-failed`.
 
 ## Versioning Policy
 

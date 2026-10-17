@@ -199,9 +199,73 @@ because no mutation happens. `--no-confirm` (or `no_confirm = true` in the
 configuration) skips the question; a stream that provides no answer at all is
 refused rather than assumed.
 
+**Unattended runs that destroy something.** A run nobody reviews — `--yes` or
+`--no-confirm`, `no_confirm = true`, or stdin that is not a terminal (a piped
+`yes` counts: it answered without seeing the list) — is refused if it would
+delete or replace anything, that is if any planned effect or configuration
+change is marked destructive. Pass `--allow-destructive` to mean it. The
+refusal exits 3 and prints every planned action and effect; under `--json` the
+error document carries `code: "destructive-unattended"` and the whole plan, so
+an agent calling Starpoint sees exactly what would have happened. Interactive
+runs are unchanged: the confirmation step already lists every destructive
+effect. Dry runs are never refused.
+
+```
+$ starpoint remove ruff --yes
+error [destructive-unattended]: refusing to remove unattended: it would delete or replace something (ruff) and --yes (or --no-confirm) was given. Nothing was changed. Review the planned changes, then rerun with --allow-destructive to allow it
+
+Planned changes (none were made; ! removes or overwrites something):
+  remove ruff via uv
+      ! would uninstall ruff 0.5.0 (uv) at ~/.local/bin/ruff
+      ! would edit ~/.starpoint.toml: remove ruff
+      ! would delete symlink ~/.local/bin/ruff → ~/.local/share/uv/tools/ruff/bin/ruff
+      ! ruff would stop resolving to ~/.local/bin/ruff
+```
+
+**Running as root.** A command that changes anything is refused when Starpoint
+runs as root (effective uid 0) or with an elevated Windows token, unless
+`--allow-root` is given. Under `sudo` or `doas` at a terminal, answering yes to
+a question that names whose environment will change stands in for the flag;
+`--yes` does not answer it. Read-only commands and `doctor` always run. The
+refusal exits 4 with `code: "elevated-refused"`.
+
+```
+$ sudo starpoint install ripgrep --yes
+error [elevated-refused]: refusing to install as root (effective user id 0, root). Nothing was changed. Run it as your own user, or pass --allow-root to mean it (--yes does not answer this question; an unattended elevated run needs --allow-root)
+```
+
+Under `sudo` or `doas` from an ordinary user, Starpoint acts on *that user's*
+environment, not root's: `HOME` is pointed at their home (from `SUDO_USER` /
+`SUDO_UID` / `SUDO_GID` or `DOAS_USER`, resolved through the user database)
+before anything reads it, so the configuration, `~/.local/bin`,
+`~/.cargo/bin`, shell profiles and every provider subprocess are theirs. So
+that nothing it installs is unusable afterwards:
+
+- what a provider writes under that home, and the provider's own state
+  directories there (Cargo's home, Go's module and build caches, rustup's home,
+  uv's tool environments and cache), is given back to the user if it ended up
+  owned by root during the run, along with any directories it created on the
+  way; Starpoint's own configuration, audit log, history and locks are given
+  back at the end of every command;
+- what a provider creates in shared locations (`/usr/local`, `/opt`, ...) is
+  made readable by everyone, and its directories and executables executable
+  by everyone (0755 at least, 0644 for other files), so root's umask does not
+  leave it usable only by root. Bits are only ever added; anything that existed
+  before, and anything that looks like a key, token or credential, is left
+  alone.
+
+Every fix is reported as an effect (`chown` or `chmod`, with evidence
+`observed`) on the action that caused it and is in the audit log; a fix that
+fails raises a `permission-fix-failed` warning. A plain root shell (or `sudo`
+from root) with `--allow-root` acts on root's own environment, with the
+`running-elevated` warning, and still gets the shared-location fixes.
+
+Exit status: `0` success, `1` failure, `2` usage error, `3` refused unattended
+destructive run, `4` refused elevated run. A refusal changes nothing.
+
 Global options work anywhere on the line: `--json`, `--provider <name>`
 (repeatable, restricts automatic resolution), `--force`, `--verbose` (`-v`),
-`--version`, `--help`.
+`--allow-destructive`, `--allow-root`, `--version`, `--help`.
 `--help` (or `-h`) after a command prints that command's help, as does
 `starpoint help <command>`; it is never taken as a package name. Any other
 unrecognised `-`-prefixed token is a usage error rather than a package name.
@@ -222,8 +286,15 @@ destructive. Before asking for confirmation, and in every human-readable result,
 destructive effects are listed with a `!`; `--dry-run` lists every effect;
 `--verbose` lists every effect of a real run too. Warnings carry a stable code
 and are attached to the package they concern. Running as root, or as an
-elevated Windows administrator, is reported on every changing command, because
-`~` and everything under it then belong to that account.
+elevated Windows administrator, is reported on every changing command, saying
+whose environment the run acts on.
+
+Effects are watched in a bounded set of places: each provider's executable
+directory (uv's and pip's user bin, Cargo's `CARGO_INSTALL_ROOT`/`CARGO_HOME`
+bin or `~/.cargo/bin`, Go's `GOBIN`, `GOPATH/bin` or `~/go/bin`), the directory
+of the provider's own binary, the known installations, what the name resolves
+to on PATH, and the shell profiles. The home directory itself is never
+snapshotted, even when a variable points there.
 
 ## Providers
 
@@ -415,6 +486,8 @@ internal/provider        the integration contract, capabilities, typed errors
 internal/providers/…     one package per ecosystem
 internal/project         ecosystem and project-context detection
 internal/exec            command execution, behind an interface so tests never shell out
+internal/elevation       whether the run is elevated, and whose environment it acts on
+internal/align           ownership and permission fixes for elevated runs
 internal/testsupport     scripted runner and fake providers
 ```
 
@@ -430,6 +503,8 @@ make check     # fmt check, vet, and the full test suite
 make build     # build ./bin/starpoint
 make test      # go test ./...
 make fmt       # gofmt -w
+make test-race # the suite under the race detector
+make test-root # the tests that change owners for real (uses sudo)
 ```
 
 Tests never modify the machine: providers talk to an interface, and the test
@@ -486,6 +561,13 @@ suite substitutes a scripted command runner and in-memory providers.
   and curl — so killing only the direct child would leave those grandchildren
   writing to the filesystem after Starpoint had moved on. On platforms without
   process groups, cancellation stops at the direct child.
+- Ownership and permission fixes run on Linux and macOS. On Windows an
+  elevated token does not change file ownership the way root does, so nothing
+  is reassigned there; the `--allow-root` guard still applies.
+- An elevated run fixes what it can see: the paths each action observed or was
+  told about, and the state directories of Cargo, Go, rustup and uv. A provider
+  that writes somewhere else under the home as root (pip's user site-packages,
+  npm's prefix) and does not report it can still leave root-owned files there.
 - `starpoint update` on a Rust toolchain runs `rustup toolchain install` for the
   channel, which moves a channel forward. A concrete toolchain pinned in the
   configuration is never moved.
