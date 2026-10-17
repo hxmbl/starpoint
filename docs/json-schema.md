@@ -208,9 +208,12 @@ knows it (`from`/`to` are versions), a file, `symlink` (`from`/`to` are link
 targets), `directory`, Starpoint's own `config` file, a `command`'s resolution
 on PATH (`from`/`to` are resolved paths), or a `shell_profile`.
 
-- `replace` means a different file now sits at the path (deleted and written
-  again, a link retargeted, a link turned into a script). `modify` means the
-  same file was rewritten in place.
+- `replace` means a different file now sits at the path: a link retargeted, a
+  link turned into a script, or a file deleted and written again. `modify`
+  means the file was rewritten in place. A file deleted and written again can
+  appear as `modify` when the filesystem gives the new file the old inode
+  (ext4 commonly does); both are destructive, so read `destructive` rather
+  than telling the two apart.
 - `destructive` marks anything that removes or overwrites what was there: every
   delete and replace, every in-place rewrite of a file, a command that stops
   resolving, a destructive configuration change. Shell profiles that are

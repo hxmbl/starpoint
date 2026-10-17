@@ -457,8 +457,10 @@ func TestSyncUvToPipInTheSharedBinReportsTheReplacement(t *testing.T) {
 			observed = &a.Effects[i]
 		}
 	}
-	if observed == nil || observed.Op != model.EffectReplace || !observed.Destructive {
-		t.Errorf("the observed effect on the shared path is a destructive replacement: %+v", a.Effects)
+	// Deleted and rewritten: a replacement, or a modification when the
+	// filesystem hands the new file the old inode. Destructive either way.
+	if observed == nil || (observed.Op != model.EffectReplace && observed.Op != model.EffectModify) || !observed.Destructive {
+		t.Errorf("the observed effect on the shared path is a destructive rewrite: %+v", a.Effects)
 	}
 	pkgDelete := findEffect(a.Effects, model.EffectDelete, model.EffectPackage, "")
 	pkgCreate := findEffect(a.Effects, model.EffectCreate, model.EffectPackage, "")

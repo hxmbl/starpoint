@@ -70,7 +70,7 @@ func TestObservationClassifiesEveryChange(t *testing.T) {
 	}{
 		{deleted, model.EffectDelete, model.EffectFile, true},
 		{modified, model.EffectModify, model.EffectFile, true},
-		{replaced, model.EffectReplace, model.EffectFile, true},
+
 		{relinked, model.EffectReplace, model.EffectSymlink, true},
 		{created, model.EffectCreate, model.EffectFile, false},
 		{profile, model.EffectModify, model.EffectShellProfile, false},
@@ -87,6 +87,9 @@ func TestObservationClassifiesEveryChange(t *testing.T) {
 		if e.Evidence != model.EvidenceObserved || e.Provider != "uv" {
 			t.Errorf("%s: observed effects carry their evidence and provider: %+v", tc.path, e)
 		}
+	}
+	if e := effectAt(effects, replaced); e == nil || !rewritten(e) {
+		t.Errorf("a file deleted and written again is a destructive rewrite: %+v", e)
 	}
 	if e := effectAt(effects, relinked); e != nil && (e.From != "/somewhere/uv/tools/a" || e.To != "/elsewhere/pip/b") {
 		t.Errorf("a relinked symlink reports both targets: %+v", e)
@@ -207,9 +210,11 @@ func TestTransitionEffectsForTheSharedExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Deleted and rewritten: a replacement, or a modification when the
+	// filesystem reuses the inode (ext4 does). Destructive either way.
 	e := effectAt(done.Effects, sb.exe)
-	if e == nil || e.Op != model.EffectReplace || e.Evidence != model.EvidenceObserved {
-		t.Errorf("the executed move reports the replacement it observed: %+v", done.Effects)
+	if e == nil || !rewritten(e) || e.Evidence != model.EvidenceObserved {
+		t.Errorf("the executed move reports the rewrite it observed: %+v", done.Effects)
 	}
 	var uninstalled, installed bool
 	for _, eff := range done.Effects {
@@ -241,7 +246,12 @@ func TestTransitionRestoredHandOverReportsNoUninstall(t *testing.T) {
 			t.Errorf("the uv copy was restored, so it was not uninstalled: %+v", done.Effects)
 		}
 	}
-	if e := effectAt(done.Effects, sb.exe); e == nil || e.Op != model.EffectReplace {
+	if e := effectAt(done.Effects, sb.exe); e == nil || !rewritten(e) {
 		t.Errorf("the shared file was still rewritten, and that is reported: %+v", done.Effects)
 	}
+}
+
+// rewritten reports a destructive replacement or in-place rewrite.
+func rewritten(e *model.Effect) bool {
+	return (e.Op == model.EffectReplace || e.Op == model.EffectModify) && e.Destructive
 }

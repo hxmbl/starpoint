@@ -298,6 +298,9 @@ func diffEntry(path string, b, a fsEntry) (model.Effect, bool) {
 		return model.Effect{}, false
 	case b.info != nil && a.info != nil && !os.SameFile(b.info, a.info):
 		// Deleted and written again: a different file now sits at the path.
+		// Filesystems that reuse the inode make this look like an in-place
+		// rewrite instead, which is reported as a modify below; both are
+		// destructive.
 		return model.Effect{Op: model.EffectReplace, Kind: a.kind, Path: path, Destructive: true,
 			Detail: "the file at this path was deleted and written again"}, true
 	case b.size != a.size || b.mode != a.mode || !b.mod.Equal(a.mod):
