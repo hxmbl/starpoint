@@ -31,6 +31,7 @@ package rustup
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -91,6 +92,7 @@ type Provider struct {
 }
 
 var _ provider.Provider = (*Provider)(nil)
+var _ provider.StateDirProvider = (*Provider)(nil)
 
 // New builds a rustup provider.
 func New(runner exec.Runner, home string) *Provider { return &Provider{runner: runner, home: home} }
@@ -542,6 +544,23 @@ func (p *Provider) ToolchainHome() string {
 		return "~/.rustup"
 	}
 	return filepath.Join(p.home, ".rustup")
+}
+
+// StateDirs reports rustup's home (RUSTUP_HOME or ~/.rustup) and the Cargo
+// home whose bin directory holds its proxies.
+func (p *Provider) StateDirs(context.Context) []string {
+	var out []string
+	if dir := os.Getenv("RUSTUP_HOME"); dir != "" {
+		out = append(out, dir)
+	} else if p.home != "" {
+		out = append(out, filepath.Join(p.home, ".rustup"))
+	}
+	if dir := os.Getenv("CARGO_HOME"); dir != "" {
+		out = append(out, dir)
+	} else if p.home != "" {
+		out = append(out, filepath.Join(p.home, ".cargo"))
+	}
+	return out
 }
 
 func roleWord(tc toolchain) string {

@@ -438,4 +438,5 @@ const (
 	WarnCommandRemoved       = "command-removed"
 	WarnShellProfileChanged  = "shell-profile-changed"
 	WarnElevated             = "running-elevated"
+	WarnPermissionFixFailed  = "permission-fix-failed"
 )

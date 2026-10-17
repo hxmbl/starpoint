@@ -21,6 +21,14 @@ const (
 	EffectReplace EffectOp = "replace"
 	// EffectDelete means the thing existed before and does not afterwards.
 	EffectDelete EffectOp = "delete"
+	// EffectChown means Starpoint gave a path to the user an elevated run
+	// acted for, so it is not left owned by root. From and To are uid:gid.
+	EffectChown EffectOp = "chown"
+	// EffectChmod means Starpoint widened the permissions of a path a
+	// provider created in a shared location, so the elevated account's
+	// umask does not leave it usable only by root. From and To are octal
+	// modes. Bits are only ever added.
+	EffectChmod EffectOp = "chmod"
 )
 
 // EffectKind says what sort of thing an effect touched.
@@ -99,6 +107,9 @@ type Effect struct {
 	Evidence    Evidence `json:"evidence"`
 	// Detail is a short human explanation.
 	Detail string `json:"detail,omitempty"`
+	// Error says why an ownership or permission fix did not (fully) succeed.
+	// Such an effect also raises a permission-fix-failed warning.
+	Error string `json:"error,omitempty"`
 }
 
 // Key identifies an effect for de-duplication.

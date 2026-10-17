@@ -327,6 +327,20 @@ func EffectLine(e model.Effect, planned bool) string {
 		return past
 	}
 	var line string
+	switch {
+	case e.Op == model.EffectChown:
+		line = fmt.Sprintf("%s %s %s to %s", verb("gave", "give"), strings.ReplaceAll(string(e.Kind), "_", " "), tildePath(e.Path), e.To)
+		if e.From != "" {
+			line += " (was " + e.From + ")"
+		}
+		return withFixDetail(line, e)
+	case e.Op == model.EffectChmod:
+		line = fmt.Sprintf("%s permissions of %s %s", verb("widened", "widen"), strings.ReplaceAll(string(e.Kind), "_", " "), tildePath(e.Path))
+		if e.From != "" {
+			line += " from " + e.From + " to " + e.To
+		}
+		return withFixDetail(line, e)
+	}
 	switch e.Kind {
 	case model.EffectPackage:
 		version := firstNonEmpty(e.From, e.To)
@@ -384,6 +398,18 @@ func EffectLine(e model.Effect, planned bool) string {
 	}
 	if e.Evidence == model.EvidenceReported && e.Kind != model.EffectPackage {
 		line += " (reported by the provider)"
+	}
+	return line
+}
+
+// withFixDetail adds how many entries an ownership or permission fix covered,
+// and why it failed, to its line.
+func withFixDetail(line string, e model.Effect) string {
+	if i := strings.Index(e.Detail, "; "); i >= 0 {
+		line += " (" + strings.TrimPrefix(e.Detail[i:], "; ") + ")"
+	}
+	if e.Error != "" {
+		line += " — failed: " + e.Error
 	}
 	return line
 }

@@ -32,6 +32,7 @@ type Provider struct {
 var (
 	_ provider.Provider              = (*Provider)(nil)
 	_ provider.ExecutableDirProvider = (*Provider)(nil)
+	_ provider.StateDirProvider      = (*Provider)(nil)
 )
 
 // New builds a uv provider. home is the user home directory used to locate uv's
@@ -230,6 +231,31 @@ func (p *Provider) ExecutableDir(context.Context) string {
 		return ""
 	}
 	return filepath.Join(p.home, ".local", "bin")
+}
+
+// StateDirs reports where uv keeps tool environments and its cache:
+// UV_TOOL_DIR (or $XDG_DATA_HOME/uv/tools, ~/.local/share/uv/tools) and
+// UV_CACHE_DIR (or $XDG_CACHE_HOME/uv, ~/.cache/uv). On macOS uv uses the
+// same XDG-style layout.
+func (p *Provider) StateDirs(context.Context) []string {
+	var out []string
+	switch {
+	case os.Getenv("UV_TOOL_DIR") != "":
+		out = append(out, os.Getenv("UV_TOOL_DIR"))
+	case os.Getenv("XDG_DATA_HOME") != "":
+		out = append(out, filepath.Join(os.Getenv("XDG_DATA_HOME"), "uv", "tools"))
+	case p.home != "":
+		out = append(out, filepath.Join(p.home, ".local", "share", "uv", "tools"))
+	}
+	switch {
+	case os.Getenv("UV_CACHE_DIR") != "":
+		out = append(out, os.Getenv("UV_CACHE_DIR"))
+	case os.Getenv("XDG_CACHE_HOME") != "":
+		out = append(out, filepath.Join(os.Getenv("XDG_CACHE_HOME"), "uv"))
+	case p.home != "":
+		out = append(out, filepath.Join(p.home, ".cache", "uv"))
+	}
+	return out
 }
 
 // toolBinPath reports where uv exposes the tool's executable.

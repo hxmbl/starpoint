@@ -32,6 +32,7 @@ type Provider struct {
 var _ provider.Provider = (*Provider)(nil)
 var _ provider.ContextAwareProvider = (*Provider)(nil)
 var _ provider.ExecutableDirProvider = (*Provider)(nil)
+var _ provider.StateDirProvider = (*Provider)(nil)
 
 // New builds a Go provider.
 func New(runner exec.Runner, home string) *Provider { return &Provider{runner: runner, home: home} }
@@ -121,6 +122,29 @@ func (p *Provider) ExecutableDir(ctx context.Context) string {
 		return filepath.Join(p.home, "go", "bin")
 	}
 	return p.binDir(ctx)
+}
+
+// StateDirs reports where `go install` keeps state besides the executable:
+// the module cache and the build cache, from `go env` when go is present.
+func (p *Provider) StateDirs(ctx context.Context) []string {
+	var out []string
+	if _, err := p.runner.LookPath("go"); err == nil {
+		for _, key := range []string{"GOMODCACHE", "GOCACHE"} {
+			res, err := p.runner.Run(ctx, "go", "env", key)
+			if err == nil && !res.Failed() {
+				if dir := strings.TrimSpace(strings.Split(res.Stdout, "\n")[0]); dir != "" && dir != "off" {
+					out = append(out, dir)
+				}
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	if p.home != "" {
+		out = append(out, filepath.Join(p.home, "go", "pkg", "mod"), filepath.Join(p.home, ".cache", "go-build"))
+	}
+	return out
 }
 
 // Discover lists executables in the Go bin directory. Go does not record metadata

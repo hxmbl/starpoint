@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hxmbl/starpoint/internal/align"
 	"github.com/hxmbl/starpoint/internal/model"
 	"github.com/hxmbl/starpoint/internal/provider"
 )
@@ -49,6 +50,9 @@ type observation struct {
 	// it only heard about.
 	watchedDirs  map[string]bool
 	watchedFiles map[string]bool
+	// providers are the providers whose operation is observed, for their
+	// state directories when an elevated run aligns ownership.
+	providers []provider.Provider
 }
 
 // shellProfiles are the start-up files a provider's installer is known to
@@ -96,6 +100,7 @@ func (e *Engine) observeAll(ctx context.Context, ps []provider.Provider, pkg mod
 			continue
 		}
 		named = append(named, p.Name())
+		o.providers = append(o.providers, p)
 		if dp, ok := p.(provider.ExecutableDirProvider); ok {
 			o.addDir(dp.ExecutableDir(ctx))
 		}
@@ -304,6 +309,51 @@ func (o *observation) finish(ctx context.Context, reportedOp model.EffectOp, rep
 			eff.Provider = o.provider
 			out = append(out, eff)
 		}
+	}
+	return append(out, o.align(ctx, out)...)
+}
+
+// align fixes the ownership and permissions of what the step touched, when
+// the engine runs elevated, and reports each fix as an effect.
+//
+// The touched paths are the ones the snapshot saw change (and the ones the
+// provider reported); only those the step created or replaced have their
+// permissions widened, because anything that existed before keeps the mode
+// its owner gave it. Under the target user's home, the providers' own state
+// directories are aligned too: Cargo writes its registry, Go its module
+// cache, uv its tool environments, far from the paths they report.
+func (o *observation) align(ctx context.Context, effects []model.Effect) []model.Effect {
+	p := o.e.align
+	if !p.Enabled() {
+		return nil
+	}
+	var touched []align.Touched
+	for _, eff := range effects {
+		if eff.Path == "" || eff.Op == model.EffectDelete {
+			continue
+		}
+		switch eff.Kind {
+		case model.EffectPackage, model.EffectCommand, model.EffectConfig:
+			continue
+		}
+		created := eff.Evidence == model.EvidenceObserved &&
+			(eff.Op == model.EffectCreate || eff.Op == model.EffectReplace)
+		touched = append(touched, align.Touched{Path: eff.Path, Created: created})
+	}
+	out := p.Align(touched)
+	if p.Owner != nil {
+		for _, prov := range o.providers {
+			sp, ok := prov.(provider.StateDirProvider)
+			if !ok {
+				continue
+			}
+			for _, dir := range sp.StateDirs(ctx) {
+				out = append(out, p.Tree(dir)...)
+			}
+		}
+	}
+	for i := range out {
+		out[i].Provider = o.provider
 	}
 	return out
 }
@@ -529,6 +579,12 @@ func effectWarnings(pkg string, effects []model.Effect) []model.Warning {
 			out = append(out, model.Warning{
 				Severity: model.SeverityWarn, Code: model.WarnShellProfileChanged, Package: pkg, Provider: eff.Provider,
 				Message: eff.Path + " changed while " + pkg + " was being changed; new shells may see a different PATH",
+			})
+		case (eff.Op == model.EffectChown || eff.Op == model.EffectChmod) && eff.Error != "":
+			out = append(out, model.Warning{
+				Severity: model.SeverityWarn, Code: model.WarnPermissionFixFailed, Package: pkg, Provider: eff.Provider,
+				Message: "could not " + string(eff.Op) + " " + eff.Path + ": " + eff.Error +
+					"; it may not be usable without root",
 			})
 		case eff.Kind == model.EffectCommand && eff.Op == model.EffectDelete && eff.Evidence == model.EvidenceObserved:
 			out = append(out, model.Warning{

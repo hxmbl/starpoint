@@ -254,6 +254,19 @@ type ExecutableDirProvider interface {
 	ExecutableDir(ctx context.Context) string
 }
 
+// StateDirProvider is implemented by providers that keep per-user state in
+// known directories away from the paths they report: Cargo's registry and
+// install records under CARGO_HOME, Go's module and build caches, rustup's
+// toolchains, uv's tool environments and cache.
+//
+// Starpoint uses these only when it runs elevated on behalf of the user who
+// typed sudo or doas: whatever the provider wrote there as root is given back
+// to that user, so their next ordinary run of the same tool is not locked
+// out of its own state. They are never watched or scanned otherwise.
+type StateDirProvider interface {
+	StateDirs(ctx context.Context) []string
+}
+
 // LatestVersionProvider is implemented by providers that can say which version
 // of a package they would install now. `update` uses it to tell a pin that is
 // merely satisfied from a pin that is holding a package back.

@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/hxmbl/starpoint/internal/align"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -57,6 +58,11 @@ type Engine struct {
 	// home is the directory whose shell start-up files are watched for changes
 	// while an action runs. Empty means the user's home directory.
 	home string
+
+	// align, when set, fixes ownership and permissions of what each action
+	// touched: an elevated run gives what it wrote under the target user's
+	// home to that user, and widens what it created in shared locations.
+	align *align.Policy
 }
 
 // HistoryError reports why transition history is unavailable, or nil if it
@@ -68,6 +74,7 @@ type stores struct {
 	historyPath string
 	runsPath    string
 	home        string
+	align       *align.Policy
 }
 
 // Option configures an Engine's own stores.
@@ -95,6 +102,12 @@ func WithHome(dir string) Option {
 	return func(s *stores) { s.home = dir }
 }
 
+// WithAlignment makes every action fix the ownership and permissions of what
+// it touched, as the policy says. The CLI sets it for elevated runs.
+func WithAlignment(p *align.Policy) Option {
+	return func(s *stores) { s.align = p }
+}
+
 // New builds an Engine.
 func New(reg *provider.Registry, loc *locator.Locator, options ...Option) *Engine {
 	cfg := stores{}
@@ -115,13 +128,17 @@ func New(reg *provider.Registry, loc *locator.Locator, options ...Option) *Engin
 			}
 		}
 	}
-	return &Engine{reg: reg, locator: loc, resolver: resolve.New(reg), tracker: tracker, history: hist, historyErr: histErr, home: cfg.home}
+	return &Engine{reg: reg, locator: loc, resolver: resolve.New(reg), tracker: tracker, history: hist, historyErr: histErr, home: cfg.home, align: cfg.align}
 }
 
 // SetTracker sets the execution tracker. This is primarily for testing.
 func (e *Engine) SetTracker(t *tracking.Tracker) {
 	e.tracker = t
 }
+
+// SetAlignment sets the ownership and permission policy applied after each
+// action. Nil turns it off.
+func (e *Engine) SetAlignment(p *align.Policy) { e.align = p }
 
 // SetHistory sets the transition history. This is primarily for testing.
 func (e *Engine) SetHistory(h *history.History) {

@@ -31,6 +31,7 @@ type Provider struct {
 var _ provider.Provider = (*Provider)(nil)
 var _ provider.ContextAwareProvider = (*Provider)(nil)
 var _ provider.ExecutableDirProvider = (*Provider)(nil)
+var _ provider.StateDirProvider = (*Provider)(nil)
 
 // New builds a Cargo provider.
 func New(runner exec.Runner, home string) *Provider { return &Provider{runner: runner, home: home} }
@@ -208,6 +209,19 @@ func (p *Provider) ExecutableDir(context.Context) string {
 		return ""
 	}
 	return filepath.Join(p.home, ".cargo", "bin")
+}
+
+// StateDirs reports Cargo's home (CARGO_HOME or ~/.cargo): its registry
+// index and cache, git checkouts and install records (.crates.toml), which
+// `cargo install` writes beside the bin directory.
+func (p *Provider) StateDirs(context.Context) []string {
+	if home := os.Getenv("CARGO_HOME"); home != "" {
+		return []string{home}
+	}
+	if p.home == "" {
+		return nil
+	}
+	return []string{filepath.Join(p.home, ".cargo")}
 }
 
 // binPath resolves an executable inside Cargo's bin directory.
