@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hxmbl/starpoint/internal/color"
 	"github.com/hxmbl/starpoint/internal/config"
 	"github.com/hxmbl/starpoint/internal/engine"
 	"github.com/hxmbl/starpoint/internal/locator"
@@ -26,6 +27,11 @@ import (
 type Writer struct {
 	out    io.Writer
 	asJSON bool
+	// p is the palette human output is styled with. It starts resolved for
+	// auto against out, so a Writer used without a --color flag still colors a
+	// terminal and still writes nothing extra into a pipe. SetColor re-resolves
+	// it from the flag.
+	p color.Palette
 	// verbose lists every effect in human output, not only destructive ones.
 	verbose bool
 	// runAs reports the accounts an action's providers ran as.
@@ -43,7 +49,139 @@ type Writer struct {
 
 // New builds a Writer.
 func New(out io.Writer, asJSON bool) *Writer {
-	return &Writer{out: out, asJSON: asJSON}
+	return &Writer{out: out, asJSON: asJSON, p: color.New(color.Auto, out)}
+}
+
+// SetColor resolves the color mode against this Writer's output. It is how
+// --color reaches the human renderer; without it a Writer colors a terminal
+// and nothing else.
+func (w *Writer) SetColor(mode color.Mode) { w.p = color.New(mode, w.out) }
+
+// Palette is the palette human output is styled with. The confirmation prompts
+// and the error paths outside this package ask for it so they match the result
+// they sit next to.
+func (w *Writer) Palette() color.Palette { return w.p }
+
+// severity colors a warning severity. Error is the one that means the machine
+// or the configuration is in a bad state, warning is the one asking for a
+// decision, and info is context.
+func (w *Writer) severity(s model.Severity) string { return SeverityLabel(w.p, s) }
+
+// colored colors a line by severity, for text that already carries its meaning
+// as words.
+func (w *Writer) colored(s model.Severity, text string) string {
+	return SeverityText(w.p, s, text)
+}
+
+// SeverityLabel renders a warning severity in the color it is reported with
+// everywhere else. The confirmation prompts, the refusals and the update
+// command print warnings too, and they should not disagree with the results
+// about what a warning looks like.
+func SeverityLabel(p color.Palette, s model.Severity) string {
+	return SeverityText(p, s, string(s))
+}
+
+// SeverityText colors text by the severity it reports.
+func SeverityText(p color.Palette, s model.Severity, text string) string {
+	switch s {
+	case model.SeverityError:
+		return p.BoldRed(text)
+	case model.SeverityWarn:
+		return p.BoldYellow(text)
+	default:
+		return p.Cyan(text)
+	}
+}
+
+// status colors a package's status. Green has to mean "matches the
+// configuration" and nothing else, or it stops meaning that.
+func (w *Writer) status(s model.Status) string {
+	switch s {
+	case model.StatusCorrect:
+		return w.p.Green(string(s))
+	case model.StatusUnpinnedConflict:
+		return w.p.BoldRed(string(s))
+	case model.StatusUnmanaged:
+		return w.p.Cyan(string(s))
+	case model.StatusMissing, model.StatusProviderDiffers, model.StatusVersionDiffers:
+		return w.p.Yellow(string(s))
+	default:
+		return string(s)
+	}
+}
+
+// phase colors how far a transition has got.
+func (w *Writer) phase(p model.TransitionPhase) string { return PhaseLabel(w.p, p) }
+
+// PhaseLabel colors how far a transition has got, for callers outside the
+// report package — the confirmation prompts and the reverse listing.
+func PhaseLabel(p color.Palette, phase model.TransitionPhase) string {
+	switch phase {
+	case model.TransitionCompleted, model.TransitionVerified:
+		return p.Green(string(phase))
+	case model.TransitionFailed:
+		return p.BoldRed(string(phase))
+	case model.TransitionBlocked:
+		return p.BoldYellow(string(phase))
+	default:
+		return p.Yellow(string(phase))
+	}
+}
+
+// outcome colors a line by how its action went. The color repeats what the
+// word already says, so a reader who cannot see it still has the word.
+func (w *Writer) outcome(line, result string) string {
+	switch result {
+	case string(model.OutcomeFailed), string(model.OutcomeNotRun):
+		return w.p.Red(line)
+	case string(model.OutcomePlanned):
+		return w.p.Yellow(line)
+	default:
+		return w.p.Green(line)
+	}
+}
+
+// padTo right-pads styled text to a width measured without its escapes.
+func padTo(s string, width int) string {
+	if n := width - color.VisibleLen(s); n > 0 {
+		return s + strings.Repeat(" ", n)
+	}
+	return s
+}
+
+// label renders a two-column field label, bold so the shape of a block of
+// output reads at a glance.
+func (w *Writer) label(s string) string { return w.p.Bold(s) }
+
+// yesNo renders a boolean as a word, colored so a column of them scans.
+func (w *Writer) yesNo(b bool) string {
+	if b {
+		return w.p.Green("yes")
+	}
+	return w.p.Red("no")
+}
+
+// existsLabel renders whether the configuration file is there.
+func (w *Writer) existsLabel(b bool) string {
+	if b {
+		return w.p.Green("exists")
+	}
+	return w.p.Red("missing")
+}
+
+// section renders a section heading.
+func (w *Writer) section(s string) string { return w.p.Bold(s) }
+
+// field writes one row of a two-column detail block: a bold label padded to
+// the block's shared column, then the value. The padding is measured without
+// the escapes, so the column holds with color on and is unchanged with it off.
+func (w *Writer) field(b *strings.Builder, label, value string) {
+	w.fieldAt(b, 19, label, value)
+}
+
+// fieldAt is field for a block whose label column is a different width.
+func (w *Writer) fieldAt(b *strings.Builder, width int, label, value string) {
+	fmt.Fprintf(b, "  %s%s\n", padTo(w.label(label), width), value)
 }
 
 // JSON reports whether machine-readable output is requested.
@@ -202,7 +340,7 @@ func (w *Writer) List(states []model.State, pathInventory ...[]locator.Found) er
 		return w.respond(payload)
 	}
 	if len(items) == 0 {
-		fmt.Fprintln(w.out, "No software in the configuration yet. Add some with: starpoint install <package>")
+		fmt.Fprintln(w.out, w.p.Dim("No software in the configuration yet. Add some with: starpoint install <package>"))
 		return nil
 	}
 	if len(items) > 0 {
@@ -210,7 +348,8 @@ func (w *Writer) List(states []model.State, pathInventory ...[]locator.Found) er
 		rows = append(rows, []string{"PACKAGE", "LOCATION", "SCOPE", "PROVIDER", "VERSION", "STATUS"})
 		for _, it := range items {
 			rows = append(rows, []string{
-				it.Name, dash(it.Path), it.Scope, dash(it.Provider), dash(it.Version), it.Status,
+				it.Name, dash(it.Path), it.Scope, dash(it.Provider), dash(it.Version),
+				w.status(model.Status(it.Status)),
 			})
 		}
 		if err := w.table(rows); err != nil {
@@ -221,7 +360,7 @@ func (w *Writer) List(states []model.State, pathInventory ...[]locator.Found) er
 		if len(items) == 0 {
 			fmt.Fprintln(w.out, "\nNo software in the configuration yet. Add some with: starpoint install <package>")
 		}
-		fmt.Fprintln(w.out, "\nPATH executables with unknown ownership")
+		fmt.Fprintln(w.out, "\n"+w.section("PATH executables with unknown ownership"))
 		rows := [][]string{{"BINARY", "LOCATION", "DETAIL"}}
 		for _, f := range unaccounted {
 			detail := f.Reason
@@ -254,38 +393,38 @@ func (w *Writer) Info(st model.State, extra map[string]any) error {
 	}
 	var b strings.Builder
 	p := st.Package
-	fmt.Fprintf(&b, "%s\n\n", p.Describe())
-	fmt.Fprintf(&b, "  Installed:         %s\n", pathOrNotInstalled(st))
-	fmt.Fprintf(&b, "  Version:           %s\n", dash(firstNonEmpty(versionOf(st.Desired), versionOf(st.Current))))
-	fmt.Fprintf(&b, "  Provider:          %s\n", dash(providerOf(st)))
-	fmt.Fprintf(&b, "  Desired provider:  %s\n", dash(st.Res.Provider))
+	fmt.Fprintf(&b, "%s\n\n", w.p.Bold(p.Describe()))
+	w.field(&b, "Installed:", pathOrNotInstalled(st))
+	w.field(&b, "Version:", dash(firstNonEmpty(versionOf(st.Desired), versionOf(st.Current))))
+	w.field(&b, "Provider:", dash(providerOf(st)))
+	w.field(&b, "Desired provider:", dash(st.Res.Provider))
 	if p.Provider != "" {
-		fmt.Fprintf(&b, "  Configured:        %s\n", p.Provider)
+		w.field(&b, "Configured:", p.Provider)
 	} else {
-		fmt.Fprintf(&b, "  Configured:        (not recorded yet)\n")
+		w.field(&b, "Configured:", "(not recorded yet)")
 	}
-	fmt.Fprintf(&b, "  Status:            %s\n", st.Status)
+	w.field(&b, "Status:", w.status(st.Status))
 	if p.Version != "" {
-		fmt.Fprintf(&b, "  Pinned version:    %s\n", p.Version)
+		w.field(&b, "Pinned version:", p.Version)
 	}
 	if p.Channel != "" {
-		fmt.Fprintf(&b, "  Channel:           %s\n", p.Channel)
+		w.field(&b, "Channel:", p.Channel)
 	}
 	if st.Res.Reason != "" {
-		fmt.Fprintf(&b, "  Why this provider: %s\n", st.Res.Reason)
+		w.field(&b, "Why this provider:", st.Res.Reason)
 	}
 	if p.Origin.Path != "" {
 		kind := "global"
 		if p.Origin.Project {
 			kind = "project"
 		}
-		fmt.Fprintf(&b, "  Declared in:       %s (%s)\n", p.Origin.Path, kind)
+		w.field(&b, "Declared in:", fmt.Sprintf("%s (%s)", p.Origin.Path, kind))
 	}
 	for _, e := range st.Elsewhere {
-		fmt.Fprintf(&b, "  Also provided by:  %s at %s\n", e.Provider, dash(e.Path))
+		w.field(&b, "Also provided by:", fmt.Sprintf("%s at %s", e.Provider, dash(e.Path)))
 	}
 	for _, n := range st.Notes {
-		fmt.Fprintf(&b, "  Note:              %s\n", n)
+		w.field(&b, "Note:", n)
 	}
 	if len(b.String()) > 0 {
 		if _, err := io.WriteString(w.out, b.String()); err != nil {
@@ -361,11 +500,11 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 			}
 		}
 		if unhealthy == 0 {
-			fmt.Fprintf(w.out, "In sync. %d package(s) match the configuration.\n", len(plan.States))
+			fmt.Fprintf(w.out, "%s %d package(s) match the configuration.\n",
+				w.p.Green("In sync."), len(plan.States))
 		} else {
-			fmt.Fprintf(w.out,
-				"Nothing to do. %d of %d package(s) match the configuration, and Starpoint has no way to change the rest.\n",
-				len(plan.States)-unhealthy, len(plan.States))
+			fmt.Fprintf(w.out, "%s %d of %d package(s) match the configuration, and Starpoint has no way to change the rest.\n",
+				w.p.Yellow("Nothing to do."), len(plan.States)-unhealthy, len(plan.States))
 		}
 		w.writeWarnings(res.Warnings)
 		return nil
@@ -374,31 +513,31 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 	if res.DryRun {
 		verb = "would be made"
 	}
-	fmt.Fprintf(w.out, "%d change(s) %s:\n", len(actions), verb)
+	fmt.Fprintln(w.out, w.section(fmt.Sprintf("%d change(s) %s:", len(actions), verb)))
 	for _, a := range actions {
 		target := a.Package
 		if a.Provider != "" {
 			target += " via " + a.Provider
 		}
-		line := fmt.Sprintf("  %-10s %s", a.Action, target)
+		line := "  " + padTo(w.outcome(a.Action, a.Result), 10) + " " + target
 		if a.Note != "" {
 			line += " (" + a.Note + ")"
 		}
 		if a.Result == string(model.OutcomeFailed) || a.Result == string(model.OutcomeNotRun) {
-			line += " [" + a.Result + "]"
+			line += " " + w.p.Red("["+a.Result+"]")
 		}
 		fmt.Fprintln(w.out, line)
-		WriteEffects(w.out, a.Effects, res.DryRun, res.DryRun || w.verbose, "      ")
+		WriteEffects(w.out, w.p, a.Effects, res.DryRun, res.DryRun || w.verbose, "      ")
 		w.writeRunAs(a.RunAs, "      ")
 	}
 	if res.DryRun {
-		fmt.Fprintln(w.out, "\nDry run: nothing was changed.")
+		fmt.Fprintln(w.out, "\n"+w.p.Yellow("Dry run: nothing was changed."))
 	}
 	if len(out.Transitions) > 0 {
 		w.writeTransitions(out.Transitions)
 	}
 	if res.ConfigChanged {
-		fmt.Fprintf(w.out, "\nConfiguration updated: %s\n", res.ConfigPath)
+		fmt.Fprintf(w.out, "\n%s %s\n", w.p.Green("Configuration updated:"), res.ConfigPath)
 	}
 	w.writeWarnings(warnings)
 	return nil
@@ -462,7 +601,7 @@ func (w *Writer) Transitions(ts []model.Transition, dryRun bool) error {
 		})
 	}
 	if len(ts) == 0 {
-		fmt.Fprintln(w.out, "No provider transitions are pending.")
+		fmt.Fprintln(w.out, w.p.Green("No provider transitions are pending."))
 		return nil
 	}
 	w.writeTransitions(ts)
@@ -514,14 +653,14 @@ func (w *Writer) TransitionsApplied(op string, ts []model.Transition, errs []err
 // phase and the verification are the point: a user deciding whether to trust a
 // change of ownership needs to see why Starpoint believes it worked.
 func (w *Writer) writeTransitions(ts []model.Transition) {
-	fmt.Fprintln(w.out, "\nTransitions")
+	fmt.Fprintln(w.out, "\n"+w.section("Transitions"))
 	for _, t := range ts {
 		from := t.From.Name
 		if from == "" {
 			from = "nothing"
 		}
 		fmt.Fprintf(w.out, "  %s: %s -> %s [%s]\n",
-			t.Package.Name, from, t.To.Name, t.Phase)
+			w.p.Bold(t.Package.Name), from, t.To.Name, w.phase(t.Phase))
 		if t.Note != "" {
 			fmt.Fprintf(w.out, "      %s\n", t.Note)
 		}
@@ -547,10 +686,10 @@ func (w *Writer) writeTransitions(ts []model.Transition) {
 				break
 			}
 		}
-		WriteEffects(w.out, t.Effects, planned, w.dryRunTransitions || w.verbose, "      ")
+		WriteEffects(w.out, w.p, t.Effects, planned, w.dryRunTransitions || w.verbose, "      ")
 		w.writeRunAs(t.RunAs, "      ")
 		for _, warn := range t.Warnings {
-			fmt.Fprintf(w.out, "      %s [%s]: %s\n", warn.Severity, warn.Code, warn.Message)
+			fmt.Fprintf(w.out, "      %s [%s]: %s\n", w.severity(warn.Severity), warn.Code, warn.Message)
 		}
 	}
 }
@@ -564,25 +703,25 @@ func (w *Writer) writeTransitionDetail(t model.Transition) error {
 		from = "nothing"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "\n  Transition:     %s -> %s\n", from, t.To.Name)
-	fmt.Fprintf(&b, "  Phase:          %s\n", t.Phase)
+	fmt.Fprintf(&b, "\n  %s %s -> %s\n", w.label("Transition:"), from, t.To.Name)
+	w.fieldAt(&b, 16, "Phase:", w.phase(t.Phase))
 	if t.Previous != nil {
-		fmt.Fprintf(&b, "  Previous:       %s at %s\n", t.Previous.Provider, dash(t.Previous.Path))
+		w.fieldAt(&b, 16, "Previous:", fmt.Sprintf("%s at %s", t.Previous.Provider, dash(t.Previous.Path)))
 	}
 	if t.Installed != nil {
-		fmt.Fprintf(&b, "  New copy:       %s\n", dash(t.Installed.Path))
+		w.fieldAt(&b, 16, "New copy:", dash(t.Installed.Path))
 	}
-	fmt.Fprintf(&b, "  Verified:       %s\n", t.Verification.Reason())
+	w.fieldAt(&b, 16, "Verified:", t.Verification.Reason())
 	if t.OldRemoved {
-		fmt.Fprintf(&b, "  Previous copy:  removed\n")
+		w.fieldAt(&b, 16, "Previous copy:", w.p.Green("removed"))
 	} else if t.LeftBehindReason != "" {
-		fmt.Fprintf(&b, "  Previous copy:  still present (%s)\n", t.LeftBehindReason)
+		w.fieldAt(&b, 16, "Previous copy:", w.p.Yellow("still present ("+t.LeftBehindReason+")"))
 	}
 	if t.Recoverable {
-		fmt.Fprintf(&b, "  Recoverable:    yes\n")
+		w.fieldAt(&b, 16, "Recoverable:", w.p.Green("yes"))
 	}
 	if t.Advice != "" {
-		fmt.Fprintf(&b, "  Next:           %s\n", t.Advice)
+		w.fieldAt(&b, 16, "Next:", t.Advice)
 	}
 	_, err := io.WriteString(w.out, b.String())
 	return err
@@ -639,7 +778,7 @@ func (w *Writer) Doctor(rep DoctorReport) error {
 	if w.asJSON {
 		return w.respond(flatten(rep))
 	}
-	fmt.Fprintln(w.out, "Starpoint")
+	fmt.Fprintln(w.out, w.section("Starpoint"))
 	fmt.Fprintf(w.out, "  Version:  %s\n", rep.Starpoint.Version)
 	if rep.Starpoint.Path != "" {
 		fmt.Fprintf(w.out, "  Binary:   %s\n", rep.Starpoint.Path)
@@ -648,24 +787,24 @@ func (w *Writer) Doctor(rep DoctorReport) error {
 		fmt.Fprintf(w.out, "  Installed by: %s\n", rep.Starpoint.Provider)
 	}
 
-	fmt.Fprintf(w.out, "\nConfiguration\n")
-	fmt.Fprintf(w.out, "  Path:     %s (%s)\n", rep.Config.Path, existsLabel(rep.Config.Exists))
+	fmt.Fprintf(w.out, "\n%s\n", w.section("Configuration"))
+	fmt.Fprintf(w.out, "  Path:     %s (%s)\n", rep.Config.Path, w.existsLabel(rep.Config.Exists))
 	fmt.Fprintf(w.out, "  Schema:   %d\n", rep.Config.Schema)
 	fmt.Fprintf(w.out, "  Packages: %d\n", rep.Config.PackageCount)
 	if rep.Config.Writable {
-		fmt.Fprintln(w.out, "  Writable: yes")
+		fmt.Fprintln(w.out, "  Writable: "+w.p.Green("yes"))
 	} else {
-		fmt.Fprintln(w.out, "  Writable: no")
+		fmt.Fprintln(w.out, "  Writable: "+w.p.Red("no"))
 	}
 	for _, f := range rep.Config.Files {
 		fmt.Fprintf(w.out, "  Includes: %s\n", f)
 	}
 
-	fmt.Fprintf(w.out, "\nProviders\n")
+	fmt.Fprintf(w.out, "\n%s\n", w.section("Providers"))
 	rows := [][]string{{"PROVIDER", "KIND", "AVAILABLE", "VERSION"}}
 	for _, p := range rep.Providers {
 		rows = append(rows, []string{
-			p.Name, string(p.Kind), yesNo(p.Available), dash(p.Version),
+			p.Name, string(p.Kind), w.yesNo(p.Available), dash(p.Version),
 		})
 	}
 	if err := w.table(rows); err != nil {
@@ -673,16 +812,16 @@ func (w *Writer) Doctor(rep DoctorReport) error {
 	}
 	for _, p := range rep.Providers {
 		if !p.Available && p.Reason != "" {
-			fmt.Fprintf(w.out, "    %s: %s\n", p.Name, p.Reason)
+			fmt.Fprintf(w.out, "    %s: %s\n", p.Name, w.p.Dim(p.Reason))
 		}
 	}
 
 	if len(rep.Ownership) > 0 {
-		fmt.Fprintf(w.out, "\nOwnership\n")
+		fmt.Fprintf(w.out, "\n%s\n", w.section("Ownership"))
 		orows := [][]string{{"PACKAGE", "PROVIDER", "DESIRED", "STATUS"}}
 		for _, st := range rep.Ownership {
 			orows = append(orows, []string{
-				st.Package.Name, providerOf(st), st.Res.Provider, string(st.Status),
+				st.Package.Name, providerOf(st), st.Res.Provider, w.status(st.Status),
 			})
 		}
 		if err := w.table(orows); err != nil {
@@ -690,7 +829,7 @@ func (w *Writer) Doctor(rep DoctorReport) error {
 		}
 	}
 	if rep.ShowAllPATH {
-		fmt.Fprintf(w.out, "\nPATH inventory (%d executable entries)\n", len(rep.PATHInventory))
+		fmt.Fprintf(w.out, "\n%s (%d executable entries)\n", w.section("PATH inventory"), len(rep.PATHInventory))
 		if len(rep.PATHInventory) > 0 {
 			if err := w.pathRows(rep.PATHInventory); err != nil {
 				return err
@@ -703,9 +842,9 @@ func (w *Writer) Doctor(rep DoctorReport) error {
 	}
 
 	if len(rep.Problems) > 0 {
-		fmt.Fprintf(w.out, "\nProblems\n")
+		fmt.Fprintf(w.out, "\n%s\n", w.section("Problems"))
 		for _, p := range rep.Problems {
-			label := string(p.Severity)
+			label := w.severity(p.Severity)
 			if p.Package != "" {
 				label += " (" + p.Package + ")"
 			}
@@ -713,7 +852,7 @@ func (w *Writer) Doctor(rep DoctorReport) error {
 		}
 	}
 	if rep.Healthy {
-		fmt.Fprintln(w.out, "\nNo problems found.")
+		fmt.Fprintln(w.out, "\n"+w.p.Green("No problems found."))
 	}
 	return nil
 }
@@ -728,7 +867,7 @@ func (w *Writer) pathSummary(rep DoctorReport) error {
 	if sum.Executables == 0 && len(rep.PATHInventory) > 0 {
 		sum = locator.Summarize(rep.PATHInventory)
 	}
-	fmt.Fprintf(w.out, "\nPATH inventory\n")
+	fmt.Fprintf(w.out, "\n%s\n", w.section("PATH inventory"))
 	if sum.Executables == 0 {
 		fmt.Fprintln(w.out, "  No executable entries found on PATH.")
 		return nil
@@ -757,7 +896,7 @@ func (w *Writer) pathSummary(rep DoctorReport) error {
 		if len(rows) > pathSummaryLimit {
 			rows = rows[:pathSummaryLimit]
 		}
-		fmt.Fprintf(w.out, "  %s (%d):\n", group.title, len(group.rows))
+		fmt.Fprintf(w.out, "  %s (%d):\n", w.section(group.title), len(group.rows))
 		if err := w.pathRows(rows); err != nil {
 			return err
 		}
@@ -765,7 +904,7 @@ func (w *Writer) pathSummary(rep DoctorReport) error {
 			fmt.Fprintf(w.out, "    ... and %d more\n", more)
 		}
 	}
-	fmt.Fprintln(w.out, "  Run 'starpoint doctor --all' for every entry; --json always includes the full inventory.")
+	fmt.Fprintln(w.out, w.p.Dim("  Run 'starpoint doctor --all' for every entry; --json always includes the full inventory."))
 	return nil
 }
 
@@ -773,7 +912,7 @@ func (w *Writer) pathSummary(rep DoctorReport) error {
 func (w *Writer) pathRows(found []locator.Found) error {
 	rows := [][]string{{"BINARY", "LOCATION", "OWNER", "DETAIL"}}
 	for _, f := range found {
-		owner, detail := "unknown", f.Reason
+		owner, detail := w.p.Yellow("unknown"), f.Reason
 		if f.Installation != nil {
 			owner = f.Installation.Provider
 		}
@@ -820,19 +959,19 @@ func (w *Writer) Result(op string, res *engine.Result) error {
 		default:
 			verb = pastTense(verb)
 		}
-		line := fmt.Sprintf("%s %s", verb, pkg)
+		line := w.outcome(verb, a.Result) + " " + pkg
 		if a.Note != "" && !strings.HasPrefix(a.Note, "provider ") {
 			line += " (" + a.Note + ")"
 		}
 		fmt.Fprintln(w.out, line)
-		WriteEffects(w.out, a.Effects, res.DryRun, res.DryRun || w.verbose, "")
+		WriteEffects(w.out, w.p, a.Effects, res.DryRun, res.DryRun || w.verbose, "")
 		w.writeRunAs(a.RunAs, "  ")
 		w.writeActionWarnings(a.Warnings, "  ")
 	}
 	if changed {
-		fmt.Fprintf(w.out, "Configuration updated: %s\n", res.ConfigPath)
+		fmt.Fprintf(w.out, "%s %s\n", w.p.Green("Configuration updated:"), res.ConfigPath)
 	} else if res.DryRun {
-		fmt.Fprintln(w.out, "Dry run: nothing was changed.")
+		fmt.Fprintln(w.out, w.p.Yellow("Dry run: nothing was changed."))
 	}
 	// Warnings that name no package belong to no action line.
 	for _, warn := range warnings {
@@ -842,7 +981,7 @@ func (w *Writer) Result(op string, res *engine.Result) error {
 		if warn.Severity == model.SeverityInfo && !w.verbose {
 			continue
 		}
-		fmt.Fprintf(w.out, "warning: %s\n", warn.Message)
+		fmt.Fprintf(w.out, "%s %s\n", w.p.Yellow("warning:"), warn.Message)
 	}
 	return nil
 }
@@ -877,12 +1016,12 @@ func (w *Writer) Prune(res *engine.Result, dryRun bool) error {
 	actions, warnings := buildActions(dryRun, res.Warnings, res.Applied, w.runAs)
 	for _, warn := range warnings {
 		if warn.Package == "" {
-			fmt.Fprintf(w.out, "  %s\n", warn.Message)
+			fmt.Fprintf(w.out, "  %s\n", w.colored(warn.Severity, warn.Message))
 		}
 	}
 	if len(actions) == 0 {
 		if len(warnings) == 0 {
-			fmt.Fprintln(w.out, "No orphaned software found.")
+			fmt.Fprintln(w.out, w.p.Green("No orphaned software found."))
 		}
 		return nil
 	}
@@ -898,12 +1037,12 @@ func (w *Writer) Prune(res *engine.Result, dryRun bool) error {
 		if a.Provider != "" {
 			pkg += " via " + a.Provider
 		}
-		line := fmt.Sprintf("%s %s", verb, pkg)
+		line := w.outcome(verb, a.Result) + " " + pkg
 		if a.Error != "" {
 			line += " (" + a.Error + ")"
 		}
 		fmt.Fprintln(w.out, line)
-		WriteEffects(w.out, a.Effects, dryRun, dryRun || w.verbose, "")
+		WriteEffects(w.out, w.p, a.Effects, dryRun, dryRun || w.verbose, "")
 		w.writeRunAs(a.RunAs, "  ")
 		w.writeActionWarnings(a.Warnings, "  ")
 	}
@@ -917,11 +1056,11 @@ func (w *Writer) Init(path string, created, replaced bool) error {
 	}
 	switch {
 	case replaced:
-		fmt.Fprintf(w.out, "Replaced %s\n", path)
+		fmt.Fprintf(w.out, "%s %s\n", w.p.Green("Replaced"), path)
 	case created:
-		fmt.Fprintf(w.out, "Created %s\n", path)
+		fmt.Fprintf(w.out, "%s %s\n", w.p.Green("Created"), path)
 	default:
-		fmt.Fprintf(w.out, "%s already exists; use --force to replace it\n", path)
+		fmt.Fprintf(w.out, "%s; use --force to replace it\n", w.p.Yellow(path+" already exists"))
 	}
 	return nil
 }
@@ -938,7 +1077,7 @@ func (w *Writer) Render(v any) error {
 // Warn writes a warning line in human mode.
 func (w *Writer) Warn(msg string) {
 	if !w.asJSON {
-		fmt.Fprintf(w.out, "warning: %s\n", msg)
+		fmt.Fprintf(w.out, "%s %s\n", w.p.Yellow("warning:"), msg)
 	}
 }
 
@@ -947,7 +1086,7 @@ func (w *Writer) writeWarnings(warns []model.Warning) {
 		if warn.Severity == model.SeverityInfo {
 			continue
 		}
-		fmt.Fprintf(w.out, "  [%s] %s\n", warn.Severity, warn.Message)
+		fmt.Fprintf(w.out, "  [%s] %s\n", w.severity(warn.Severity), warn.Message)
 	}
 }
 
@@ -959,6 +1098,9 @@ func (w *Writer) emit(v any) error {
 
 // table prints aligned columns. Columns are sized to content, which keeps output
 // readable without hardcoding widths that break on long paths.
+//
+// The first row is the header and is printed bold. Widths are measured without
+// escape sequences, so a colored cell lines up with the plain one beside it.
 func (w *Writer) table(rows [][]string) error {
 	if len(rows) == 0 {
 		return nil
@@ -966,21 +1108,24 @@ func (w *Writer) table(rows [][]string) error {
 	widths := make([]int, len(rows[0]))
 	for _, row := range rows {
 		for i, cell := range row {
-			if i < len(widths) && len(cell) > widths[i] {
-				widths[i] = len(cell)
+			if i < len(widths) && color.VisibleLen(cell) > widths[i] {
+				widths[i] = color.VisibleLen(cell)
 			}
 		}
 	}
-	for _, row := range rows {
+	for r, row := range rows {
 		var b strings.Builder
 		for i, cell := range row {
 			if i > 0 {
 				b.WriteString("  ")
 			}
+			if r == 0 {
+				cell = w.section(cell)
+			}
 			if i == len(row)-1 {
 				b.WriteString(cell)
 			} else {
-				b.WriteString(cell + strings.Repeat(" ", widths[i]-len(cell)))
+				b.WriteString(cell + strings.Repeat(" ", widths[i]-color.VisibleLen(cell)))
 			}
 		}
 		if _, err := fmt.Fprintln(w.out, strings.TrimRight(b.String(), " ")); err != nil {
@@ -1012,20 +1157,6 @@ func dash(s string) string {
 		return "-"
 	}
 	return s
-}
-
-func yesNo(b bool) string {
-	if b {
-		return "yes"
-	}
-	return "no"
-}
-
-func existsLabel(b bool) string {
-	if b {
-		return "exists"
-	}
-	return "missing"
 }
 
 func firstNonEmpty(vals ...string) string {
@@ -1096,29 +1227,29 @@ func (w *Writer) Explain(expl resolve.Explanation) error {
 	if w.asJSON {
 		return w.respond(flatten(expl))
 	}
-	fmt.Fprintf(w.out, "Package: %s\n\n", expl.Package.Describe())
-	fmt.Fprintf(w.out, "Selected provider: %s\n", expl.Final.Provider)
+	fmt.Fprintf(w.out, "Package: %s\n\n", w.p.Bold(expl.Package.Describe()))
+	fmt.Fprintf(w.out, "Selected provider: %s\n", w.p.Green(expl.Final.Provider))
 	fmt.Fprintf(w.out, "Confidence: %s\n", expl.Final.Confidence)
 	if expl.Final.Ambiguous {
-		fmt.Fprintf(w.out, "Ambiguous: yes\n")
+		fmt.Fprintf(w.out, "%s\n", w.p.Yellow("Ambiguous: yes"))
 		if len(expl.Final.Alternatives) > 0 {
 			fmt.Fprintf(w.out, "Alternatives: %s\n", strings.Join(expl.Final.Alternatives, ", "))
 		}
 	}
 	fmt.Fprintf(w.out, "Reason: %s\n\n", expl.Final.Reason)
-	fmt.Fprintln(w.out, "Resolution reasoning:")
+	fmt.Fprintln(w.out, w.section("Resolution reasoning:"))
 	for _, step := range expl.Steps {
 		marker := "  "
 		if step.Applied {
-			marker = "→ "
+			marker = w.p.Green("→ ")
 		}
-		fmt.Fprintf(w.out, "%s%s: %s", marker, step.Rule, step.Outcome)
+		fmt.Fprintf(w.out, "%s%s: %s", marker, w.p.Bold(step.Rule), step.Outcome)
 		if step.Provider != "" {
 			fmt.Fprintf(w.out, " (%s)", step.Provider)
 		}
 		fmt.Fprintln(w.out)
 		if step.Reason != "" {
-			fmt.Fprintf(w.out, "      %s\n", step.Reason)
+			fmt.Fprintf(w.out, "      %s\n", w.p.Dim(step.Reason))
 		}
 	}
 	return nil
@@ -1127,7 +1258,7 @@ func (w *Writer) Explain(expl resolve.Explanation) error {
 // writeLookup renders the provider survey that explained an unmanaged package.
 // The JSON form is folded into Info's response.
 func (w *Writer) writeLookup(s engine.Survey) error {
-	fmt.Fprintln(w.out, "\n  Provider lookup")
+	fmt.Fprintln(w.out, "\n  "+w.section("Provider lookup"))
 	owners := s.Owners()
 	if len(owners) > 0 {
 		for _, o := range owners {
@@ -1135,18 +1266,18 @@ func (w *Writer) writeLookup(s engine.Survey) error {
 			if o.Installation != nil && o.Installation.Version != "" {
 				version = " " + o.Installation.Version
 			}
-			fmt.Fprintf(w.out, "    %s%s\n", o.Provider, version)
+			fmt.Fprintf(w.out, "    %s%s\n", o.Provider, w.p.Dim(version))
 		}
 	} else {
-		fmt.Fprintln(w.out, "    none found on installed providers")
+		fmt.Fprintln(w.out, "    "+w.p.Yellow("none found on installed providers"))
 	}
 	if unaskable := s.Unaskable(); len(unaskable) > 0 {
-		fmt.Fprintf(w.out, "    not asked: %s\n", strings.Join(unaskable, ", "))
+		fmt.Fprintf(w.out, "    %s\n", w.p.Dim("not asked: "+strings.Join(unaskable, ", ")))
 	}
 	if absent := s.NotInstalled(); len(absent) > 0 {
-		fmt.Fprintf(w.out, "    not installed: %s\n", strings.Join(absent, ", "))
+		fmt.Fprintf(w.out, "    %s\n", w.p.Dim("not installed: "+strings.Join(absent, ", ")))
 	}
-	fmt.Fprintf(w.out, "    (%d provider(s) asked in %.0fms)\n", len(s.Findings), s.DurationMS)
+	fmt.Fprintf(w.out, "    %s\n", w.p.Dim(fmt.Sprintf("(%d provider(s) asked in %.0fms)", len(s.Findings), s.DurationMS)))
 	return nil
 }
 

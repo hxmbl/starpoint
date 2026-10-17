@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/hxmbl/starpoint/internal/auditlog"
+	"github.com/hxmbl/starpoint/internal/color"
 	"github.com/hxmbl/starpoint/internal/engine"
 	"github.com/hxmbl/starpoint/internal/model"
 	"github.com/hxmbl/starpoint/internal/report"
@@ -179,7 +180,7 @@ func transitionActions(ctx context.Context, eng *engine.Engine, ts []model.Trans
 // command that had a plan, every planned action and effect. Under --json it
 // is one document in the error envelope, with the plan in the ActionResult
 // shape every other command uses.
-func reportRefusal(w io.Writer, asJSON bool, r *RefusalError, runAs report.RunAsFunc) {
+func reportRefusal(w io.Writer, p color.Palette, asJSON bool, r *RefusalError, runAs report.RunAsFunc) {
 	if asJSON {
 		doc := map[string]any{
 			"schema_version": report.SchemaVersion,
@@ -197,18 +198,18 @@ func reportRefusal(w io.Writer, asJSON bool, r *RefusalError, runAs report.RunAs
 		_ = enc.Encode(doc)
 		return
 	}
-	fmt.Fprintf(w, "error [%s]: %s\n", r.Code, r.Message)
+	fmt.Fprintf(w, "%s [%s]: %s\n", p.BoldRed("error"), p.BoldRed(r.Code), r.Message)
 	if len(r.Actions) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "\nPlanned changes (none were made; ! removes or overwrites something):")
+	fmt.Fprintln(w, "\n"+p.Bold("Planned changes (none were made; ! removes or overwrites something):"))
 	for _, a := range r.Actions {
-		line := fmt.Sprintf("  %s %s", a.Action, a.State.Package.Name)
+		line := fmt.Sprintf("  %s %s", p.Yellow(fmt.Sprintf("%-10s", a.Action)), a.State.Package.Name)
 		if a.State.Res.Provider != "" {
 			line += " via " + a.State.Res.Provider
 		}
 		fmt.Fprintln(w, line)
-		report.WriteEffects(w, a.Effects, true, true, "      ")
+		report.WriteEffects(w, p, a.Effects, true, true, "      ")
 	}
 }
 

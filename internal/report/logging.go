@@ -30,7 +30,7 @@ func (w *Writer) Logging(status LoggingStatus) error {
 	if w.asJSON {
 		return w.respond(flatten(status))
 	}
-	fmt.Fprintf(w.out, "Logging\n\n")
+	fmt.Fprintf(w.out, "%s\n\n", w.section("Logging"))
 	fmt.Fprintf(w.out, "  State directory:  %s\n", status.StateDir)
 	fmt.Fprintf(w.out, "  Audit log:        %s\n", status.AuditLogDir)
 	fmt.Fprintf(w.out, "  Log files:        %d", len(status.Files))
@@ -45,7 +45,7 @@ func (w *Writer) Logging(status LoggingStatus) error {
 	}
 	fmt.Fprintf(w.out, "  Retention:        %d days (%s)\n", status.RetentionDays, source)
 
-	fmt.Fprintf(w.out, "\nSystem log retention\n")
+	fmt.Fprintf(w.out, "\n%s\n", w.section("System log retention"))
 	if !status.OS.Supported {
 		fmt.Fprintf(w.out, "  %s: %s\n", status.OS.Goos, status.OS.Note)
 		return nil
@@ -76,9 +76,9 @@ func (w *Writer) LoggingPrune(rep retention.Report) error {
 		})
 	}
 	if rep.Total() == 0 {
-		fmt.Fprintf(w.out, "Nothing is older than %d days.\n", rep.Days)
+		fmt.Fprintln(w.out, w.p.Green(fmt.Sprintf("Nothing is older than %d days.", rep.Days)))
 	} else {
-		fmt.Fprintf(w.out, "Removed %d record(s) older than %d days:\n", rep.Total(), rep.Days)
+		fmt.Fprintf(w.out, "%s\n", w.section(fmt.Sprintf("Removed %d record(s) older than %d days:", rep.Total(), rep.Days)))
 		if rep.AuditLogsRemoved > 0 {
 			fmt.Fprintf(w.out, "  %d audit log file(s)\n", rep.AuditLogsRemoved)
 		}
@@ -90,7 +90,7 @@ func (w *Writer) LoggingPrune(rep retention.Report) error {
 		}
 	}
 	for _, p := range rep.Problems {
-		fmt.Fprintf(w.out, "warning: %s\n", p)
+		fmt.Fprintf(w.out, "%s %s\n", w.p.Yellow("warning:"), p)
 	}
 	return nil
 }

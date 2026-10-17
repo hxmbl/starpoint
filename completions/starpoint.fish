@@ -15,6 +15,7 @@ complete -c starpoint -l provider -r -a "$providers" -d 'Restrict or choose the 
 complete -c starpoint -l force -d 'Replace existing configuration (init)'
 complete -c starpoint -l context -r -F -d 'Override working directory'
 complete -c starpoint -l verbose -s v -d 'List every effect of a change'
+complete -c starpoint -l color -r -a 'auto always never' -d 'When to colorize output'
 complete -c starpoint -l allow-destructive -d 'Let an unattended run delete or replace things'
 complete -c starpoint -l allow-root -d 'Let a changing command run as root or elevated'
 complete -c starpoint -l version -d 'Print version (install: pin a version)'

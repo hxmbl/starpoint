@@ -321,7 +321,8 @@ destructive run, `4` refused elevated run. A refusal changes nothing.
 
 Global options work anywhere on the line: `--json`, `--provider <name>`
 (repeatable, restricts automatic resolution), `--force`, `--verbose` (`-v`),
-`--allow-destructive`, `--allow-root`, `--version`, `--help`.
+`--color <when>`, `--allow-destructive`, `--allow-root`, `--version`,
+`--help`.
 `--help` (or `-h`) after a command prints that command's help, as does
 `starpoint help <command>`; it is never taken as a package name. Any other
 unrecognised `-`-prefixed token is a usage error rather than a package name.
@@ -331,6 +332,14 @@ unrecognised `-`-prefixed token is a usage error rather than a package name.
 Human output is the default; `--json` produces the same structured data the
 engine produced, not a re-parse of the text. Every read command supports it, so
 another tool never has to parse a table.
+
+Human output is colorized when it is going to a terminal and the environment
+allows it. `--color always` forces color — into a pipe, into a pager, into a
+log — and `--color never` turns it off; `auto`, the default, colors a terminal
+and nothing else. `NO_COLOR` turns color off under `auto`, as does an unset or
+`dumb` `TERM`. Color is decoration only: with the escapes stripped the output
+reads the same, so `--json` is never colored and nothing has to be parsed out
+of it.
 
 Every change says what it does to the machine. Each action lists its effects:
 the package installed or uninstalled, every file and link created, rewritten,

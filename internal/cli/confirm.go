@@ -62,29 +62,30 @@ func (e *Env) confirmChanges(changes []change, opts engine.Options) error {
 			ErrUsage, strings.ToLower(changes[0].verb), changes[0].target)
 	}
 
-	fmt.Fprintln(e.promptOut(), "About to change your machine:")
+	fmt.Fprintln(e.promptOut(), e.palPrompt.Bold("About to change your machine:"))
 	for _, c := range changes {
-		fmt.Fprintf(e.promptOut(), "  %s %s", c.verb, c.target)
+		fmt.Fprintf(e.promptOut(), "  %s %s", e.palPrompt.Bold(c.verb), c.target)
 		if c.via != "" {
 			fmt.Fprintf(e.promptOut(), " (%s)", c.via)
 		}
 		fmt.Fprintln(e.promptOut(), "")
 		if c.detail != "" {
-			fmt.Fprintf(e.promptOut(), "      %s\n", c.detail)
+			fmt.Fprintf(e.promptOut(), "      %s\n", e.palPrompt.Dim(c.detail))
 		}
 		if c.after != "" {
-			fmt.Fprintf(e.promptOut(), "      then: %s\n", c.after)
+			fmt.Fprintf(e.promptOut(), "      then: %s\n", e.palPrompt.Dim(c.after))
 		}
-		report.WriteEffects(e.promptOut(), c.effects, true, e.Verbose, "      ")
+		report.WriteEffects(e.promptOut(), e.palPrompt, c.effects, true, e.Verbose, "      ")
 		for _, w := range c.warnings {
 			if w.Severity == model.SeverityInfo && !e.Verbose {
 				continue
 			}
-			fmt.Fprintf(e.promptOut(), "      %s [%s]: %s\n", w.Severity, w.Code, w.Message)
+			fmt.Fprintf(e.promptOut(), "      %s [%s]: %s\n", report.SeverityLabel(e.palPrompt, w.Severity), w.Code, w.Message)
 		}
 	}
 	if n := destructiveCount(changes); n > 0 {
-		fmt.Fprintf(e.promptOut(), "\n%d change(s) marked ! remove or overwrite something that is there now.\n", n)
+		fmt.Fprintf(e.promptOut(), "\n%s\n",
+			e.palPrompt.BoldYellow(fmt.Sprintf("%d change(s) marked ! remove or overwrite something that is there now.", n)))
 	}
 	fmt.Fprintln(e.promptOut(), "")
 
@@ -95,7 +96,7 @@ func (e *Env) confirmChanges(changes []change, opts engine.Options) error {
 		return err
 	}
 	if !ok {
-		fmt.Fprintln(e.promptOut(), "Nothing was changed.")
+		fmt.Fprintln(e.promptOut(), e.palPrompt.Dim("Nothing was changed."))
 	}
 	return nil
 }
@@ -234,10 +235,10 @@ func (e *Env) lookup(ctx context.Context, eng *engine.Engine, pkg model.Package,
 		return s
 	}
 	if line, show := surveyNote(s); show {
-		fmt.Fprintf(e.Stdout, "%s: %s\n", pkg.Name, line)
+		fmt.Fprintf(e.Stdout, "%s: %s\n", e.palOut.Bold(pkg.Name), e.palOut.Dim(line))
 	}
 	if line, show := surveyDuplicates(s, pkg.Provider); show {
-		fmt.Fprintf(e.Stdout, "%s: %s\n", pkg.Name, line)
+		fmt.Fprintf(e.Stdout, "%s: %s\n", e.palOut.Bold(pkg.Name), e.palOut.Yellow(line))
 	}
 	return s
 }

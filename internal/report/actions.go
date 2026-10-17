@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hxmbl/starpoint/internal/color"
 	"github.com/hxmbl/starpoint/internal/engine"
 	"github.com/hxmbl/starpoint/internal/model"
 )
@@ -305,7 +306,7 @@ func (w *Writer) writeContextWarnings() {
 	}
 	w.contextShown = true
 	for _, warn := range w.context {
-		fmt.Fprintf(w.out, "%s [%s]: %s\n", warn.Severity, warn.Code, warn.Message)
+		fmt.Fprintf(w.out, "%s [%s]: %s\n", w.severity(warn.Severity), warn.Code, warn.Message)
 	}
 }
 
@@ -316,7 +317,12 @@ func (w *Writer) writeContextWarnings() {
 // later. With all set (a dry run, whose whole job is showing the effect, or
 // --verbose) everything is listed; otherwise the rest is counted. planned
 // words the lines as predictions ("would delete").
-func WriteEffects(out interface{ Write([]byte) (int, error) }, effects []model.Effect, planned, all bool, indent string) {
+//
+// p styles the destructive marker. It is a palette rather than a resolved
+// mode so the confirmation prompts, the refusals and the results themselves
+// can agree on whether color is in effect; a palette that is off writes
+// exactly what it wrote before.
+func WriteEffects(out interface{ Write([]byte) (int, error) }, p color.Palette, effects []model.Effect, planned, all bool, indent string) {
 	hidden := 0
 	for _, e := range effects {
 		if !e.Destructive && !all {
@@ -325,12 +331,13 @@ func WriteEffects(out interface{ Write([]byte) (int, error) }, effects []model.E
 		}
 		marker := "  "
 		if e.Destructive {
-			marker = "! "
+			marker = p.BoldRed("! ")
 		}
 		fmt.Fprintf(out, "%s%s%s\n", indent, marker, EffectLine(e, planned))
 	}
 	if hidden > 0 {
-		fmt.Fprintf(out, "%s  (%d other change(s); --verbose lists them)\n", indent, hidden)
+		fmt.Fprintf(out, "%s  %s\n", indent,
+			p.Dim(fmt.Sprintf("(%d other change(s); --verbose lists them)", hidden)))
 	}
 }
 
@@ -458,6 +465,6 @@ func (w *Writer) writeActionWarnings(ws []model.Warning, indent string) {
 		if warn.Code != "" {
 			code = " [" + warn.Code + "]"
 		}
-		fmt.Fprintf(w.out, "%s%s%s: %s\n", indent, warn.Severity, code, warn.Message)
+		fmt.Fprintf(w.out, "%s%s%s: %s\n", indent, w.severity(warn.Severity), code, warn.Message)
 	}
 }

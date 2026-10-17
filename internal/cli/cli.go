@@ -20,6 +20,7 @@ import (
 
 	"github.com/hxmbl/starpoint/internal/align"
 	"github.com/hxmbl/starpoint/internal/auditlog"
+	"github.com/hxmbl/starpoint/internal/color"
 	"github.com/hxmbl/starpoint/internal/config"
 	"github.com/hxmbl/starpoint/internal/elevation"
 	"github.com/hxmbl/starpoint/internal/engine"
@@ -93,6 +94,14 @@ type Env struct {
 	Elevation func() elevation.Status
 	// jsonMode is set for --json, so prompts keep off stdout.
 	jsonMode bool
+	// colorMode is --color: when human output is colorized. The palettes are
+	// resolved per writer, because stdout and stderr can be redirected
+	// separately — a terminal stdout with a piped stderr should color one and
+	// not the other.
+	colorMode color.Mode
+	palOut    color.Palette
+	palErr    color.Palette
+	palPrompt color.Palette
 	// Interactive reports whether a person at a terminal can answer
 	// questions. Nil means "Confirm is set": tests that wire a Confirm
 	// function stand for a user at a terminal. The program sets it from
@@ -145,6 +154,20 @@ type Env struct {
 	runCtx context.Context
 	// reg is the registry built for this Run.
 	reg *provider.Registry
+}
+
+// setColor resolves the run's palettes from --color and the writers the run
+// was given. It is called once per Run, before anything is printed.
+func (e *Env) setColor(mode color.Mode, asJSON bool) {
+	e.colorMode = mode
+	e.palOut = color.New(mode, e.Stdout)
+	e.palErr = color.New(mode, e.Stderr)
+	// Prompts go to stdout normally and to stderr under --json, so they follow
+	// whichever stream they will actually land on.
+	e.palPrompt = e.palOut
+	if asJSON {
+		e.palPrompt = e.palErr
+	}
 }
 
 // elevationStatus reports the privileges of this run, detected once per Run.
@@ -383,8 +406,10 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		force      bool
 		providers  []string
 		contextDir string
+		colorMode  color.Mode
 	)
-	rest, flagErr := extractGlobalFlags(args, &asJSON, &force, &providers, &contextDir)
+	rest, flagErr := extractGlobalFlags(args, &asJSON, &force, &providers, &contextDir, &colorMode)
+	env.setColor(colorMode, asJSON)
 	rest = extractVerbose(rest, &env.Verbose)
 	rest = extractBool(rest, "--allow-destructive", &env.allowDestructive)
 	rest = extractBool(rest, "--allow-root", &env.allowRoot)
@@ -392,7 +417,7 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		env.WorkDir = contextDir
 	}
 	if flagErr != nil {
-		fmt.Fprintf(env.Stderr, "error: %s\n", flagErr)
+		fmt.Fprintf(env.Stderr, "%s %s\n", env.palErr.BoldRed("error:"), flagErr)
 		printUsage(env.Stderr)
 		return 2
 	}
@@ -423,6 +448,7 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	env.reg = nil
 	env.retarget(ctx)
 	w := report.New(env.Stdout, asJSON)
+	w.SetColor(env.colorMode)
 	env.jsonMode = asJSON
 	w.SetVerbose(env.Verbose)
 	w.SetRunAs(env.actionRunAs)
@@ -451,18 +477,18 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		return 0
 	}
 	if err == errUnknownCommand {
-		fmt.Fprintf(env.Stderr, "unknown command %q\n\n", cmd)
+		fmt.Fprintf(env.Stderr, "%s %q\n\n", env.palErr.BoldRed("unknown command"), cmd)
 		printUsage(env.Stderr)
 		return 2
 	}
 
 	if err != nil {
 		if refusal, ok := asRefusal(err); ok {
-			reportRefusal(env.Stderr, asJSON, refusal, env.actionRunAs)
+			reportRefusal(env.Stderr, env.palErr, asJSON, refusal, env.actionRunAs)
 			return env.finish(canonicalCommand(cmd), cmdArgs, refusal.Exit, err)
 		}
 		if errors.Is(err, ErrUsage) {
-			fmt.Fprintf(env.Stderr, "error: %s\n\n", err)
+			fmt.Fprintf(env.Stderr, "%s %s\n\n", env.palErr.BoldRed("error:"), err)
 			printCommandHelp(env.Stderr, cmd)
 			return env.finish(canonicalCommand(cmd), cmdArgs, 2, err)
 		}
@@ -471,7 +497,7 @@ func Run(ctx context.Context, env *Env, args []string) int {
 			enc.SetIndent("", "  ")
 			_ = enc.Encode(map[string]any{"schema_version": report.SchemaVersion, "error": err.Error()})
 		} else {
-			fmt.Fprintf(env.Stderr, "error: %s\n", err)
+			fmt.Fprintf(env.Stderr, "%s %s\n", env.palErr.BoldRed("error:"), err)
 		}
 		return env.finish(canonicalCommand(cmd), cmdArgs, 1, err)
 	}
@@ -629,7 +655,7 @@ func (e *Env) applyRetention() {
 			Result: "incomplete",
 			Detail: errorDetail(rep.Error()),
 		})
-		fmt.Fprintf(e.Stderr, "warning: %s\n", rep.Error())
+		fmt.Fprintf(e.Stderr, "%s %s\n", e.palErr.Yellow("warning:"), rep.Error())
 	}
 }
 
@@ -686,7 +712,7 @@ func extractBool(args []string, flag string, value *bool) []string {
 
 // extractGlobalFlags pulls the global options out of an argument list and
 // returns what remains: the subcommand and its own arguments.
-func extractGlobalFlags(args []string, asJSON, force *bool, providers *[]string, contextDir *string) ([]string, error) {
+func extractGlobalFlags(args []string, asJSON, force *bool, providers *[]string, contextDir *string, colorMode *color.Mode) ([]string, error) {
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -706,11 +732,40 @@ func extractGlobalFlags(args []string, asJSON, force *bool, providers *[]string,
 			}
 			*contextDir = args[i+1]
 			i++
+		case "--color":
+			if i+1 >= len(args) {
+				return nil, errors.New("--color needs a value: auto, always or never")
+			}
+			mode, err := parseColorMode(args[i+1])
+			if err != nil {
+				return nil, err
+			}
+			*colorMode = mode
+			i++
 		default:
+			// `--color=never` is the other spelling users reach for, and it
+			// should not become an unknown command.
+			if value, ok := strings.CutPrefix(args[i], "--color="); ok {
+				mode, err := parseColorMode(value)
+				if err != nil {
+					return nil, err
+				}
+				*colorMode = mode
+				continue
+			}
 			rest = append(rest, args[i])
 		}
 	}
 	return rest, nil
+}
+
+// parseColorMode validates a --color value rather than silently treating a
+// typo as auto: a user who asked for color and got none should be told why.
+func parseColorMode(value string) (color.Mode, error) {
+	if !color.Valid(value) {
+		return color.Auto, fmt.Errorf("--color must be auto, always or never, not %q", value)
+	}
+	return color.ParseMode(value), nil
 }
 
 func printUsage(w io.Writer) {
@@ -760,6 +815,9 @@ Global options:
   --context <dir>      Override working directory for context detection
   --verbose, -v        List every effect of a change, not only what it
                        removes or overwrites
+  --color <when>       Colorize human output: auto (the default), always or
+                       never. auto colors a terminal and nothing else, and
+                       NO_COLOR turns it off.
   --allow-destructive  Let an unattended run (--yes, or no terminal) delete
                        or replace things
   --allow-root         Let a changing command run as root or elevated
@@ -902,7 +960,7 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 			return err
 		}
 		if !ok {
-			fmt.Fprintln(env.Stdout, "Nothing was changed.")
+			fmt.Fprintln(env.Stdout, env.palOut.Dim("Nothing was changed."))
 			return w.Sync(&engine.Result{DryRun: true, States: plan.States}, plan, proj)
 		}
 		noConfirm = true
@@ -921,17 +979,17 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 
 // confirmPlan shows the user exactly what is about to happen.
 func confirmPlan(env *Env, plan model.Plan) (bool, error) {
-	fmt.Fprintln(env.promptOut(), "The following changes will be made:")
+	fmt.Fprintln(env.promptOut(), env.palPrompt.Bold("The following changes will be made:"))
 	for _, a := range plan.Actions {
-		line := fmt.Sprintf("  %-10s %s", a.Action, a.State.Package.Name)
+		line := "  " + env.palPrompt.Yellow(fmt.Sprintf("%-10s", a.Action)) + " " + a.State.Package.Name
 		if a.State.Res.Provider != "" {
 			line += " via " + a.State.Res.Provider
 		}
 		fmt.Fprintln(env.promptOut(), line)
 		if a.Note != "" {
-			fmt.Fprintf(env.promptOut(), "             %s\n", a.Note)
+			fmt.Fprintf(env.promptOut(), "             %s\n", env.palPrompt.Dim(a.Note))
 		}
-		report.WriteEffects(env.promptOut(), a.Effects, true, env.Verbose, "             ")
+		report.WriteEffects(env.promptOut(), env.palPrompt, a.Effects, true, env.Verbose, "             ")
 	}
 	return env.Confirm("Proceed?")
 }
@@ -1643,10 +1701,12 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 	}
 	// Narration goes to stderr under --json so stdout stays one JSON document.
 	out := env.Stdout
+	pal := env.palOut
 	if asJSON {
 		out = env.Stderr
+		pal = env.palErr
 	}
-	fmt.Fprintf(out, "Project: %s project at %s (via %s)\n", proj.Kind, proj.Root, proj.Marker)
+	fmt.Fprintf(out, "%s %s project at %s (via %s)\n", pal.Bold("Project:"), proj.Kind, proj.Root, proj.Marker)
 
 	result := &engine.Result{DryRun: opts.DryRun}
 	projectConfig := filepath.Join(proj.Root, config.ProjectFileName)
@@ -1789,14 +1849,14 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 			Op: model.EffectModify, Kind: model.EffectDirectory, Path: deps.Dir, Evidence: model.EvidencePlanned,
 			Detail: deps.Tool + " writes the project's dependencies under this directory",
 		})
-		report.WriteEffects(out, depReport.Effects, true, true, "  ")
+		report.WriteEffects(out, pal, depReport.Effects, true, true, "  ")
 		return result, depReport, nil
 	}
 	fmt.Fprintf(out, "Running: %s (in %s)\n", deps.String(), deps.Dir)
 	watch := eng.WatchDirs(deps.Dir)
 	runErr := env.runInDir(ctx, deps.Dir, out, env.Stderr, deps.Tool, deps.Args...)
 	depReport.Effects = append(depReport.Effects, watch.Finish(ctx)...)
-	report.WriteEffects(out, depReport.Effects, false, env.Verbose, "  ")
+	report.WriteEffects(out, pal, depReport.Effects, false, env.Verbose, "  ")
 	if runErr != nil {
 		return result, depReport, fmt.Errorf("installing dependencies with '%s' in %s: %w", deps.String(), deps.Dir, runErr)
 	}
@@ -2075,7 +2135,7 @@ func cmdTransition(ctx context.Context, env *Env, w *report.Writer, args []strin
 		if !env.lastConfirm {
 			// A refusal is a decision to change nothing. Falling through here
 			// would perform the very work the user just declined.
-			fmt.Fprintln(env.Stdout, "Nothing was changed.")
+			fmt.Fprintln(env.Stdout, env.palOut.Dim("Nothing was changed."))
 			return w.Transitions(selected.transitions, true)
 		}
 		opts.NoConfirm = true
@@ -2153,20 +2213,21 @@ func visibleTransitions(ts []model.Transition) []model.Transition {
 // confirmTransitions shows exactly what a transition will do and whether it is
 // still recoverable.
 func confirmTransitions(ctx context.Context, env *Env, eng *engine.Engine, sel transitionSelection) error {
-	fmt.Fprintln(env.promptOut(), "These provider transitions will be performed:")
+	fmt.Fprintln(env.promptOut(), env.palPrompt.Bold("These provider transitions will be performed:"))
 	for _, t := range sel.transitions {
 		from := t.From.Name
 		if from == "" {
 			from = "nothing"
 		}
-		fmt.Fprintf(env.promptOut(), "  %s: %s -> %s (currently %s)\n", t.Package.Name, from, t.To.Name, t.Phase)
+		fmt.Fprintf(env.promptOut(), "  %s: %s -> %s (currently %s)\n",
+			env.palPrompt.Bold(t.Package.Name), from, t.To.Name, report.PhaseLabel(env.palPrompt, t.Phase))
 		if t.Advice != "" {
-			fmt.Fprintf(env.promptOut(), "      %s\n", t.Advice)
+			fmt.Fprintf(env.promptOut(), "      %s\n", env.palPrompt.Dim(t.Advice))
 		}
 		effects, warnings := eng.PlannedTransitionEffects(ctx, t)
-		report.WriteEffects(env.promptOut(), effects, true, env.Verbose, "      ")
+		report.WriteEffects(env.promptOut(), env.palPrompt, effects, true, env.Verbose, "      ")
 		for _, w := range warnings {
-			fmt.Fprintf(env.promptOut(), "      %s [%s]: %s\n", w.Severity, w.Code, w.Message)
+			fmt.Fprintf(env.promptOut(), "      %s [%s]: %s\n", report.SeverityLabel(env.palPrompt, w.Severity), w.Code, w.Message)
 		}
 	}
 	fmt.Fprintln(env.promptOut(), "\nThe previous installation is only removed once the new one is confirmed working.")
@@ -2224,8 +2285,9 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	// update must not do.
 	if !opts.DryRun && !opts.NoConfirm && env.Confirm != nil {
 		for _, c := range previewRes.PinConflicts {
-			fmt.Fprintf(env.promptOut(), "!!! There is a new version available for %s (%s), but config says %s\n",
-				c.Package, c.Available, c.Pinned)
+			fmt.Fprintf(env.promptOut(), "%s\n", env.palPrompt.Yellow(fmt.Sprintf(
+				"!!! There is a new version available for %s (%s), but config says %s",
+				c.Package, c.Available, c.Pinned)))
 			ok, err := env.Confirm("Update anyway?")
 			if err != nil {
 				return err
@@ -2277,7 +2339,7 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	}
 	env.auditActions("update", dryRun, res)
 	if warn := env.elevationWarning(); warn != nil && !w.JSON() {
-		fmt.Fprintf(env.Stdout, "%s [%s]: %s\n", warn.Severity, warn.Code, warn.Message)
+		fmt.Fprintf(env.Stdout, "%s [%s]: %s\n", report.SeverityLabel(env.palOut, warn.Severity), warn.Code, warn.Message)
 	}
 	if w.JSON() {
 		_ = w.Update(res)
@@ -2291,8 +2353,8 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		if c.Resolution == "pending" {
 			outcome = "update would ask whether to move the pin"
 		}
-		fmt.Fprintf(env.Stdout, "!!! There is a new version available for %s (%s), but config says %s; %s\n",
-			c.Package, c.Available, c.Pinned, outcome)
+		fmt.Fprintf(env.Stdout, "%s\n", env.palOut.Yellow(fmt.Sprintf("!!! There is a new version available for %s (%s), but config says %s; %s",
+			c.Package, c.Available, c.Pinned, outcome)))
 	}
 	for _, a := range res.Applied {
 		verb := "updated"
@@ -2302,18 +2364,26 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		case a.Outcome == model.OutcomeFailed:
 			verb = "failed to update"
 		}
-		fmt.Fprintf(env.Stdout, "%s", strings.TrimSpace(actionLine(verb, a)))
-		fmt.Fprintln(env.Stdout)
-		report.WriteEffects(env.Stdout, a.Effects, dryRun, dryRun || env.Verbose, "")
+		line := strings.TrimSpace(actionLine(verb, a))
+		switch {
+		case dryRun:
+			line = env.palOut.Yellow(line)
+		case a.Outcome == model.OutcomeFailed:
+			line = env.palOut.Red(line)
+		default:
+			line = env.palOut.Green(line)
+		}
+		fmt.Fprintln(env.Stdout, line)
+		report.WriteEffects(env.Stdout, env.palOut, a.Effects, dryRun, dryRun || env.Verbose, "")
 	}
 	for _, warn := range res.Warnings {
 		if warn.Code == model.WarnPinConflict {
 			continue // already shown as a pin conflict above
 		}
-		fmt.Fprintf(env.Stdout, "  %s\n", warn.Message)
+		fmt.Fprintf(env.Stdout, "  %s\n", report.SeverityText(env.palOut, warn.Severity, warn.Message))
 	}
 	if len(res.Applied) == 0 && len(res.Warnings) == 0 {
-		fmt.Fprintln(env.Stdout, "Nothing to update.")
+		fmt.Fprintln(env.Stdout, env.palOut.Dim("Nothing to update."))
 	}
 	return updateErr
 }
@@ -2422,7 +2492,7 @@ func (e *Env) warn(msg string) {
 	if e.Stderr == nil {
 		return
 	}
-	fmt.Fprintf(e.Stderr, "warning: %s\n", msg)
+	fmt.Fprintf(e.Stderr, "%s %s\n", e.palErr.Yellow("warning:"), msg)
 }
 
 // cmdRuns shows execution history of package operations.
@@ -2475,14 +2545,16 @@ func cmdRuns(ctx context.Context, env *Env, w *report.Writer, args []string) err
 
 	// Human-readable table format
 	if len(filtered) == 0 {
-		fmt.Fprintln(env.Stdout, "No execution history found.")
+		fmt.Fprintln(env.Stdout, env.palOut.Dim("No execution history found."))
 		return nil
 	}
 
-	fmt.Fprintln(env.Stdout, "Execution History:")
+	fmt.Fprintln(env.Stdout, env.palOut.Bold("Execution History:"))
 	fmt.Fprintln(env.Stdout, "")
 	fmt.Fprintf(env.Stdout, "%-20s %-15s %-20s\n",
-		"Package", "Directory", "Timestamp")
+		env.palOut.Bold(fmt.Sprintf("%-20s", "Package")),
+		env.palOut.Bold(fmt.Sprintf("%-15s", "Directory")),
+		env.palOut.Bold("Timestamp"))
 	fmt.Fprintln(env.Stdout, strings.Repeat("-", 60))
 
 	for _, rec := range filtered {
@@ -2546,17 +2618,17 @@ func cmdPrune(ctx context.Context, env *Env, w *report.Writer, args []string, al
 		// before the question. A count alone is not consent to a deletion.
 		// Under --json the list goes to stderr so stdout stays one document.
 		listing := env.promptOut()
-		fmt.Fprintln(listing, "These packages are not declared in any configuration and would be removed:")
+		fmt.Fprintln(listing, env.palPrompt.Bold("These packages are not declared in any configuration and would be removed:"))
 		for _, a := range preview.Applied {
 			fmt.Fprintf(listing, "  %s via %s\n", a.State.Package.Name, a.State.Res.Provider)
-			report.WriteEffects(listing, a.Effects, true, env.Verbose, "    ")
+			report.WriteEffects(listing, env.palPrompt, a.Effects, true, env.Verbose, "    ")
 		}
 		ok, err := env.Confirm(fmt.Sprintf("Remove %d orphaned user-scoped package(s)?", len(preview.Applied)))
 		if err != nil {
 			return err
 		}
 		if !ok {
-			fmt.Fprintln(env.Stdout, "Nothing was changed.")
+			fmt.Fprintln(env.Stdout, env.palOut.Dim("Nothing was changed."))
 			return nil
 		}
 	}
@@ -2675,7 +2747,7 @@ func cmdRecover(env *Env, w *report.Writer, args []string) error {
 			return err
 		}
 		if !ok {
-			fmt.Fprintln(env.Stdout, "Nothing was changed.")
+			fmt.Fprintln(env.Stdout, env.palOut.Dim("Nothing was changed."))
 			return nil
 		}
 	}
@@ -2848,18 +2920,18 @@ func cmdTransitionReverse(ctx context.Context, env *Env, w *report.Writer, eng *
 	}
 
 	// Show what will be reversed
-	fmt.Fprintln(env.Stdout, "The following transitions will be reversed:")
+	fmt.Fprintln(env.Stdout, env.palOut.Bold("The following transitions will be reversed:"))
 	for i, t := range toReverse {
 		fmt.Fprintf(env.Stdout, "  %s: %s -> %s (reversing transition from %s)\n",
-			t.Package.Name, t.To.Name, t.From.Name,
+			env.palOut.Bold(t.Package.Name), t.To.Name, t.From.Name,
 			time.Unix(t.Timestamp, 0).Format("2006-01-02 15:04:05"))
 		if t.Note != "" {
-			fmt.Fprintf(env.Stdout, "      %s\n", t.Note)
+			fmt.Fprintf(env.Stdout, "      %s\n", env.palOut.Dim(t.Note))
 		}
 		effects, warnings := eng.PlannedTransitionEffects(ctx, reversing[i])
-		report.WriteEffects(env.Stdout, effects, true, dryRun || env.Verbose, "      ")
+		report.WriteEffects(env.Stdout, env.palOut, effects, true, dryRun || env.Verbose, "      ")
 		for _, w := range warnings {
-			fmt.Fprintf(env.Stdout, "      %s [%s]: %s\n", w.Severity, w.Code, w.Message)
+			fmt.Fprintf(env.Stdout, "      %s [%s]: %s\n", report.SeverityLabel(env.palOut, w.Severity), w.Code, w.Message)
 		}
 	}
 
@@ -2872,7 +2944,7 @@ func cmdTransitionReverse(ctx context.Context, env *Env, w *report.Writer, eng *
 			return err
 		}
 		if !ok {
-			fmt.Fprintln(env.Stdout, "Nothing was changed.")
+			fmt.Fprintln(env.Stdout, env.palOut.Dim("Nothing was changed."))
 			return nil
 		}
 	}

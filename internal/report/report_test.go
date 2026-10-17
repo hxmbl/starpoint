@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hxmbl/starpoint/internal/color"
 	"github.com/hxmbl/starpoint/internal/config"
 	"github.com/hxmbl/starpoint/internal/engine"
 	"github.com/hxmbl/starpoint/internal/locator"
@@ -448,13 +449,78 @@ func TestWriteEffectsAlwaysShowsDestructiveAndCountsTheRest(t *testing.T) {
 		{Op: model.EffectDelete, Kind: model.EffectFile, Path: "/b", Destructive: true},
 	}
 	var quiet, all strings.Builder
-	WriteEffects(&quiet, effects, false, false, "")
-	WriteEffects(&all, effects, false, true, "")
+	off := color.Off()
+	WriteEffects(&quiet, off, effects, false, false, "")
+	WriteEffects(&all, off, effects, false, true, "")
 	if !strings.Contains(quiet.String(), "! deleted file /b") || strings.Contains(quiet.String(), "/a") ||
 		!strings.Contains(quiet.String(), "1 other change(s)") {
 		t.Errorf("default output shows destructive effects and counts the rest:\n%s", quiet.String())
 	}
 	if !strings.Contains(all.String(), "created file /a") {
 		t.Errorf("full output lists everything:\n%s", all.String())
+	}
+}
+
+// Color is decoration, never information: stripping the escapes from a colored
+// rendering gives the plain rendering byte for byte. That also guards the
+// alignment, which is measured without the escapes.
+func TestColorNeverChangesTheText(t *testing.T) {
+	states := []model.State{
+		{
+			Package: model.Package{Name: "ripgrep", Provider: "brew", Version: "14.1.0", Channel: "stable"},
+			Res:     model.Resolution{Provider: "brew", Reason: "declared in the configuration"},
+			Desired: &model.Installation{Name: "ripgrep", Path: "/opt/homebrew/bin/rg", Provider: "brew", Scope: model.ScopeUser, Version: "14.1.0"},
+			Status:  model.StatusCorrect,
+		},
+		{
+			Package: model.Package{Name: "python3"},
+			Res:     model.Resolution{Provider: "uv"},
+			Current: &model.Installation{Name: "python3", Path: "/usr/bin/python3", Provider: "system", Scope: model.ScopeGlobal},
+			Status:  model.StatusProviderDiffers,
+		},
+		{
+			Package: model.Package{Name: "gone"},
+			Res:     model.Resolution{Provider: "brew"},
+			Status:  model.StatusMissing,
+		},
+	}
+
+	render := func(mode color.Mode) string {
+		t.Helper()
+		var buf bytes.Buffer
+		w := New(&buf, false)
+		w.SetColor(mode)
+		if err := w.List(states); err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if err := w.Info(states[0], nil); err != nil {
+			t.Fatalf("info: %v", err)
+		}
+		if err := w.Transitions([]model.Transition{{
+			Package: model.Package{Name: "ruff"},
+			From:    model.ProviderRef{Name: "pip"},
+			To:      model.ProviderRef{Name: "uv"},
+			Phase:   model.TransitionPlanned,
+			Warnings: []model.Warning{{
+				Severity: model.SeverityWarn,
+				Code:     "stale",
+				Message:  "recorded a while ago",
+			}},
+		}}, true); err != nil {
+			t.Fatalf("transitions: %v", err)
+		}
+		return buf.String()
+	}
+
+	plain := render(color.Never)
+	colored := render(color.Always)
+	if strings.Contains(plain, "\033[") {
+		t.Fatalf("the plain rendering should have no escapes:\n%q", plain)
+	}
+	if !strings.Contains(colored, "\033[") {
+		t.Fatal("the colored rendering should have escapes")
+	}
+	if got := color.Strip(colored); got != plain {
+		t.Errorf("stripping color changed the text\nplain:\n%s\nstripped:\n%s", plain, got)
 	}
 }
