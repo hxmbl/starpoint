@@ -515,13 +515,44 @@ func (e *Engine) sharedExecutable(ctx context.Context, t model.Transition, pkg m
 		return "", false
 	}
 	candidate := filepath.Join(dir, pkg.Name)
-	if prev := t.Previous.Path; prev != "" && (filepath.Clean(prev) == candidate || samePath(prev, candidate)) {
+	prev := t.Previous.Path
+	if prev != "" && (filepath.Clean(prev) == candidate || samePath(prev, candidate)) {
 		return candidate, true
 	}
-	if e.locator.Exists(candidate) {
-		return candidate, true
+	if !e.locator.Exists(candidate) {
+		return "", false
 	}
-	return "", false
+	return candidate, e.occupiedByIncumbent(candidate, t.From.Name, t.To.Name, prev)
+}
+
+// occupiedByIncumbent decides whether the file already at the path the target
+// would write belongs to the provider being moved away from.
+//
+// Only then does removing the old copy first make room. A file another
+// provider owns would still be in the way after the incumbent is gone, so
+// handing over would delete the user's working copy for nothing; the install
+// is left to collide (or overwrite, which the plan marks destructive) instead.
+// With cargo's and go's bin directories watched, that distinction matters:
+// ~/.cargo/bin holds rustup's proxies and GOBIN is often shared with
+// ~/.local/bin.
+func (e *Engine) occupiedByIncumbent(candidate, from, to, prev string) bool {
+	_, owner, attributed := e.locator.AttributeExecutable(candidate)
+	switch {
+	case attributed && owner == from:
+		return true
+	case attributed && owner != to && owner != system.Name:
+		// A third provider's file.
+		return false
+	case prev != "":
+		// The incumbent says its copy lives somewhere else, so whatever is at
+		// the candidate is not it.
+		return false
+	default:
+		// Nothing says whose it is, and the incumbent cannot say where its own
+		// copy is. Assume the worst: treating it as shared removes the old
+		// copy first and restores it if the new install fails.
+		return true
+	}
 }
 
 // handOver moves software between two providers that write the same

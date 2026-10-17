@@ -31,6 +31,7 @@ type Provider struct {
 
 var _ provider.Provider = (*Provider)(nil)
 var _ provider.ContextAwareProvider = (*Provider)(nil)
+var _ provider.ExecutableDirProvider = (*Provider)(nil)
 
 // New builds a Go provider.
 func New(runner exec.Runner, home string) *Provider { return &Provider{runner: runner, home: home} }
@@ -91,14 +92,35 @@ func (p *Provider) binDir(ctx context.Context) string {
 	}
 	res, err = p.runner.Run(ctx, "go", "env", "GOPATH")
 	if err == nil && !res.Failed() {
-		if gopath := strings.TrimSpace(strings.Split(res.Stdout, "\n")[0]); gopath != "" {
-			return filepath.Join(gopath, "bin")
+		line := strings.TrimSpace(strings.Split(res.Stdout, "\n")[0])
+		if gopath := filepath.SplitList(line); len(gopath) > 0 && gopath[0] != "" {
+			return filepath.Join(gopath[0], "bin")
 		}
 	}
 	if p.home == "" {
 		return ""
 	}
 	return filepath.Join(p.home, "go", "bin")
+}
+
+// ExecutableDir reports where `go install` writes executables: GOBIN, then the
+// first GOPATH entry's bin, then ~/go/bin. It asks `go env`, so a value set
+// with `go env -w` counts; with go absent it falls back to the environment
+// and the default, which is still where a later `go install` would write.
+func (p *Provider) ExecutableDir(ctx context.Context) string {
+	if _, err := p.runner.LookPath("go"); err != nil {
+		if dir := os.Getenv("GOBIN"); dir != "" {
+			return dir
+		}
+		if gopath := filepath.SplitList(os.Getenv("GOPATH")); len(gopath) > 0 && gopath[0] != "" {
+			return filepath.Join(gopath[0], "bin")
+		}
+		if p.home == "" {
+			return ""
+		}
+		return filepath.Join(p.home, "go", "bin")
+	}
+	return p.binDir(ctx)
 }
 
 // Discover lists executables in the Go bin directory. Go does not record metadata

@@ -436,3 +436,13 @@ func MustDoc(t *testing.T, path string) *config.Document {
 	}
 	return doc
 }
+
+// WriteExecutable writes an executable file (mode 0755), creating parent
+// directories.
+func WriteExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	WriteFile(t, path, content)
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatalf("chmod %s: %v", path, err)
+	}
+}

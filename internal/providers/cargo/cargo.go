@@ -30,6 +30,7 @@ type Provider struct {
 
 var _ provider.Provider = (*Provider)(nil)
 var _ provider.ContextAwareProvider = (*Provider)(nil)
+var _ provider.ExecutableDirProvider = (*Provider)(nil)
 
 // New builds a Cargo provider.
 func New(runner exec.Runner, home string) *Provider { return &Provider{runner: runner, home: home} }
@@ -188,12 +189,34 @@ func (p *Provider) Update(ctx context.Context, pkg model.Package) (*model.Instal
 	return p.Installed(ctx, pkg)
 }
 
-// binPath resolves an executable inside ~/.cargo/bin.
+// ExecutableDir reports the directory `cargo install` puts binaries in,
+// following Cargo's own precedence for the install root: CARGO_INSTALL_ROOT,
+// then CARGO_HOME, then ~/.cargo. The bin directory is under the root.
+//
+// Cargo's `install.root` setting in a config.toml is not read: honouring it
+// means parsing Cargo's layered configuration, and getting it wrong would make
+// Starpoint watch the wrong directory with confidence. With it set, effects are
+// still reported through the paths Cargo returns.
+func (p *Provider) ExecutableDir(context.Context) string {
+	if root := os.Getenv("CARGO_INSTALL_ROOT"); root != "" {
+		return filepath.Join(root, "bin")
+	}
+	if home := os.Getenv("CARGO_HOME"); home != "" {
+		return filepath.Join(home, "bin")
+	}
+	if p.home == "" {
+		return ""
+	}
+	return filepath.Join(p.home, ".cargo", "bin")
+}
+
+// binPath resolves an executable inside Cargo's bin directory.
 func (p *Provider) binPath(exe string) string {
-	if p.home == "" || exe == "" {
+	dir := p.ExecutableDir(context.Background())
+	if dir == "" || exe == "" {
 		return exe
 	}
-	candidate := filepath.Join(p.home, ".cargo", "bin", exe)
+	candidate := filepath.Join(dir, exe)
 	if _, err := os.Stat(candidate); err == nil {
 		return candidate
 	}

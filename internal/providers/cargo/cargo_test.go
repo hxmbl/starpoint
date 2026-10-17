@@ -2,6 +2,7 @@ package cargo
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/hxmbl/starpoint/internal/model"
@@ -141,5 +142,31 @@ func TestBinPathLeavesNameWhenNotInCargoBin(t *testing.T) {
 	}
 	if got := p.binPath(""); got != "" {
 		t.Errorf("empty name should stay empty, got %q", got)
+	}
+}
+
+func TestExecutableDirFollowsCargosPrecedence(t *testing.T) {
+	p, _ := newProvider(t)
+	t.Setenv("CARGO_INSTALL_ROOT", "")
+	t.Setenv("CARGO_HOME", "")
+	if got, want := p.ExecutableDir(context.Background()), filepath.Join("/home/u", ".cargo", "bin"); got != want {
+		t.Errorf("default: got %q, want %q", got, want)
+	}
+	t.Setenv("CARGO_HOME", "/opt/cargo")
+	if got, want := p.ExecutableDir(context.Background()), filepath.Join("/opt/cargo", "bin"); got != want {
+		t.Errorf("CARGO_HOME: got %q, want %q", got, want)
+	}
+	t.Setenv("CARGO_INSTALL_ROOT", "/srv/tools")
+	if got, want := p.ExecutableDir(context.Background()), filepath.Join("/srv/tools", "bin"); got != want {
+		t.Errorf("CARGO_INSTALL_ROOT wins: got %q, want %q", got, want)
+	}
+}
+
+func TestExecutableDirIsUnknownWithoutAHome(t *testing.T) {
+	t.Setenv("CARGO_INSTALL_ROOT", "")
+	t.Setenv("CARGO_HOME", "")
+	p := New(testsupport.NewFakeRunner(), "")
+	if got := p.ExecutableDir(context.Background()); got != "" {
+		t.Errorf("no home and no CARGO_HOME means unknown, got %q", got)
 	}
 }

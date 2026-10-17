@@ -262,3 +262,39 @@ func TestGoVersionDoesNotDoubleThePrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestExecutableDirAsksGoEnv(t *testing.T) {
+	p, r, _ := newProvider(t)
+	if got, want := p.ExecutableDir(context.Background()), filepath.Join("/home/u", "go", "bin"); got != want {
+		t.Errorf("GOPATH/bin: got %q, want %q", got, want)
+	}
+	r.Set("/srv/gobin\n", "go", "env", "GOBIN")
+	if got := p.ExecutableDir(context.Background()); got != "/srv/gobin" {
+		t.Errorf("GOBIN wins: got %q", got)
+	}
+}
+
+func TestExecutableDirUsesTheFirstGopathEntry(t *testing.T) {
+	p, r, _ := newProvider(t)
+	r.Set("/a/go"+string(filepath.ListSeparator)+"/b/go\n", "go", "env", "GOPATH")
+	if got, want := p.ExecutableDir(context.Background()), filepath.Join("/a/go", "bin"); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestExecutableDirWithoutGoFallsBackToTheEnvironment(t *testing.T) {
+	p := New(testsupport.NewFakeRunner(), "/home/u")
+	t.Setenv("GOBIN", "")
+	t.Setenv("GOPATH", "")
+	if got, want := p.ExecutableDir(context.Background()), filepath.Join("/home/u", "go", "bin"); got != want {
+		t.Errorf("default: got %q, want %q", got, want)
+	}
+	t.Setenv("GOPATH", "/gp")
+	if got, want := p.ExecutableDir(context.Background()), filepath.Join("/gp", "bin"); got != want {
+		t.Errorf("GOPATH: got %q, want %q", got, want)
+	}
+	t.Setenv("GOBIN", "/gb")
+	if got := p.ExecutableDir(context.Background()); got != "/gb" {
+		t.Errorf("GOBIN: got %q", got)
+	}
+}

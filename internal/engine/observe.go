@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hxmbl/starpoint/internal/model"
@@ -69,9 +70,9 @@ func (e *Engine) profileHome() string {
 
 // observe snapshots the places an operation by p on pkg could write to.
 //
-// The set is: the provider's own executable directory, the directory of the
-// provider's binary (where Homebrew, Cargo and npm put the commands they
-// install), the directory and path of every installation already known for
+// The set is: the provider's own executable directory (uv and pip's user bin,
+// Cargo's CARGO_HOME/bin, Go's GOBIN or GOPATH/bin), the directory of the
+// provider's binary (where Homebrew and npm put the commands they install), the directory and path of every installation already known for
 // the package, the directory of whatever the name resolves to on PATH, and the
 // user's shell start-up files.
 func (e *Engine) observe(ctx context.Context, p provider.Provider, pkg model.Package, known ...*model.Installation) *observation {
@@ -133,6 +134,12 @@ func (o *observation) addDir(dir string) {
 	if o.watchedDirs[dir] {
 		return
 	}
+	if o.e != nil && tooBroadToWatch(dir, o.e.profileHome()) {
+		// A misconfigured GOBIN or CARGO_HOME could name the home directory
+		// itself. Watching it would snapshot everything the user keeps there
+		// on every action, and report their own edits as the provider's.
+		return
+	}
 	o.watchedDirs[dir] = true
 	o.dirs = append(o.dirs, dir)
 }
@@ -147,6 +154,27 @@ func (o *observation) addFile(path string) {
 	}
 	o.watchedFiles[path] = true
 	o.files = append(o.files, path)
+}
+
+// tooBroadToWatch reports whether dir is the home directory, one of its
+// ancestors, or a filesystem root. The watched set is a bounded list of
+// directories that providers write commands into; none of those is ever the
+// home directory itself, so a directory that resolves to one is a
+// misconfiguration and is skipped rather than snapshotted.
+func tooBroadToWatch(dir, home string) bool {
+	dir = filepath.Clean(dir)
+	if filepath.Dir(dir) == dir || !filepath.IsAbs(dir) {
+		return true
+	}
+	if home == "" {
+		return false
+	}
+	home = filepath.Clean(home)
+	if dir == home {
+		return true
+	}
+	rel, err := filepath.Rel(dir, home)
+	return err == nil && rel != "." && !strings.HasPrefix(rel, "..")
 }
 
 // addInstallation watches an installation's path: the path itself and, when
