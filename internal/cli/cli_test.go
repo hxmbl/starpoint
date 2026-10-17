@@ -1213,17 +1213,15 @@ func TestRunsJSONFormat(t *testing.T) {
 func TestContextFlagOverridesWorkDir(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")
 	otherDir := t.TempDir()
-	originalDir := h.env.WorkDir
 
 	// Use --context to override the working directory
 	code, _, _ := h.run("--context", otherDir, "install", "ripgrep")
 	if code != 0 {
 		t.Fatalf("install with --context should succeed")
 	}
-	// The WorkDir should have been temporarily changed
-	if h.env.WorkDir != originalDir {
-		// After the command, it should be restored or the flag should have been applied
-		// For now, we just verify the command worked
+	// The flag is applied to the environment the command ran with.
+	if h.env.WorkDir != otherDir {
+		t.Errorf("--context should override the working directory: got %q, want %q", h.env.WorkDir, otherDir)
 	}
 }
 

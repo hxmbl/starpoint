@@ -350,14 +350,14 @@ func EffectLine(e model.Effect, planned bool) string {
 		return past
 	}
 	var line string
-	switch {
-	case e.Op == model.EffectChown:
+	switch e.Op {
+	case model.EffectChown:
 		line = fmt.Sprintf("%s %s %s to %s", verb("gave", "give"), strings.ReplaceAll(string(e.Kind), "_", " "), tildePath(e.Path), e.To)
 		if e.From != "" {
 			line += " (was " + e.From + ")"
 		}
 		return withFixDetail(line, e)
-	case e.Op == model.EffectChmod:
+	case model.EffectChmod:
 		line = fmt.Sprintf("%s permissions of %s %s", verb("widened", "widen"), strings.ReplaceAll(string(e.Kind), "_", " "), tildePath(e.Path))
 		if e.From != "" {
 			line += " from " + e.From + " to " + e.To

@@ -8,7 +8,7 @@ BIN ?= bin/starpoint
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/hxmbl/starpoint/internal/cli.Version=$(VERSION)
 
-.PHONY: all check build test test-race test-root cover fmt fmt-check vet tidy clean run
+.PHONY: all check build test test-race test-root cover fmt fmt-check vet lint tidy clean run
 
 all: check
 
@@ -56,6 +56,10 @@ fmt-check:
 	if [ -n "$$unformatted" ]; then \
 		echo "these files need gofmt:"; echo "$$unformatted"; exit 1; \
 	fi
+
+## lint: run golangci-lint over the tree (same gate CI enforces)
+lint:
+	golangci-lint run ./...
 
 ## tidy: prune and verify module dependencies
 tidy:

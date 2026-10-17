@@ -175,16 +175,6 @@ func removeChange(pkg model.Package, resolution model.Resolution, preview model.
 	}
 }
 
-// updateChange describes what updating a package would do.
-func updateChange(pkg model.Package, resolution model.Resolution) change {
-	return change{
-		verb:   "Update",
-		target: pkg.Spec(),
-		via:    resolution.Provider,
-		detail: "asks " + resolution.Provider + " for a newer version",
-	}
-}
-
 // surveyNote returns the line to print when a survey found nothing, and whether
 // it should be printed at all.
 //

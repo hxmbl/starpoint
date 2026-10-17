@@ -963,7 +963,6 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 			fmt.Fprintln(env.Stdout, env.palOut.Dim("Nothing was changed."))
 			return w.Sync(&engine.Result{DryRun: true, States: plan.States}, plan, proj)
 		}
-		noConfirm = true
 	}
 	opts.NoConfirm = true
 	opts.DryRun = dryRun
@@ -1605,16 +1604,7 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 			}
 			return err
 		}
-		// Record execution in tracking system
-		provider := j.pkg.Provider
-		if provider == "" && len(res.Applied) > 0 {
-			provider = res.Applied[0].State.Res.Provider
-		}
-		version := j.pkg.Version
-		if version == "" && len(res.Applied) > 0 && res.Applied[0].State.Current != nil {
-			version = res.Applied[0].State.Current.Version
-		}
-		// Tracking is now handled in the engine
+		// Tracking is handled in the engine.
 		results = append(results, res)
 	}
 	env.auditActions("install", dryRun, results...)
@@ -2421,7 +2411,7 @@ func updateSelf(ctx context.Context, env *Env, opts engine.Options) ([]model.Pla
 	reg := env.registry()
 	p, ok := reg.Get(found.Installation.Provider)
 	if !ok {
-		return nil, fmt.Errorf("Starpoint is provided by %q, which this build cannot update", found.Installation.Provider)
+		return nil, fmt.Errorf("starpoint is provided by %q, which this build cannot update", found.Installation.Provider)
 	}
 	if !p.Capabilities().Update {
 		return nil, fmt.Errorf("provider %q cannot update software; update Starpoint manually", p.Name())

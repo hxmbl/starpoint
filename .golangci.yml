@@ -1,0 +1,25 @@
+version: "2"
+
+linters:
+  default: standard
+
+  settings:
+    errcheck:
+      # Writes to output streams and best-effort cleanup are deliberate: a CLI
+      # cannot recover from a failed print, and a failed temp-file removal on
+      # an already-failing path changes nothing. Close errors are excluded for
+      # the same reason — the paths that must detect a failed close (lock
+      # release, durable config writes) already check it explicitly.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - os.Remove
+        - (*os.File).Close
+
+  exclusions:
+    rules:
+      # Tests assert outcomes explicitly; unchecked helper calls there are
+      # noise.
+      - linters: [errcheck]
+        path: _test\.go

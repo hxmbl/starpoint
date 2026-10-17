@@ -114,12 +114,12 @@ func acquirePath(lockPath, resource, holder string) (*Lock, error) {
 	// longer operation name while we own the file lock.
 	pid := os.Getpid()
 	if err := file.Truncate(0); err != nil {
-		flockUnlock(file.Fd())
+		_ = flockUnlock(file.Fd())
 		file.Close()
 		return nil, fmt.Errorf("truncating lock holder: %w", err)
 	}
 	if _, err := file.WriteAt([]byte(fmt.Sprintf("%d\n%s", pid, holder)), 0); err != nil {
-		flockUnlock(file.Fd())
+		_ = flockUnlock(file.Fd())
 		file.Close()
 		return nil, fmt.Errorf("writing lock holder: %w", err)
 	}
@@ -127,7 +127,7 @@ func acquirePath(lockPath, resource, holder string) (*Lock, error) {
 	// file that has to survive a crash, because it is what the next process
 	// reads to explain who is holding the lock.
 	if err := file.Sync(); err != nil {
-		flockUnlock(file.Fd())
+		_ = flockUnlock(file.Fd())
 		file.Close()
 		return nil, fmt.Errorf("syncing lock holder: %w", err)
 	}
@@ -212,7 +212,7 @@ func (m *Manager) IsLocked(resource string) (bool, error) {
 	err = flockLock(file.Fd(), true)
 	if err == nil {
 		// Lock was available, so it wasn't locked
-		flockUnlock(file.Fd())
+		_ = flockUnlock(file.Fd())
 		return false, nil
 	}
 

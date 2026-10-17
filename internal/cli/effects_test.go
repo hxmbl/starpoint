@@ -489,7 +489,7 @@ func TestTransitionJSONReportsActionsWithEffects(t *testing.T) {
 		t.Errorf("expected a destructive relocation with the shared-path warning: %+v", a)
 	}
 	var payload map[string]any
-	_ = json.Unmarshal([]byte(h.stdout.String()), &payload)
+	_ = json.Unmarshal(h.stdout.Bytes(), &payload)
 	if _, ok := payload["transitions"]; !ok {
 		t.Error("the full transition records are still reported")
 	}
