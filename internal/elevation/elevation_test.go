@@ -1,6 +1,7 @@
 package elevation
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -38,11 +39,11 @@ func TestDetectMatchesTheProcess(t *testing.T) {
 func TestTargetIsTheInvokingUserWhenKnown(t *testing.T) {
 	s := Status{Elevated: true, InvokingUser: "alice", Via: "sudo", InvokingUID: 1000, InvokingGID: 1000, InvokingHome: "/home/alice"}
 	got, ok := s.Target()
-	if !ok || got != (Target{User: "alice", UID: 1000, GID: 1000, Home: "/home/alice"}) {
+	if !ok || !reflect.DeepEqual(got, Target{User: "alice", UID: 1000, GID: 1000, Home: "/home/alice"}) {
 		t.Fatalf("got %+v %v", got, ok)
 	}
 	w := s.Warning()
-	for _, want := range []string{"through sudo for alice", "/home/alice", "given to alice (uid 1000, gid 1000)", "readable and executable by everyone"} {
+	for _, want := range []string{"through sudo for alice", "/home/alice", "run as alice (uid 1000, gid 1000)", "system providers", "readable and executable by everyone"} {
 		if !strings.Contains(w.Message, want) {
 			t.Errorf("message should mention %q: %s", want, w.Message)
 		}
@@ -73,5 +74,47 @@ func TestDetectHasNoTargetWhenNotElevated(t *testing.T) {
 	}
 	if _, ok := s.Target(); ok {
 		t.Error("an ordinary run acts on its own environment")
+	}
+}
+
+func TestUnresolvedOnlyForAnOrdinaryUserWhoCannotBeResolved(t *testing.T) {
+	base := Status{Elevated: true, InvokingUser: "alice", Via: "sudo", InvokingUID: 1000, InvokingGID: 1000, InvokingHome: "/home/alice"}
+	if msg := base.Unresolved(); msg != "" {
+		t.Errorf("a resolvable user is not unresolved: %s", msg)
+	}
+	for name, s := range map[string]Status{
+		"not elevated": {InvokingUser: "alice"},
+		"plain root":   {Elevated: true},
+		"sudo as root": {Elevated: true, InvokingUser: "root", InvokingUID: 0},
+	} {
+		if msg := s.Unresolved(); msg != "" {
+			t.Errorf("%s: a plain root run is not an unresolved one: %s", name, msg)
+		}
+	}
+	noHome := base
+	noHome.InvokingHome = ""
+	noHome.lookupErr = "home directory /home/alice: no such file or directory"
+	msg := noHome.Unresolved()
+	for _, want := range []string{"home directory", "alice", "sudo", "no such file"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the reason should mention %q: %s", want, msg)
+		}
+	}
+	noIDs := base
+	noIDs.InvokingUID, noIDs.InvokingGID = -1, -1
+	if msg := noIDs.Unresolved(); !strings.Contains(msg, "user id, group id") {
+		t.Errorf("missing ids are named: %s", msg)
+	}
+}
+
+func TestTargetCarriesTheSupplementaryGroups(t *testing.T) {
+	s := Status{Elevated: true, InvokingUser: "alice", InvokingUID: 1000, InvokingGID: 1000, InvokingHome: "/home/alice", InvokingGroups: []int{1000, 27, 999}}
+	got, ok := s.Target()
+	if !ok || !reflect.DeepEqual(got.Groups, []int{1000, 27, 999}) {
+		t.Fatalf("groups: %+v", got)
+	}
+	got.Groups[0] = 0
+	if s.InvokingGroups[0] != 1000 {
+		t.Error("the target's groups are a copy")
 	}
 }
