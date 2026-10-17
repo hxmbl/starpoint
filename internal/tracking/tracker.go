@@ -24,6 +24,11 @@ type Tracker struct {
 	path    string
 }
 
+// PathIn returns the runs database path inside a Starpoint state directory.
+func PathIn(stateDir string) string {
+	return filepath.Join(stateDir, "runs.json")
+}
+
 // DefaultPath returns the default path to the runs database: ~/.starpoint/runs.json.
 func DefaultPath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -154,6 +159,31 @@ func (t *Tracker) RunsInDirectory(directory string) []RunRecord {
 		}
 	}
 	return matches
+}
+
+// Prune drops records older than the given window and returns how many it
+// removed. A non-positive window removes nothing: ageing records out is not
+// something to do by accident.
+func (t *Tracker) Prune(olderThan time.Duration) (int, error) {
+	if olderThan <= 0 {
+		return 0, nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	cutoff := time.Now().Add(-olderThan)
+	kept := make([]RunRecord, 0, len(t.records))
+	for _, r := range t.records {
+		if r.Timestamp.After(cutoff) {
+			kept = append(kept, r)
+		}
+	}
+	removed := len(t.records) - len(kept)
+	if removed == 0 {
+		return 0, nil
+	}
+	t.records = kept
+	return removed, t.save()
 }
 
 // AllRecords returns a copy of all records. This is primarily useful for testing.

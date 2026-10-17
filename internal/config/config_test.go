@@ -264,9 +264,69 @@ func TestSettingsMergeProjectOverGlobal(t *testing.T) {
 	}
 }
 
+func TestStateDirFollowsTheConfigurationPath(t *testing.T) {
+	// This is what keeps a run against a temporary configuration from writing
+	// records into a real home directory, which is what the tests rely on.
+	got, err := StateDir(filepath.Join("/tmp", "somewhere", ".starpoint.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join("/tmp", "somewhere", StateDirName)
+	if got != want {
+		t.Errorf("StateDir = %q, want %q", got, want)
+	}
+}
+
+// With no path at all, the state directory is the one beside the default global
+// configuration.
+func TestStateDirDefaultsBesideTheDefaultConfiguration(t *testing.T) {
+	global, err := DefaultGlobalPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := StateDir("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Join(filepath.Dir(global), StateDirName) {
+		t.Errorf("StateDir(\"\") = %q, want it beside %q", got, global)
+	}
+}
+
+func TestRetentionDaysIsReadFromTheSettingsTable(t *testing.T) {
+	dir := t.TempDir()
+	global := filepath.Join(dir, "g.toml")
+	_ = Write(global, Raw{Settings: Settings{RetentionDays: 45}})
+	if got := MustLoad(t, global).Settings().RetentionDays; got != 45 {
+		t.Errorf("retention_days = %d, want 45", got)
+	}
+
+	unset := filepath.Join(dir, "u.toml")
+	_ = Write(unset, Raw{})
+	if got := MustLoad(t, unset).Settings().RetentionDays; got != 0 {
+		t.Errorf("an unset retention must stay 0 so the default applies, got %d", got)
+	}
+}
+
+// Retention governs the machine's records, so a checkout must not be able to
+// change it for everything.
+func TestRetentionDaysIgnoresProjectFiles(t *testing.T) {
+	dir := t.TempDir()
+	global := filepath.Join(dir, "g.toml")
+	project := filepath.Join(dir, "p.toml")
+	_ = Write(global, Raw{Settings: Settings{RetentionDays: 45}})
+	_ = Write(project, Raw{Settings: Settings{RetentionDays: 1}})
+
+	doc := MustLoad(t, global)
+	doc.Projects = []File{mustProjectFile(t, project)}
+	if got := doc.Settings().RetentionDays; got != 45 {
+		t.Errorf("a project file changed the machine-wide retention window to %d", got)
+	}
+}
+
 func TestTemplateDocumentsEverySupportedKey(t *testing.T) {
 	text := RenderTemplate()
-	for _, key := range []string{"name", "version", "provider", "scope", "channel", "reason", "providers", "no_confirm"} {
+	for _, key := range []string{"name", "version", "provider", "scope", "channel", "reason", "providers", "no_confirm", "retention_days"} {
 		if !strings.Contains(text, key) {
 			t.Errorf("the printed documentation should mention %q", key)
 		}

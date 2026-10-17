@@ -216,9 +216,12 @@ func TestPrune(t *testing.T) {
 	h.Record(recentTransition, "/path/to/config")
 
 	// Prune entries older than 1 hour
-	err = h.Prune(1 * time.Hour)
+	removed, err := h.Prune(1 * time.Hour)
 	if err != nil {
 		t.Fatalf("Prune failed: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("expected Prune to report 1 removed entry, got %d", removed)
 	}
 
 	entries := h.All()

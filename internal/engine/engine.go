@@ -59,10 +59,39 @@ type Engine struct {
 // loaded cleanly.
 func (e *Engine) HistoryError() error { return e.historyErr }
 
+// stores holds the record-keeping paths an Engine writes to.
+type stores struct {
+	historyPath string
+	runsPath    string
+}
+
+// Option configures an Engine's own stores.
+type Option func(*stores)
+
+// WithStateDir points the engine's transition history and run records at dir
+// instead of the default under the user's home directory.
+//
+// This is what keeps a Starpoint run against a temporary configuration from
+// writing into a real home directory. Without it, a test suite would age out and
+// rewrite a developer's own records.
+func WithStateDir(dir string) Option {
+	return func(s *stores) {
+		if dir == "" {
+			return
+		}
+		s.historyPath = history.PathIn(dir)
+		s.runsPath = tracking.PathIn(dir)
+	}
+}
+
 // New builds an Engine.
-func New(reg *provider.Registry, loc *locator.Locator) *Engine {
-	tracker, _ := tracking.New("")
-	hist, histErr := history.New("")
+func New(reg *provider.Registry, loc *locator.Locator, options ...Option) *Engine {
+	cfg := stores{}
+	for _, o := range options {
+		o(&cfg)
+	}
+	tracker, _ := tracking.New(cfg.runsPath)
+	hist, histErr := history.New(cfg.historyPath)
 	if histErr != nil {
 		// Keep going with history disabled, but remember why so the caller can
 		// say so out loud instead of silently dropping every transition.

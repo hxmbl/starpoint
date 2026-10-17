@@ -61,6 +61,10 @@ type Settings struct {
 	Providers []string `toml:"providers,omitempty"`
 	// NoConfirm makes destructive operations non-interactive by default.
 	NoConfirm bool `toml:"no_confirm,omitempty"`
+	// RetentionDays is how many days of records Starpoint keeps: its audit log,
+	// the transition history and the run history. Zero or negative means the
+	// default, never "keep nothing". It is read from the global file only.
+	RetentionDays int `toml:"retention_days,omitempty"`
 }
 
 // Default returns the settings Starpoint assumes when nothing is configured.
@@ -128,6 +132,10 @@ func (d *Document) Settings() Settings {
 		if f.Raw.Settings.NoConfirm {
 			s.NoConfirm = true
 		}
+		// RetentionDays is deliberately not merged from project files. Retention
+		// is a property of the machine's records, not of a checkout, and a
+		// repository-local file should not be able to shorten the window for
+		// everything the machine keeps.
 	}
 	return s
 }
@@ -619,13 +627,45 @@ Available keys: name, version, provider, scope, channel, reason
 [settings]
   providers   restrict automatic provider choice to these providers
   no_confirm  skip confirmation prompts for destructive operations
+  retention_days
+              how many days of records to keep: the audit log of what Starpoint
+              did, the transition history and the run history. Records older
+              than this are deleted on every command. Defaults to 30, and is
+              read from this file only, so a project cannot change it.
 
 A project may have its own .starpoint.toml. It applies when you run Starpoint
 inside that directory and takes precedence over this file for what it declares.
 `, filepath.Join("~", GlobalFileName))
 }
 
-// DefaultGlobalPath returns ~/.starpoint.toml.
+// StateDirName is the directory, beside the global configuration, where
+// Starpoint keeps everything it writes: the transition history, the run
+// history, the mutation locks and the audit log.
+const StateDirName = ".starpoint"
+
+// StateDir returns the state directory for a global configuration path.
+//
+// Deriving it from the configuration path is what keeps Starpoint's records out
+// of somebody's real home directory when Starpoint is pointed somewhere else.
+// That matters for tests, which run against a temporary configuration, and it
+// is the same reason the mutation locks already live beside the configuration
+// rather than in a hard-coded home.
+func StateDir(globalConfigPath string) (string, error) {
+	path := globalConfigPath
+	if path == "" {
+		defaultPath, err := DefaultGlobalPath()
+		if err != nil {
+			return "", err
+		}
+		path = defaultPath
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	return filepath.Join(filepath.Dir(path), StateDirName), nil
+}
+
+// DefaultGlobalPath returns the default global configuration path.
 func DefaultGlobalPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {

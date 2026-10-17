@@ -32,6 +32,11 @@ type History struct {
 	path    string
 }
 
+// PathIn returns the history database path inside a Starpoint state directory.
+func PathIn(stateDir string) string {
+	return filepath.Join(stateDir, "history.json")
+}
+
 // DefaultPath returns the default path to the history database: ~/.starpoint/history.json.
 func DefaultPath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -205,10 +210,16 @@ func (h *History) Clear() error {
 }
 
 // Prune removes entries older than the given duration.
-func (h *History) Prune(olderThan time.Duration) error {
+// Prune drops entries older than the given window and returns how many it
+// removed. A non-positive window removes nothing: ageing records out is not
+// something to do by accident.
+func (h *History) Prune(olderThan time.Duration) (int, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	if olderThan <= 0 {
+		return 0, nil
+	}
 	cutoff := time.Now().Add(-olderThan)
 	var kept []Entry
 	for _, e := range h.entries {
@@ -216,6 +227,10 @@ func (h *History) Prune(olderThan time.Duration) error {
 			kept = append(kept, e)
 		}
 	}
+	removed := len(h.entries) - len(kept)
+	if removed == 0 {
+		return 0, nil
+	}
 	h.entries = kept
-	return h.save()
+	return removed, h.save()
 }
