@@ -27,6 +27,8 @@ func main() {
 		WorkDir: cwd,
 		Confirm: cli.PromptConfirm(os.Stdin, os.Stdout),
 		Choose:  cli.PromptChoose(os.Stdin, os.Stdout),
+		// A run is interactive only when a person can answer at a terminal.
+		Interactive: func() bool { return cli.IsTerminal(os.Stdin) },
 	}
 	os.Exit(cli.Run(ctx, env, os.Args[1:]))
 }

@@ -83,7 +83,7 @@ func TestAnInstallIsRecordedAsAnAction(t *testing.T) {
 func TestARemovalIsRecordedAsAnAction(t *testing.T) {
 	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"ripgrep\"\nprovider = \"brew\"\n")
 	h.brew.With(model.Installation{Name: "ripgrep", Version: "14.1.0"})
-	h.mustRun("remove", "ripgrep", "--no-confirm")
+	h.mustRun("remove", "ripgrep", "--no-confirm", "--allow-destructive")
 
 	actions := h.withEvent(auditlog.EventAction)
 	if len(actions) != 1 || actions[0].Package != "ripgrep" {
@@ -126,7 +126,7 @@ func TestAllowEmptyMeansIt(t *testing.T) {
 	h.brew.With(model.Installation{Name: "ripgrep"})
 	h.brew.With(model.Installation{Name: "cowsay"})
 
-	h.mustRun("remove", "ripgrep", "cowsay", "--allow-empty", "--no-confirm")
+	h.mustRun("remove", "ripgrep", "cowsay", "--allow-empty", "--no-confirm", "--allow-destructive")
 	if len(h.brew.RemoveCalls) != 2 {
 		t.Errorf("expected both removals, got %v", h.brew.RemoveCalls)
 	}
@@ -146,7 +146,7 @@ func TestOrdinaryRemovalsAreNotRefused(t *testing.T) {
 		h := newHarness(t, twoPackages)
 		h.brew.With(model.Installation{Name: "ripgrep"})
 		h.brew.With(model.Installation{Name: "cowsay"})
-		h.mustRun("remove", "ripgrep", "--no-confirm")
+		h.mustRun("remove", "ripgrep", "--no-confirm", "--allow-destructive")
 		if len(h.brew.RemoveCalls) != 1 {
 			t.Errorf("expected one removal, got %v", h.brew.RemoveCalls)
 		}
@@ -154,7 +154,7 @@ func TestOrdinaryRemovalsAreNotRefused(t *testing.T) {
 	t.Run("the only package", func(t *testing.T) {
 		h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"ripgrep\"\nprovider = \"brew\"\n")
 		h.brew.With(model.Installation{Name: "ripgrep"})
-		h.mustRun("remove", "ripgrep", "--no-confirm")
+		h.mustRun("remove", "ripgrep", "--no-confirm", "--allow-destructive")
 		if len(h.brew.RemoveCalls) != 1 {
 			t.Errorf("expected one removal, got %v", h.brew.RemoveCalls)
 		}

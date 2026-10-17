@@ -87,6 +87,18 @@ type Env struct {
 	Elevation func() elevation.Status
 	// jsonMode is set for --json, so prompts keep off stdout.
 	jsonMode bool
+	// Interactive reports whether a person at a terminal can answer
+	// questions. Nil means "Confirm is set": tests that wire a Confirm
+	// function stand for a user at a terminal. The program sets it from
+	// whether stdin is a terminal, so a piped answer is not mistaken for a
+	// person who has read the list of changes.
+	Interactive func() bool
+	// allowDestructive is --allow-destructive: an unattended run may delete
+	// or replace things.
+	allowDestructive bool
+	// allowRoot is --allow-root: a changing command may run as root or
+	// elevated.
+	allowRoot bool
 }
 
 // elevationWarning is the warning for an elevated run, or nil.
@@ -303,6 +315,8 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	)
 	rest, flagErr := extractGlobalFlags(args, &asJSON, &force, &providers, &contextDir)
 	rest = extractVerbose(rest, &env.Verbose)
+	rest = extractBool(rest, "--allow-destructive", &env.allowDestructive)
+	rest = extractBool(rest, "--allow-root", &env.allowRoot)
 	if contextDir != "" {
 		env.WorkDir = contextDir
 	}
@@ -394,6 +408,10 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	}
 
 	if err != nil {
+		if refusal, ok := asRefusal(err); ok {
+			reportRefusal(env.Stderr, asJSON, refusal)
+			return env.finish(canonicalCommand(cmd), cmdArgs, refusal.Exit, err)
+		}
 		if errors.Is(err, ErrUsage) {
 			fmt.Fprintf(env.Stderr, "error: %s\n\n", err)
 			printCommandHelp(env.Stderr, cmd)
@@ -546,6 +564,19 @@ func extractVerbose(args []string, verbose *bool) []string {
 	return out
 }
 
+// extractBool removes a global boolean flag wherever it appears.
+func extractBool(args []string, flag string, value *bool) []string {
+	out := args[:0:0]
+	for _, a := range args {
+		if a == flag {
+			*value = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 // extractGlobalFlags pulls the global options out of an argument list and
 // returns what remains: the subcommand and its own arguments.
 func extractGlobalFlags(args []string, asJSON, force *bool, providers *[]string, contextDir *string) ([]string, error) {
@@ -622,6 +653,8 @@ Global options:
   --context <dir>      Override working directory for context detection
   --verbose, -v        List every effect of a change, not only what it
                        removes or overwrites
+  --allow-destructive  Let an unattended run (--yes, or no terminal) delete
+                       or replace things
   --version            Print the version
   --help               Show this help
 
@@ -631,6 +664,14 @@ refused rather than assumed. --dry-run shows what would happen, with every
 file, package and configuration entry it would touch, and changes nothing.
 Anything a change would delete or overwrite is marked ! and always shown;
 --verbose lists the rest. --json reports all of it on every action.
+
+An unattended run (--yes, --no-confirm, or no terminal to ask on) that would
+delete or replace anything is refused unless --allow-destructive is given; the
+refusal lists every planned change.
+
+Exit status: 0 success, 1 failure, 2 usage error, 3 refused because an
+unattended run would delete or replace something (--allow-destructive).
+Nothing is changed by a refusal.
 
 Examples:
   starpoint init
@@ -705,7 +746,7 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 		switch args[i] {
 		case "--dry-run", "-n":
 			dryRun = true
-		case "--no-confirm", "-y":
+		case "--no-confirm", "-y", "--yes":
 			noConfirm = true
 		default:
 			return fmt.Errorf("%w: unknown option %q for sync", ErrUsage, args[i])
@@ -733,6 +774,12 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 		return err
 	}
 
+	guardOpts := opts
+	guardOpts.DryRun = dryRun
+	guardOpts.NoConfirm = noConfirm
+	if err := env.guardDestructive("sync", guardOpts, plan.Actions); err != nil {
+		return err
+	}
 	if !dryRun && !noConfirm && len(plan.Actions) > 0 && env.Confirm != nil {
 		ok, err := confirmPlan(env, plan)
 		if err != nil {
@@ -1281,9 +1328,10 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 	}
 
 	type job struct {
-		pkg    model.Package
-		change change
-		survey engine.Survey
+		pkg     model.Package
+		change  change
+		survey  engine.Survey
+		preview model.PlannedAction
 	}
 	var jobs []job
 
@@ -1342,14 +1390,19 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		if err != nil {
 			return err
 		}
-		jobs = append(jobs, job{pkg: pkg, change: installChange(pkg, resolution, adopted, preview), survey: survey})
+		jobs = append(jobs, job{pkg: pkg, change: installChange(pkg, resolution, adopted, preview), survey: survey, preview: preview})
 	}
 
 	// One question for the whole command, describing every change it would make.
 	// Asking per package would make `install a b c` three interruptions.
 	changes := make([]change, 0, len(jobs))
+	previews := make([]model.PlannedAction, 0, len(jobs))
 	for _, j := range jobs {
 		changes = append(changes, j.change)
+		previews = append(previews, j.preview)
+	}
+	if err := env.guardDestructive("install", opts, changeActions(model.ActionInstall, previews)); err != nil {
+		return err
 	}
 	if err := env.confirmChanges(changes, opts); err != nil {
 		return err
@@ -1481,6 +1534,28 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 
 	deps, why := proj.Dependencies(osexec.LookPath)
 	depReport := &dependencyReport{Command: deps, Skipped: why, DryRun: opts.DryRun, Effects: []model.Effect{}}
+
+	// The packages the project declares are installed below; an unattended
+	// run that would replace or overwrite anything doing so is refused first.
+	if proj.HasProjectConfig {
+		if declared, ok := doc.ProjectFileFor(proj.Root); ok {
+			var previews []model.PlannedAction
+			for _, pkg := range declared.Raw.Packages {
+				if version != "" {
+					pkg.Version = version
+				}
+				if channel != "" {
+					pkg.Channel = channel
+				}
+				if preview, err := eng.AddPreview(ctx, doc, pkg, opts); err == nil {
+					previews = append(previews, preview)
+				}
+			}
+			if err := env.guardDestructive("install", opts, changeActions(model.ActionInstall, previews)); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
 	if deps != nil {
 		if err := env.confirmChanges([]change{{
 			verb:   "Run",
@@ -1696,13 +1771,27 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	// Removing uninstalls software. It is the one operation here that can take
 	// something away from the user, so it is described before it happens.
 	var changes []change
+	var previews []model.PlannedAction
 	for _, raw := range names {
 		pkg := model.ParseSpec(raw)
 		resolution := env.planRemoval(ctx, eng, doc, opts, pkg)
 		// A removal that would be refused is refused by Remove itself, with
 		// its own message; the preview only adds what it can describe.
-		preview, _ := eng.RemovePreview(ctx, doc, raw)
+		preview, previewErr := eng.RemovePreview(ctx, doc, raw)
 		changes = append(changes, removeChange(pkg, resolution, preview))
+		if previewErr == nil {
+			if preview.State.Package.Name == "" {
+				preview.State = model.State{Package: pkg, Res: resolution}
+			}
+			if len(preview.Effects) == 0 {
+				// Nothing could be described, but removing is still removing.
+				preview.Effects = []model.Effect{packageDelete(pkg.Name, resolution.Provider)}
+			}
+			previews = append(previews, preview)
+		}
+	}
+	if err := env.guardDestructive("remove", opts, changeActions(model.ActionRemove, previews)); err != nil {
+		return err
 	}
 	if err := env.confirmChanges(changes, opts); err != nil {
 		return err
@@ -1800,7 +1889,7 @@ func cmdTransition(ctx context.Context, env *Env, w *report.Writer, args []strin
 		switch args[i] {
 		case "--dry-run", "-n":
 			dryRun = true
-		case "--no-confirm", "-y":
+		case "--no-confirm", "-y", "--yes":
 			noConfirm = true
 		case "--all", "-a":
 			all = true
@@ -1853,6 +1942,9 @@ func cmdTransition(ctx context.Context, env *Env, w *report.Writer, args []strin
 		return fmt.Errorf("no pending provider transition for %s", strings.Join(names, ", "))
 	}
 
+	if err := env.guardDestructive("transition", opts, transitionActions(ctx, eng, selected.transitions)); err != nil {
+		return err
+	}
 	if !dryRun && !noConfirm && env.Confirm != nil {
 		if err := confirmTransitions(ctx, env, eng, selected); err != nil {
 			return err
@@ -2041,6 +2133,9 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 			target: "Starpoint itself",
 			detail: "reinstalls the running version of Starpoint",
 		})
+	}
+	if err := env.guardDestructive("update", opts, changeActions(model.ActionUpdate, previewRes.Applied)); err != nil {
+		return err
 	}
 	if err := env.confirmChanges(preview, opts); err != nil {
 		return err
@@ -2315,6 +2410,9 @@ func cmdPrune(ctx context.Context, env *Env, w *report.Writer, args []string, al
 	previewOpts.DryRun = true
 	preview, err := eng.Prune(ctx, doc, previewOpts)
 	if err != nil {
+		return err
+	}
+	if err := env.guardDestructive("prune", opts, changeActions(model.ActionRemove, preview.Applied)); err != nil {
 		return err
 	}
 	if !dryRun && len(preview.Applied) > 0 && !opts.NoConfirm {
@@ -2618,6 +2716,14 @@ func cmdTransitionReverse(ctx context.Context, env *Env, w *report.Writer, eng *
 		return fmt.Errorf("no reversible transitions found for %s", strings.Join(names, ", "))
 	}
 
+	var reversing []model.Transition
+	for i := range selected {
+		reversing = append(reversing, eng.TransitionFor(ctx, selected[i], opts))
+	}
+	if err := env.guardDestructive("transition", opts, transitionActions(ctx, eng, reversing)); err != nil {
+		return err
+	}
+
 	// Show what will be reversed
 	fmt.Fprintln(env.Stdout, "The following transitions will be reversed:")
 	for i, t := range toReverse {
@@ -2627,7 +2733,7 @@ func cmdTransitionReverse(ctx context.Context, env *Env, w *report.Writer, eng *
 		if t.Note != "" {
 			fmt.Fprintf(env.Stdout, "      %s\n", t.Note)
 		}
-		effects, warnings := eng.PlannedTransitionEffects(ctx, eng.TransitionFor(ctx, selected[i], opts))
+		effects, warnings := eng.PlannedTransitionEffects(ctx, reversing[i])
 		report.WriteEffects(env.Stdout, effects, true, dryRun || env.Verbose, "      ")
 		for _, w := range warnings {
 			fmt.Fprintf(env.Stdout, "      %s [%s]: %s\n", w.Severity, w.Code, w.Message)

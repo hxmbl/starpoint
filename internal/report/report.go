@@ -90,7 +90,16 @@ func (w *Writer) JSON() bool { return w.asJSON }
 // summary), so install and remove report warnings and dry runs again, and
 // transition reports actions. Old fields keep their meaning except `result`,
 // which was always empty and now carries the outcome.
-const SchemaVersion = 5
+//
+// Version 6 adds refusals. A command refused by a safety rule (an unattended
+// run that would delete or replace something without --allow-destructive, a
+// changing command run as root without --allow-root) exits 3 or 4 and its
+// error document gains a stable `code`, the `exit_code`, and, when it had a
+// plan, `refused`: the operation and the actions it would have carried out,
+// in the ActionResult shape with every planned effect. Effects gain the `chown`
+// and `chmod` operations for the ownership and permission fixes an elevated
+// run makes. Every existing field keeps its meaning.
+const SchemaVersion = 6
 
 // respond emits one flat JSON object: schema_version plus the given fields.
 //

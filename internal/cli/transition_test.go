@@ -65,7 +65,7 @@ func TestTransitionPerformsTheMove(t *testing.T) {
 	h := newHarness(t, stagedConfig)
 	h.stagedMove("/uv/bin/ruff")
 
-	out := h.mustRun("transition", "--no-confirm", "ruff")
+	out := h.mustRun("transition", "--no-confirm", "--allow-destructive", "ruff")
 	if !strings.Contains(out, "completed") {
 		t.Errorf("the final phase should be reported:\n%s", out)
 	}
@@ -81,7 +81,7 @@ func TestTransitionLeavesTheIncumbentWhenTheTargetCannotBeVerified(t *testing.T)
 	h := newHarness(t, stagedConfig)
 	h.stagedMove("/brew/bin/ruff")
 
-	out := h.mustRun("transition", "--no-confirm", "ruff")
+	out := h.mustRun("transition", "--no-confirm", "--allow-destructive", "ruff")
 	if !strings.Contains(out, "installed") {
 		t.Errorf("the stalled phase should be reported:\n%s", out)
 	}
@@ -188,7 +188,7 @@ func TestTransitionJSONReportsTheFinalPhase(t *testing.T) {
 	h := newHarness(t, stagedConfig)
 	h.stagedMove("/uv/bin/ruff")
 
-	out := h.mustRun("--json", "transition", "--no-confirm", "ruff")
+	out := h.mustRun("--json", "transition", "--no-confirm", "--allow-destructive", "ruff")
 	var payload struct {
 		Transitions []struct {
 			Phase      string `json:"phase"`

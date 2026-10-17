@@ -131,3 +131,7 @@ func isTerminal(in io.Reader) bool {
 	}
 	return term.IsTerminal(int(f.Fd()))
 }
+
+// IsTerminal reports whether r is a terminal. The program uses it to decide
+// whether a run is interactive.
+func IsTerminal(r io.Reader) bool { return isTerminal(r) }

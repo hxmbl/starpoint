@@ -102,7 +102,7 @@ func TestRemoveJSONListsEveryDeletedPathAndMarksItDestructive(t *testing.T) {
 	}
 	h.uv.With(model.Installation{Name: "ruff", Version: "0.5.0", Path: exe})
 
-	op := decodeOperation(t, h.mustRun("remove", "ruff", "--yes", "--json"))
+	op := decodeOperation(t, h.mustRun("remove", "ruff", "--yes", "--allow-destructive", "--json"))
 	if op.Operation != "remove" || op.DryRun || !op.ConfigChanged || op.ConfigPath != h.config {
 		t.Errorf("wrong top level: %+v", op)
 	}
@@ -201,7 +201,7 @@ func TestRemoveHumanOutputShowsDestructiveEffectsAndVerboseShowsAll(t *testing.T
 	testsupport.WriteFile(t, exe, "#!/bin/sh\n")
 	h.uv.With(model.Installation{Name: "ruff", Version: "0.5.0", Path: exe})
 
-	out := h.mustRun("remove", "ruff", "--yes")
+	out := h.mustRun("remove", "ruff", "--yes", "--allow-destructive")
 	if !strings.Contains(out, "! deleted file "+exe) {
 		t.Errorf("a deletion is always shown:\n%s", out)
 	}
@@ -285,7 +285,7 @@ func TestInstallReportsAnUnavailableProviderAsAStructuredWarning(t *testing.T) {
 
 func TestInstallChangingTheProviderReportsTheTransition(t *testing.T) {
 	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"ruff\"\nprovider = \"brew\"\nversion = \"0.5.0\"\n\n[[package]]\nname = \"jq\"\n")
-	op := decodeOperation(t, h.mustRun("install", "ruff@0.6.0", "--provider", "uv", "--yes", "--json"))
+	op := decodeOperation(t, h.mustRun("install", "ruff@0.6.0", "--provider", "uv", "--yes", "--allow-destructive", "--json"))
 	a := op.Actions[0]
 	var provider, version *model.ActionTransition
 	for i, tr := range a.Transitions {
@@ -339,7 +339,7 @@ func TestPruneReportsFailuresAsFailedActions(t *testing.T) {
 	h.uv.With(model.Installation{Name: "orphan", Version: "1.0"})
 	h.uv.RemoveError = &provider.Error{Provider: "uv", Kind: provider.ErrFailed, Message: "boom"}
 
-	code, out, _ := h.run("prune", "--yes", "--json")
+	code, out, _ := h.run("prune", "--yes", "--allow-destructive", "--json")
 	if code == 0 {
 		t.Fatal("a failed removal must fail the command")
 	}
@@ -442,7 +442,7 @@ func TestSyncUvToPipInTheSharedBinReportsTheReplacement(t *testing.T) {
 		t.Errorf("the plan must say the uv copy is uninstalled: %+v", a.Effects)
 	}
 
-	op = decodeOperation(t, h.mustRun("sync", "--no-confirm", "--json"))
+	op = decodeOperation(t, h.mustRun("sync", "--no-confirm", "--allow-destructive", "--json"))
 	for i := range op.Actions {
 		if op.Actions[i].Package == "cowsay" {
 			a = &op.Actions[i]
@@ -479,7 +479,7 @@ func TestTransitionJSONReportsActionsWithEffects(t *testing.T) {
 	testsupport.WriteFile(t, exe, "#!/bin/sh\n# uv\n")
 	h.uv.With(model.Installation{Name: "cowsay", Version: "6.0", Path: exe})
 
-	op := decodeOperation(t, h.mustRun("transition", "cowsay", "--no-confirm", "--json"))
+	op := decodeOperation(t, h.mustRun("transition", "cowsay", "--no-confirm", "--allow-destructive", "--json"))
 	if op.Operation != "transition" || len(op.Actions) != 1 {
 		t.Fatalf("transition reports actions like every changing command: %s", h.stdout.String())
 	}
@@ -539,7 +539,7 @@ func TestAuditLogRecordsTheEffectsOfADestructiveAction(t *testing.T) {
 	exe := filepath.Join(bin, "ruff")
 	testsupport.WriteFile(t, exe, "#!/bin/sh\n")
 	h.uv.With(model.Installation{Name: "ruff", Version: "0.5.0", Path: exe})
-	h.mustRun("remove", "ruff", "--yes")
+	h.mustRun("remove", "ruff", "--yes", "--allow-destructive")
 
 	for _, e := range h.withEvent("action") {
 		if e.Package != "ruff" {

@@ -594,7 +594,7 @@ func TestSyncReportsUnfixableVersionConflict(t *testing.T) {
 func TestSyncHandlesProviderTransition(t *testing.T) {
 	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"ripgrep\"\nprovider = \"uv\"\n")
 	h.brew.With(model.Installation{Name: "ripgrep", Version: "14.1.0", Path: "/opt/homebrew/bin/rg"})
-	out := h.mustRun("sync", "--no-confirm")
+	out := h.mustRun("sync", "--no-confirm", "--allow-destructive")
 	if !strings.Contains(out, "relocate") {
 		t.Errorf("the transition should be named:\n%s", out)
 	}

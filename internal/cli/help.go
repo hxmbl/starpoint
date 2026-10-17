@@ -61,7 +61,7 @@ var commandFlags = map[string][]string{
 }
 
 // globalFlags are accepted anywhere on the command line.
-var globalFlags = []string{"--json", "--provider", "--force", "--context", "--verbose", "--version", "--help"}
+var globalFlags = []string{"--json", "--provider", "--force", "--context", "--verbose", "--allow-destructive", "--version", "--help"}
 
 // isHelpFlag reports whether an argument asks for help.
 func isHelpFlag(a string) bool { return a == "--help" || a == "-h" }
@@ -100,7 +100,9 @@ move software between providers, and reconcile pinned versions.
 
 Options:
   --dry-run, -n       Show what would change; change nothing
-  --no-confirm, -y    Do not ask before changing anything
+  --no-confirm, -y, --yes
+                      Do not ask before changing anything
+  --allow-destructive Let an unattended run delete or replace things
   --provider <name>   Restrict automatic provider choice (repeatable)
   --json              Machine-readable output
   --verbose, -v       List every effect, not only what is removed or overwritten
@@ -171,6 +173,7 @@ Options:
   --provider <name>    Use this provider
   --dry-run, -n        Show what would happen; change nothing
   --no-confirm, -y     Do not ask first
+  --allow-destructive  Let an unattended run delete or replace things
   --json               Machine-readable output
   --verbose, -v        List every effect, not only what is removed or overwritten
 
@@ -193,6 +196,7 @@ Options:
   --provider <name>    Use this provider
   --dry-run, -n        Show what would happen; change nothing
   --no-confirm, -y     Do not ask first
+  --allow-destructive  Let an unattended run delete or replace things
   --allow-empty        Allow removing every configured package at once
   --json               Machine-readable output
   --verbose, -v        List every effect, not only what is removed or overwritten
@@ -210,6 +214,7 @@ Options:
   --reverse, -r        Reverse the most recent transition of each package
   --dry-run, -n        Describe the moves; change nothing
   --no-confirm, -y     Do not ask first
+  --allow-destructive  Let an unattended run delete or replace things
   --json               Machine-readable output
   --verbose, -v        List every effect, not only what is removed or overwritten
 `,
@@ -226,6 +231,7 @@ Options:
   --self               Also update Starpoint itself, through its provider
   --dry-run, -n        Show what would be updated; change nothing
   --no-confirm, -y     Do not ask first (pins are kept)
+  --allow-destructive  Let an unattended run delete or replace things
   --json               Machine-readable output
   --verbose, -v        List every effect, not only what is removed or overwritten
 `,
@@ -249,6 +255,7 @@ touched.
 Options:
   --dry-run, -n        Show what would be removed; change nothing
   --no-confirm, -y     Do not ask first
+  --allow-destructive  Let an unattended run delete or replace things
   --json               Machine-readable output
   --verbose, -v        List every effect, not only what is removed or overwritten
 `,

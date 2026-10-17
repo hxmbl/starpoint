@@ -234,6 +234,21 @@ func ActionsFromResults(results ...*engine.Result) []ActionResult {
 	return ars
 }
 
+// RefusedPlan is the plan of a command Starpoint refused to run: the actions
+// it would have carried out, in the ActionResult shape, with the warnings and
+// summary an operation carries. Every action's result is "planned".
+func RefusedPlan(actions []model.PlannedAction) map[string]any {
+	ars, ws := buildActions(true, nil, actions)
+	if ws == nil {
+		ws = []model.Warning{}
+	}
+	return map[string]any{
+		"actions":  ars,
+		"warnings": ws,
+		"summary":  summarize(ars, ws),
+	}
+}
+
 // Operation renders the result of a command that changes the machine:
 // install, remove and install . share it, and extra carries what only one of
 // them has (the provider lookup, the dependency step).
