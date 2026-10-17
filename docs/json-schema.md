@@ -4,9 +4,11 @@ This document describes Starpoint's machine-readable output envelope and payload
 
 ## Schema Version
 
-Current schema version: `3`
+Current schema version: `4`
 
-All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 3, ...command fields }`; errors are `{ "schema_version": 3, "error": "..." }`.
+All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 4, ...command fields }`; errors are `{ "schema_version": 4, "error": "..." }`.
+
+Version 4 unifies the action vocabulary. `install`, `remove` and `install .` now report the changes they made as `actions`, a list of `ActionResult`, the same shape `sync`, `update` and `prune` already used. The `operations` key, and the engine's `OperationResult` and `PlannedAction` it carried, are gone from JSON output. `install .` flattens the results of everything it runs into one `actions` list. This is a breaking change: a consumer that read `operations[].applied` must read `actions` instead. See "Action vocabularies" under Migrating.
 
 Version 3 adds the logging surface described below. Every command that existed at version 2 returns the same payload it did, so this bump is conservative: a consumer that pins the version should widen its check rather than change how it reads anything it already read.
 
@@ -232,7 +234,7 @@ entry with the same name.
 
 ```json
 {
-  "operations": ["OperationResult"],
+  "actions": ["ActionResult"],
   "lookup": ["Survey"]
 }
 ```
@@ -244,40 +246,12 @@ see which providers were asked and what each answered.
 
 ```json
 {
-  "operations": ["OperationResult"]
+  "actions": ["ActionResult"]
 }
 ```
 
-An `OperationResult` is what the engine produced for one package:
-
-```json
-{
-  "states": ["State"],
-  "applied": ["PlannedAction"],
-  "transitions": ["Transition"],
-  "config_changed": "boolean",
-  "config_path": "string | null",
-  "warnings": ["Warning"],
-  "dry_run": "boolean"
-}
-```
-
-A `PlannedAction` is the engine's own record of one change, which nests the
-whole `State` it applied to:
-
-```json
-{
-  "action": "install | remove | update | adopt | relocate | record | reinstall",
-  "state": "State",
-  "config_change": "ConfigEdit | null",
-  "transition": "Transition | null",
-  "note": "string | null"
-}
-```
-
-Note that `install` and `remove` report `applied` as `PlannedAction`, whereas
-`sync`, `update` and `prune` report `actions` as `ActionResult` below. The two
-shapes are not interchangeable; see "Action vocabularies" under Migrating.
+`install` and `remove` report `actions` as `ActionResult`, the same shape as
+`sync`, `update` and `prune` below.
 
 ### `starpoint update`
 
@@ -294,7 +268,8 @@ shapes are not interchangeable; see "Action vocabularies" under Migrating.
 ```
 
 An `ActionResult` is one applied or planned action, in the flat form used by
-`sync`, `update` and `prune`:
+every command that changes anything (`install`, `remove`, `install .`, `sync`,
+`update` and `prune`):
 
 ```json
 {
@@ -403,7 +378,7 @@ command exits non-zero.
 
 ```json
 {
-  "operations": ["OperationResult"],
+  "actions": ["ActionResult"],
   "dependencies": {
     "command": {
       "tool": "string",
@@ -568,15 +543,15 @@ A consumer has to handle five things:
 
 ### Action vocabularies
 
-Two shapes describe one change, and they are not interchangeable:
+Up to version 3, two shapes described one change:
 
 - `ActionResult` — `{action, package, provider, note, result}` — in `sync`, `update` and `prune`.
 - `PlannedAction` — `{action, state, config_change, transition, note}` — in `install`, `remove` and `install .`, under `operations[].applied`.
 
-`PlannedAction` nests the whole `State` the action applied to, so it is the
-richer shape; `ActionResult` is the one the schema originally described for
-every command. Unifying them is a breaking change and is tracked under
-Remaining CLI and API work.
+Version 4 drops `PlannedAction` and `operations` from JSON output. Every command
+that performs changes now reports `actions` as a list of `ActionResult`, and
+`install .` flattens its results into that one list. A consumer that read
+`operations[].applied` reads `actions` instead.
 
 ## Versioning Policy
 

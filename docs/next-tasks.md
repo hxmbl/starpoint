@@ -14,8 +14,6 @@ This file tracks work that remains after the current implementation. Completed i
 5. **Generate shell completions.** Bash, zsh, and fish completions are hand-written; a test (internal/cli/completions_test.go) checks them against the command, flag and provider tables. Generating them from those tables would remove the duplication. The zsh and fish files have not been exercised in a real shell in CI.
 6. **Improve PATH inventory controls.** `doctor` summarises the PATH inventory (counts, shadowed names, unknown owners; `--all` for everything) and PATH directories are de-duplicated by real path. `list` still prints every unaccounted executable; consider the same summary there and richer filters (by directory or owner) for very large PATHs, keeping the full data in machine output.
 
-7. **One action vocabulary in JSON output.** `sync`, `update` and `prune` report `actions` as `ActionResult` (`{action, package, provider, note, result}`), while `install`, `remove` and `install .` report `operations[].applied` as the engine's `PlannedAction` (`{action, state, ...}`). The latter nests the whole `State`, so it is the richer shape; the former is the one the schema originally described for every command. Pick one and apply it everywhere, which is a breaking change and needs a schema version increment.
-
 ## Provider coverage
 
 8. **Add more providers when ownership is reliable.** Bun, Deno, Nix, mise, asdf, Flatpak, Snap, winget, Chocolatey, and additional language providers remain candidates. Each provider should support useful inventory and ownership reporting before it is used for automatic resolution.

@@ -293,7 +293,7 @@ func TestJSONOutputCarriesNoProse(t *testing.T) {
 	if strings.Contains(out, "none found on installed providers") {
 		t.Errorf("prose must not be mixed into JSON:\n%s", out)
 	}
-	if !strings.Contains(out, `"operations"`) {
+	if !strings.Contains(out, `"actions"`) {
 		t.Errorf("the payload should be intact:\n%s", out)
 	}
 }
