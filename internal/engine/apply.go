@@ -33,6 +33,8 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 		return res, nil
 	}
 
+	// The caller's plan stays the plan; what happened is recorded on a copy.
+	plan.Actions = append([]model.PlannedAction(nil), plan.Actions...)
 	var failures []string
 
 	// Phase 1: persist provider decisions for everything we are about to install,
@@ -53,6 +55,11 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 		}
 		res.ConfigChanged = true
 		res.ConfigPath = doc.Global.Path
+		for i := range plan.Actions {
+			if plan.Actions[i].ConfigChange != nil {
+				plan.Actions[i] = appliedConfig(plan.Actions[i])
+			}
+		}
 	}
 
 	// Phase 2: installs.
@@ -62,24 +69,34 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 		}
 		p, ok := e.reg.Get(action.State.Res.Provider)
 		if !ok {
-			failures = append(failures, fmt.Sprintf("%s: provider %q is unknown",
-				action.State.Package.Name, action.State.Res.Provider))
+			err := fmt.Errorf("provider %q is unknown", action.State.Res.Provider)
+			res.Applied = append(res.Applied, failed(action, err))
+			failures = append(failures, fmt.Sprintf("%s: %s", action.State.Package.Name, err))
 			continue
 		}
+		obs := e.observe(ctx, p, action.State.Package, action.State.Current)
 		inst, err := p.Install(ctx, provider.Request{
 			Package: action.State.Package,
 			Scope:   action.State.Package.Scope,
 			Dir:     opts.Dir,
 		})
+		observed := obs.finish(ctx, model.EffectCreate, inst)
 		if err != nil {
-			res.Applied = append(res.Applied, annotate(action, err.Error()))
+			action = finishEffects(failed(annotate(action, err.Error()), err), observed)
+			res.Applied = append(res.Applied, action)
+			res.Warnings = append(res.Warnings, action.Warnings...)
 			failures = append(failures, fmt.Sprintf("%s: %s", action.State.Package.Name, err.Error()))
 			continue
 		}
-		res.Applied = append(res.Applied, annotate(action, installPath(inst)))
+		observed = append(observed, packageEffect(model.EffectCreate, p.Name(), action.State.Package.Name,
+			inst, "", versionOf(inst), model.EvidenceReported))
+		action = finishEffects(annotate(action, installPath(inst)), observed)
+		action.Outcome = model.OutcomeApplied
 		if warning := verifyInstalled(ctx, p, action.State.Package); warning != nil {
-			res.Warnings = append(res.Warnings, *warning)
+			action.Warnings = append(action.Warnings, *warning)
 		}
+		res.Applied = append(res.Applied, action)
+		res.Warnings = append(res.Warnings, action.Warnings...)
 		// Record execution in tracking system
 		if e.tracker != nil {
 			_ = e.tracker.Record(action.State.Package.Name, opts.Dir, time.Now())
@@ -106,6 +123,23 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 		if t.Advice != "" {
 			action.Note = strings.TrimSpace(action.Note + "; " + t.Advice)
 		}
+		kept := []model.Effect{}
+		for _, eff := range action.Effects {
+			if eff.Kind == model.EffectConfig {
+				kept = append(kept, eff)
+			}
+		}
+		action.Effects = model.MergeEffects(kept, t.Effects...)
+		model.SortEffects(action.Effects)
+		action.Changes = []model.ActionTransition{providerChange(t)}
+		action.Warnings = append(action.Warnings, t.Warnings...)
+		action.Warnings = append(action.Warnings, transitionWarnings(t)...)
+		res.Warnings = append(res.Warnings, action.Warnings...)
+		if err != nil || t.Phase == model.TransitionFailed {
+			action = failed(action, err)
+		} else {
+			action.Outcome = model.OutcomeApplied
+		}
 		res.Applied = append(res.Applied, action)
 		res.Transitions = append(res.Transitions, t)
 		if err != nil {
@@ -120,11 +154,13 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 		}
 		p, ok := e.reg.Get(action.State.Res.Provider)
 		if !ok {
-			failures = append(failures, fmt.Sprintf("%s: provider %q is unknown",
-				action.State.Package.Name, action.State.Res.Provider))
+			err := fmt.Errorf("provider %q is unknown", action.State.Res.Provider)
+			res.Applied = append(res.Applied, failed(action, err))
+			failures = append(failures, fmt.Sprintf("%s: %s", action.State.Package.Name, err))
 			continue
 		}
 		req := provider.Request{Package: action.State.Package, Dir: opts.Dir}
+		obs := e.observe(ctx, p, action.State.Package, action.State.Desired)
 		var (
 			inst *model.Installation
 			err  error
@@ -136,15 +172,25 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 			// installing that exact version.
 			inst, err = p.Install(ctx, req)
 		}
+		observed := obs.finish(ctx, model.EffectModify, inst)
 		if err != nil {
-			res.Applied = append(res.Applied, annotate(action, err.Error()))
+			action = finishEffects(failed(annotate(action, err.Error()), err), observed)
+			res.Applied = append(res.Applied, action)
+			res.Warnings = append(res.Warnings, action.Warnings...)
 			failures = append(failures, fmt.Sprintf("%s: %s", action.State.Package.Name, err.Error()))
 			continue
 		}
-		res.Applied = append(res.Applied, annotate(action, installPath(inst)))
+		from := versionOf(action.State.Desired)
+		observed = append(observed, packageEffect(model.EffectModify, p.Name(), action.State.Package.Name,
+			inst, from, versionOf(inst), model.EvidenceReported))
+		action = finishEffects(annotate(action, installPath(inst)), observed)
+		action.Changes = []model.ActionTransition{{Kind: model.ChangeVersion, From: from, To: versionOf(inst)}}
+		action.Outcome = model.OutcomeApplied
 		if warning := verifyInstalled(ctx, p, action.State.Package); warning != nil {
-			res.Warnings = append(res.Warnings, *warning)
+			action.Warnings = append(action.Warnings, *warning)
 		}
+		res.Applied = append(res.Applied, action)
+		res.Warnings = append(res.Warnings, action.Warnings...)
 		// Record execution in tracking system
 		if e.tracker != nil {
 			_ = e.tracker.Record(action.State.Package.Name, opts.Dir, time.Now())
@@ -155,6 +201,7 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 	// truth.
 	for _, action := range plan.Actions {
 		if action.Action == model.ActionRecord {
+			action.Outcome = model.OutcomeReported
 			res.Applied = append(res.Applied, action)
 		}
 	}
@@ -183,6 +230,7 @@ func verifyInstalled(ctx context.Context, p provider.Provider, pkg model.Package
 		}
 		return &model.Warning{
 			Severity: model.SeverityWarn,
+			Code:     model.WarnVerificationFailed,
 			Package:  pkg.Name,
 			Provider: p.Name(),
 			Message:  "provider installed the package but executable verification failed: " + err.Error(),
@@ -260,6 +308,81 @@ func installPath(i *model.Installation) string {
 
 // Remove uninstalls a package and deletes it from the configuration.
 func (e *Engine) Remove(ctx context.Context, doc *config.Document, name string, opts Options) (*Result, error) {
+	d, err := e.describeRemove(ctx, doc, name)
+	if err != nil {
+		return nil, err
+	}
+	action := d.action
+	res := &Result{DryRun: opts.DryRun}
+
+	if !opts.DryRun {
+		obs := e.observe(ctx, d.provider, d.pkg, d.installed)
+		err := d.provider.Remove(ctx, d.pkg)
+		observed := obs.finish(ctx, model.EffectDelete)
+		if err != nil {
+			// The configuration is left alone, but a removal that failed part-way
+			// can still have deleted files, and those are reported.
+			action = finishEffects(failed(action, err), observed)
+			action.ConfigChanges = nil
+			action.Effects = withoutConfig(action.Effects)
+			res.Applied = []model.PlannedAction{action}
+			res.Warnings = action.Warnings
+			return res, err
+		}
+		from := versionOf(d.installed)
+		observed = append(observed, packageEffect(model.EffectDelete, d.provider.Name(), d.pkg.Name,
+			d.installed, from, "", model.EvidenceReported))
+		action = finishEffects(action, observed)
+		action.Outcome = model.OutcomeApplied
+	}
+	res.Warnings = action.Warnings
+
+	f, found := doc.Find(name)
+	if !found {
+		res.Applied = []model.PlannedAction{action}
+		return res, nil
+	}
+	removeEntry(&doc.Global, name)
+	for i := range doc.Projects {
+		if doc.Projects[i].Path == f.Path {
+			removeEntry(&doc.Projects[i], name)
+		}
+	}
+	if !opts.DryRun {
+		if err := doc.Save(); err != nil {
+			res.Applied = []model.PlannedAction{action}
+			return res, fmt.Errorf("updating configuration: %w", err)
+		}
+		action = appliedConfig(action)
+	}
+	res.Applied = []model.PlannedAction{action}
+	res.ConfigChanged = true
+	res.ConfigPath = f.Path
+	return res, nil
+}
+
+// removeDescription is what Remove will do, worked out before it does it.
+type removeDescription struct {
+	action    model.PlannedAction
+	pkg       model.Package
+	provider  provider.Provider
+	installed *model.Installation
+}
+
+// RemovePreview describes what Remove would do, without uninstalling anything
+// or touching the configuration.
+func (e *Engine) RemovePreview(ctx context.Context, doc *config.Document, name string) (model.PlannedAction, error) {
+	d, err := e.describeRemove(ctx, doc, name)
+	if err != nil {
+		return model.PlannedAction{}, err
+	}
+	return d.action, nil
+}
+
+// describeRemove checks a removal is allowed and describes it: the package,
+// every file Starpoint can see that would go with it, and the configuration
+// entry that would be dropped.
+func (e *Engine) describeRemove(ctx context.Context, doc *config.Document, name string) (*removeDescription, error) {
 	pkg, ok := doc.Package(name)
 	if !ok {
 		return nil, fmt.Errorf("%s is not in the configuration; nothing to remove", name)
@@ -290,35 +413,25 @@ func (e *Engine) Remove(ctx context.Context, doc *config.Document, name string, 
 		return nil, fmt.Errorf("provider %q cannot remove packages", provName)
 	}
 
-	res := &Result{DryRun: opts.DryRun}
-	state := model.State{Package: pkg, Res: model.Resolution{Provider: provName}}
-	action := model.PlannedAction{Action: model.ActionRemove, State: state}
-
-	if !opts.DryRun {
-		if err := p.Remove(ctx, pkg); err != nil {
-			return nil, err
+	installed, _ := e.providerInstallation(ctx, p, pkg)
+	installed = e.withPath(installed)
+	state := model.State{Package: pkg, Res: model.Resolution{Provider: provName}, Current: installed}
+	action := model.PlannedAction{Action: model.ActionRemove, State: state, Outcome: model.OutcomePlanned}
+	action.Effects = e.plannedRemove(ctx, p, pkg, installed)
+	if installed == nil {
+		action.Warnings = append(action.Warnings, model.Warning{
+			Severity: model.SeverityInfo, Code: model.WarnNotInstalled, Package: name, Provider: provName,
+			Message: provName + " does not report " + name + " as installed; only the configuration entry is removed",
+		})
+	}
+	if f, found := doc.Find(name); found {
+		if cc := model.DiffEntry(f.Path, entryIn(f, name), nil); cc != nil {
+			action.ConfigChanges = append(action.ConfigChanges, *cc)
+			action.Effects = append(action.Effects, configEffect(*cc, model.EvidencePlanned))
 		}
 	}
-	res.Applied = []model.PlannedAction{action}
-
-	f, found := doc.Find(name)
-	if !found {
-		return res, nil
-	}
-	removeEntry(&doc.Global, name)
-	for i := range doc.Projects {
-		if doc.Projects[i].Path == f.Path {
-			removeEntry(&doc.Projects[i], name)
-		}
-	}
-	if !opts.DryRun {
-		if err := doc.Save(); err != nil {
-			return res, fmt.Errorf("updating configuration: %w", err)
-		}
-	}
-	res.ConfigChanged = true
-	res.ConfigPath = f.Path
-	return res, nil
+	model.SortEffects(action.Effects)
+	return &removeDescription{action: action, pkg: pkg, provider: p, installed: installed}, nil
 }
 
 // removeEntry deletes a package from a raw configuration file.
@@ -341,6 +454,90 @@ func removeEntry(f *config.File, name string) {
 // configuration is the source of truth, and `starpoint sync` will converge once
 // the provider exists. With AdoptOnly, nothing is installed at all.
 func (e *Engine) Add(ctx context.Context, doc *config.Document, pkg model.Package, opts Options) (*Result, error) {
+	d, err := e.describeAdd(ctx, doc, pkg, opts)
+	if err != nil {
+		return nil, err
+	}
+	action := d.action
+	res := &Result{DryRun: opts.DryRun, Warnings: append([]model.Warning(nil), action.Warnings...)}
+
+	if d.install && !opts.DryRun {
+		obs := e.observe(ctx, d.provider, d.resolved, d.existing)
+		inst, err := d.provider.Install(ctx, provider.Request{Package: d.resolved, Dir: opts.Dir})
+		observed := obs.finish(ctx, model.EffectCreate, inst)
+		if err != nil {
+			// Nothing was recorded, but whatever the failed install left behind
+			// is still reported: a half-finished install is exactly what a user
+			// needs to see.
+			action = finishEffects(failed(action, err), observed)
+			action.ConfigChanges = nil
+			action.Effects = withoutConfig(action.Effects)
+			res.Applied = []model.PlannedAction{action}
+			res.States = []model.State{action.State}
+			res.Warnings = action.Warnings
+			return res, err
+		}
+		observed = append(observed, packageEffect(model.EffectCreate, d.provider.Name(), d.resolved.Name,
+			inst, "", versionOf(inst), model.EvidenceReported))
+		action = finishEffects(action, observed)
+		action.State.Desired = inst
+		action.State.Status = model.StatusCorrect
+		res.Warnings = action.Warnings
+		// Record execution in tracking system
+		if e.tracker != nil {
+			_ = e.tracker.Record(pkg.Name, opts.Dir, time.Now())
+		}
+	}
+
+	target := d.target
+	if contains(target.Raw.Packages, pkg.Name) {
+		replaceEntry(&target.Raw.Packages, d.resolved)
+	} else {
+		target.Raw.Packages = append(target.Raw.Packages, d.resolved)
+	}
+	storeFile(doc, target)
+
+	if !opts.DryRun {
+		if err := doc.Save(); err != nil {
+			return nil, fmt.Errorf("recording %s in %s: %w", pkg.Name, target.Path, err)
+		}
+		action = appliedConfig(action)
+		if action.Outcome != model.OutcomeFailed {
+			action.Outcome = model.OutcomeApplied
+		}
+	}
+	res.States = []model.State{action.State}
+	res.Applied = []model.PlannedAction{action}
+	res.ConfigChanged = true
+	res.ConfigPath = target.Path
+	return res, nil
+}
+
+// addDescription is what Add will do, worked out before it does any of it.
+type addDescription struct {
+	action   model.PlannedAction
+	resolved model.Package
+	provider provider.Provider
+	existing *model.Installation
+	target   config.File
+	// install is true when the provider will be asked to install.
+	install bool
+}
+
+// AddPreview describes what Add would do, without installing anything or
+// touching the configuration. The confirmation step shows it, so the question
+// and the change come from one derivation.
+func (e *Engine) AddPreview(ctx context.Context, doc *config.Document, pkg model.Package, opts Options) (model.PlannedAction, error) {
+	d, err := e.describeAdd(ctx, doc, pkg, opts)
+	if err != nil {
+		return model.PlannedAction{}, err
+	}
+	return d.action, nil
+}
+
+// describeAdd resolves a package and describes recording it: the action, the
+// effects it is expected to have, the configuration edit, and any warning.
+func (e *Engine) describeAdd(ctx context.Context, doc *config.Document, pkg model.Package, opts Options) (*addDescription, error) {
 	if pkg.Name == "" {
 		return nil, fmt.Errorf("a package name is required")
 	}
@@ -358,22 +555,28 @@ func (e *Engine) Add(ctx context.Context, doc *config.Document, pkg model.Packag
 		resolved.Reason = resolution.Reason
 	}
 
-	res := &Result{DryRun: opts.DryRun}
 	state := model.State{Package: resolved, Res: resolution, Status: model.StatusCorrect}
 	// adopted records that the software was already there. Recording ownership
 	// is not the same act as installing, and the output should not claim it was.
 	adopted := plan.adopted
 	p, known := plan.provider, plan.known
 	state.Desired = plan.desired
+	if plan.existing != nil && (state.Desired == nil || plan.existing.Provider != state.Desired.Provider) {
+		state.Current = plan.existing
+	}
 
+	d := &addDescription{resolved: resolved, provider: p, existing: plan.existing}
+	var warnings []model.Warning
+	var effects []model.Effect
 	if state.Desired == nil {
 		switch {
 		case !known:
 			return nil, fmt.Errorf("provider %q is not known to this build", resolution.Provider)
 		case !available[resolution.Provider].Available:
 			// Record the intent, report the blocker.
-			res.Warnings = append(res.Warnings, model.Warning{
+			warnings = append(warnings, model.Warning{
 				Severity: model.SeverityError,
+				Code:     model.WarnRecordedNotInstalled,
 				Package:  pkg.Name,
 				Provider: resolution.Provider,
 				Message:  "recorded in the configuration but not installed: " + available[resolution.Provider].Reason,
@@ -382,8 +585,9 @@ func (e *Engine) Add(ctx context.Context, doc *config.Document, pkg model.Packag
 		case !p.Capabilities().Install:
 			return nil, fmt.Errorf("provider %q cannot install packages", resolution.Provider)
 		case opts.AdoptOnly:
-			res.Warnings = append(res.Warnings, model.Warning{
+			warnings = append(warnings, model.Warning{
 				Severity: model.SeverityWarn,
+				Code:     model.WarnRecordedNotInstalled,
 				Package:  pkg.Name,
 				Provider: resolution.Provider,
 				Message: "recorded in the configuration but not installed: " +
@@ -391,18 +595,10 @@ func (e *Engine) Add(ctx context.Context, doc *config.Document, pkg model.Packag
 			})
 		default:
 			state.Status = model.StatusMissing
-			if !opts.DryRun {
-				inst, err := p.Install(ctx, provider.Request{Package: resolved, Dir: opts.Dir})
-				if err != nil {
-					return nil, err
-				}
-				state.Desired = inst
-				state.Status = model.StatusCorrect
-				// Record execution in tracking system
-				if e.tracker != nil {
-					_ = e.tracker.Record(pkg.Name, opts.Dir, time.Now())
-				}
-			}
+			d.install = true
+			planned, plannedWarnings := e.plannedInstall(ctx, p, resolved)
+			effects = append(effects, planned...)
+			warnings = append(warnings, plannedWarnings...)
 		}
 	}
 
@@ -416,12 +612,6 @@ func (e *Engine) Add(ctx context.Context, doc *config.Document, pkg model.Packag
 		verb = model.ActionAdopt
 		note = "already installed; recorded ownership with " + resolution.Provider
 	}
-	res.States = []model.State{state}
-	res.Applied = []model.PlannedAction{{
-		Action: verb,
-		State:  state,
-		Note:   note,
-	}}
 
 	target := doc.Global
 	if opts.Dir != "" {
@@ -429,21 +619,43 @@ func (e *Engine) Add(ctx context.Context, doc *config.Document, pkg model.Packag
 			target = f
 		}
 	}
-	if contains(target.Raw.Packages, pkg.Name) {
-		replaceEntry(&target.Raw.Packages, resolved)
-	} else {
-		target.Raw.Packages = append(target.Raw.Packages, resolved)
-	}
-	storeFile(doc, target)
+	d.target = target
 
-	if !opts.DryRun {
-		if err := doc.Save(); err != nil {
-			return nil, fmt.Errorf("recording %s in %s: %w", pkg.Name, target.Path, err)
+	action := model.PlannedAction{
+		Action:   verb,
+		State:    state,
+		Note:     note,
+		Outcome:  model.OutcomePlanned,
+		Warnings: warnings,
+	}
+	before := entryIn(target, pkg.Name)
+	if cc := model.DiffEntry(target.Path, before, &resolved); cc != nil {
+		cc.CreatesFile = !target.Exists
+		action.ConfigChanges = append(action.ConfigChanges, *cc)
+		effects = append(effects, configEffect(*cc, model.EvidencePlanned))
+	}
+	if before != nil && before.Provider != "" && before.Provider != resolved.Provider {
+		action.Changes = append(action.Changes, model.ActionTransition{Kind: model.ChangeProvider, From: before.Provider, To: resolved.Provider})
+	}
+	if before != nil && before.Version != resolved.Version && (before.Version != "" || resolved.Version != "") {
+		action.Changes = append(action.Changes, model.ActionTransition{Kind: model.ChangeVersion, From: before.Version, To: resolved.Version})
+	}
+	model.SortEffects(effects)
+	action.Effects = effects
+	d.action = action
+	return d, nil
+}
+
+// withoutConfig drops configuration effects, for an action whose
+// configuration edit never happened.
+func withoutConfig(effects []model.Effect) []model.Effect {
+	out := effects[:0:0]
+	for _, eff := range effects {
+		if eff.Kind != model.EffectConfig {
+			out = append(out, eff)
 		}
 	}
-	res.ConfigChanged = true
-	res.ConfigPath = target.Path
-	return res, nil
+	return out
 }
 
 // adoptionReason explains why adoption-only found nothing to adopt.
@@ -496,9 +708,14 @@ func (e *Engine) Update(ctx context.Context, doc *config.Document, opts Options)
 	res := &Result{DryRun: opts.DryRun}
 
 	var (
-		unchanged []string
+		unchanged []model.Warning
 		failures  []string
 	)
+	skip := func(code string, pkg model.Package, providerName, msg string) {
+		unchanged = append(unchanged, model.Warning{
+			Severity: model.SeverityInfo, Code: code, Package: pkg.Name, Provider: providerName, Message: msg,
+		})
+	}
 	for _, pkg := range doc.Packages() {
 		resolution := e.resolver.Resolve(e.resolveInput(pkg, e.findExisting(ctx, pkg, available), available, opts))
 		state := model.State{
@@ -521,31 +738,49 @@ func (e *Engine) Update(ctx context.Context, doc *config.Document, opts Options)
 					pkg.Name, pkg.Version, resolution.Provider, shortOr(inst.Version, "an unknown version")))
 				continue
 			}
+			obs := e.observe(ctx, p, pkg, inst)
 			conflict, note, err := e.pinConflict(ctx, doc, p, pkg, resolution.Provider, opts)
 			switch {
 			case err != nil:
 				failures = append(failures, fmt.Sprintf("%s: %s", pkg.Name, err.Error()))
 			case conflict == nil:
-				unchanged = append(unchanged, note)
+				skip(model.WarnPinKept, pkg, resolution.Provider, note)
 			default:
 				res.PinConflicts = append(res.PinConflicts, *conflict)
 				if conflict.Resolution == "updated" {
 					res.ConfigChanged = true
 					res.ConfigPath = conflict.ConfigPath
-					res.Applied = append(res.Applied, model.PlannedAction{
-						Action: model.ActionUpdate,
-						State:  state,
+					action := model.PlannedAction{
+						Action:  model.ActionUpdate,
+						State:   state,
+						Outcome: model.OutcomeApplied,
 						Note: fmt.Sprintf("%s -> %s; pin rewritten in %s",
 							pkg.Version, conflict.Available, conflict.ConfigPath),
-					})
+						Changes: []model.ActionTransition{{Kind: model.ChangeVersion, From: pkg.Version, To: conflict.Available}},
+					}
+					observed := obs.finish(ctx, model.EffectModify)
+					observed = append(observed, packageEffect(model.EffectModify, resolution.Provider, pkg.Name,
+						inst, pkg.Version, conflict.Available, model.EvidenceReported))
+					after := pkg
+					after.Version = conflict.Available
+					if cc := model.DiffEntry(conflict.ConfigPath, &pkg, &after); cc != nil {
+						cc.Applied = true
+						action.ConfigChanges = append(action.ConfigChanges, *cc)
+						observed = append(observed, configEffect(*cc, model.EvidenceObserved))
+					}
+					res.Applied = append(res.Applied, finishEffects(action, observed))
 				} else {
-					unchanged = append(unchanged, note)
+					unchanged = append(unchanged, model.Warning{
+						Severity: model.SeverityWarn, Code: model.WarnPinConflict, Package: pkg.Name,
+						Provider: resolution.Provider, Message: note,
+					})
 				}
 			}
 			continue
 		}
 		if !p.Capabilities().Update {
-			unchanged = append(unchanged, fmt.Sprintf("%s: provider %s cannot update", pkg.Name, resolution.Provider))
+			skip(model.WarnUpdateUnsupported, pkg, resolution.Provider,
+				fmt.Sprintf("%s: provider %s cannot update", pkg.Name, resolution.Provider))
 			continue
 		}
 		before, err := p.Installed(ctx, pkg)
@@ -554,42 +789,63 @@ func (e *Engine) Update(ctx context.Context, doc *config.Document, opts Options)
 			continue
 		}
 		if before == nil {
-			unchanged = append(unchanged, fmt.Sprintf("%s is not installed; run 'starpoint sync'", pkg.Name))
+			skip(model.WarnNotInstalled, pkg, resolution.Provider,
+				fmt.Sprintf("%s is not installed; run 'starpoint sync'", pkg.Name))
 			continue
 		}
+		before = e.withPath(before)
+		state.Current = before
+		from := shortOr(versionOf(before), "unknown")
 		if opts.DryRun {
 			res.Applied = append(res.Applied, model.PlannedAction{
-				Action: model.ActionUpdate,
-				State:  state,
-				Note:   fmt.Sprintf("currently %s", shortOr(before.Version, "an unknown version")),
+				Action:  model.ActionUpdate,
+				State:   state,
+				Outcome: model.OutcomePlanned,
+				Note:    fmt.Sprintf("currently %s", shortOr(before.Version, "an unknown version")),
+				Changes: []model.ActionTransition{{Kind: model.ChangeVersion, From: versionOf(before), To: "newest"}},
+				Effects: []model.Effect{packageEffect(model.EffectModify, resolution.Provider, pkg.Name,
+					before, versionOf(before), "newest", model.EvidencePlanned)},
 			})
 			continue
 		}
+		obs := e.observe(ctx, p, pkg, before)
 		after, err := p.Update(ctx, pkg)
+		observed := obs.finish(ctx, model.EffectModify, after)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %s", pkg.Name, err.Error()))
+			if len(observed) > 0 {
+				// A failed upgrade that still changed files is reported as an
+				// action, so those changes are not invisible.
+				res.Applied = append(res.Applied, finishEffects(failed(model.PlannedAction{
+					Action: model.ActionUpdate, State: state, Note: err.Error(),
+				}, err), observed))
+			}
 			continue
 		}
-		from := shortOr(versionOf(before), "unknown")
 		to := shortOr(versionOf(after), "unknown")
-		if from == to {
-			unchanged = append(unchanged, fmt.Sprintf("%s is already current (%s)", pkg.Name, to))
+		if from == to && len(observed) == 0 {
+			skip(model.WarnAlreadyCurrent, pkg, resolution.Provider,
+				fmt.Sprintf("%s is already current (%s)", pkg.Name, to))
 			continue
 		}
-		res.Applied = append(res.Applied, model.PlannedAction{
-			Action: model.ActionUpdate,
-			State:  state,
-			Note:   fmt.Sprintf("%s -> %s", from, to),
-		})
+		observed = append(observed, packageEffect(model.EffectModify, resolution.Provider, pkg.Name,
+			after, versionOf(before), versionOf(after), model.EvidenceReported))
+		action := finishEffects(model.PlannedAction{
+			Action:  model.ActionUpdate,
+			State:   state,
+			Outcome: model.OutcomeApplied,
+			Note:    fmt.Sprintf("%s -> %s", from, to),
+			Changes: []model.ActionTransition{{Kind: model.ChangeVersion, From: versionOf(before), To: versionOf(after)}},
+		}, observed)
+		res.Applied = append(res.Applied, action)
+		res.Warnings = append(res.Warnings, action.Warnings...)
 		// Record execution in tracking system
 		if e.tracker != nil {
 			_ = e.tracker.Record(pkg.Name, opts.Dir, time.Now())
 		}
 	}
 
-	for _, u := range unchanged {
-		res.Warnings = append(res.Warnings, model.Warning{Severity: model.SeverityInfo, Message: u})
-	}
+	res.Warnings = append(res.Warnings, unchanged...)
 	if len(failures) > 0 {
 		return res, fmt.Errorf("update finished with problems:\n  %s", strings.Join(failures, "\n  "))
 	}

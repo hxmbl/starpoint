@@ -302,6 +302,49 @@ func (e *Engine) IncompleteTransitions(ctx context.Context, doc *config.Document
 // The phases are derived rather than assumed, so calling this on an interrupted
 // transition resumes it instead of starting over.
 func (e *Engine) ExecuteTransition(ctx context.Context, st model.State, opts Options) (model.Transition, error) {
+	start := e.TransitionFor(ctx, st, opts)
+	if opts.DryRun {
+		t, err := e.executeTransition(ctx, st, opts)
+		t.Effects, t.Warnings = e.plannedTransition(ctx, start)
+		model.SortEffects(t.Effects)
+		return t, err
+	}
+	target := e.providerOrNil(start.To.Name)
+	old := e.providerOrNil(start.From.Name)
+	obs := e.observeAll(ctx, []provider.Provider{target, old}, st.Package, start.Previous, start.Installed)
+	var shared string
+	if start.Phase == model.TransitionPlanned && target != nil {
+		shared, _ = e.sharedExecutable(ctx, start, st.Package, target)
+	}
+
+	t, err := e.executeTransition(ctx, st, opts)
+
+	var reported []*model.Installation
+	if t.Installed != nil {
+		reported = append(reported, t.Installed)
+	}
+	effects := obs.finish(ctx, model.EffectCreate, reported...)
+	// The package-level record of the move: what each provider now holds that
+	// it did not, or no longer holds that it did.
+	if start.Previous != nil && t.OldRemoved && start.From.Name != "" {
+		effects = append(effects, packageEffect(model.EffectDelete, start.From.Name, st.Package.Name,
+			start.Previous, start.Previous.Version, "", model.EvidenceReported))
+	}
+	if start.Installed == nil && t.Installed != nil {
+		effects = append(effects, packageEffect(model.EffectCreate, t.To.Name, st.Package.Name,
+			t.Installed, "", t.Installed.Version, model.EvidenceReported))
+	}
+	model.SortEffects(effects)
+	t.Effects = effects
+	if shared != "" {
+		t.Warnings = append(t.Warnings, sharedWarning(start, shared))
+	}
+	t.Warnings = append(t.Warnings, effectWarnings(st.Package.Name, effects)...)
+	return t, err
+}
+
+// executeTransition is ExecuteTransition without the observation around it.
+func (e *Engine) executeTransition(ctx context.Context, st model.State, opts Options) (model.Transition, error) {
 	t := e.TransitionFor(ctx, st, opts)
 	pkg := st.Package
 

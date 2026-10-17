@@ -53,6 +53,10 @@ type Engine struct {
 	// like one that never happened. The engine keeps working and the caller
 	// reports the problem.
 	historyErr error
+
+	// home is the directory whose shell start-up files are watched for changes
+	// while an action runs. Empty means the user's home directory.
+	home string
 }
 
 // HistoryError reports why transition history is unavailable, or nil if it
@@ -63,6 +67,7 @@ func (e *Engine) HistoryError() error { return e.historyErr }
 type stores struct {
 	historyPath string
 	runsPath    string
+	home        string
 }
 
 // Option configures an Engine's own stores.
@@ -82,6 +87,12 @@ func WithStateDir(dir string) Option {
 		s.historyPath = history.PathIn(dir)
 		s.runsPath = tracking.PathIn(dir)
 	}
+}
+
+// WithHome sets the home directory whose shell start-up files are watched
+// while actions run. Tests use it so they never depend on a real home.
+func WithHome(dir string) Option {
+	return func(s *stores) { s.home = dir }
 }
 
 // New builds an Engine.
@@ -104,7 +115,7 @@ func New(reg *provider.Registry, loc *locator.Locator, options ...Option) *Engin
 			}
 		}
 	}
-	return &Engine{reg: reg, locator: loc, resolver: resolve.New(reg), tracker: tracker, history: hist, historyErr: histErr}
+	return &Engine{reg: reg, locator: loc, resolver: resolve.New(reg), tracker: tracker, history: hist, historyErr: histErr, home: cfg.home}
 }
 
 // SetTracker sets the execution tracker. This is primarily for testing.
@@ -195,6 +206,8 @@ func (e *Engine) Plan(ctx context.Context, doc *config.Document, opts Options) (
 			action.Transition = &t
 			plan.Transitions = append(plan.Transitions, t)
 		}
+		action = e.describePlanned(ctx, doc, action)
+		action.Outcome = model.OutcomePlanned
 		plan.Actions = append(plan.Actions, action)
 	}
 	return plan, warnings, nil
@@ -465,6 +478,7 @@ func (e *Engine) validate(pkgs []model.Package, available map[string]provider.He
 		if seen[p.Name] {
 			out = append(out, model.Warning{
 				Severity: model.SeverityWarn,
+				Code:     model.WarnDuplicateDeclaration,
 				Package:  p.Name,
 				Message:  "declared more than once in the merged configuration",
 			})
@@ -477,6 +491,7 @@ func (e *Engine) validate(pkgs []model.Package, available map[string]provider.He
 			case !ok:
 				out = append(out, model.Warning{
 					Severity: model.SeverityError,
+					Code:     model.WarnProviderUnknown,
 					Package:  p.Name,
 					Provider: p.Provider,
 					Message:  "the configured provider is not known to this build of Starpoint",
@@ -484,6 +499,7 @@ func (e *Engine) validate(pkgs []model.Package, available map[string]provider.He
 			case !h.Available:
 				out = append(out, model.Warning{
 					Severity: model.SeverityWarn,
+					Code:     model.WarnProviderUnavailable,
 					Package:  p.Name,
 					Provider: p.Provider,
 					Message:  "the configured provider is not available: " + h.Reason,
@@ -493,6 +509,7 @@ func (e *Engine) validate(pkgs []model.Package, available map[string]provider.He
 		if p.Scope == model.ScopeProject && p.Origin.Path == "" {
 			out = append(out, model.Warning{
 				Severity: model.SeverityWarn,
+				Code:     model.WarnProjectScopeUndecl,
 				Package:  p.Name,
 				Message:  "declared as project-scoped but no project configuration declares it",
 			})
@@ -502,6 +519,7 @@ func (e *Engine) validate(pkgs []model.Package, available map[string]provider.He
 		if !available[name].Available {
 			out = append(out, model.Warning{
 				Severity: model.SeverityInfo,
+				Code:     model.WarnProviderUnavailable,
 				Provider: name,
 				Message:  "not available on this machine",
 			})
@@ -531,6 +549,7 @@ func unavailableOwnerWarnings(st model.State, available map[string]provider.Heal
 	}
 	return []model.Warning{{
 		Severity: model.SeverityWarn,
+		Code:     model.WarnOwnerUnavailable,
 		Package:  st.Package.Name,
 		Provider: st.Res.Provider,
 		Message: fmt.Sprintf("nothing can be done for it: provider %s is unavailable (%s)",
@@ -762,23 +781,47 @@ func (e *Engine) Prune(ctx context.Context, doc *config.Document, opts Options) 
 		items, err := p.Discover(ctx)
 		if err != nil {
 			failures = append(failures, provName+": "+err.Error())
+			res.Warnings = append(res.Warnings, model.Warning{
+				Severity: model.SeverityError, Code: model.WarnDiscoverFailed, Provider: provName,
+				Message: "could not list what " + provName + " has installed, so nothing it owns was considered: " + err.Error(),
+			})
 			continue
 		}
 		for _, inst := range items {
 			if inst.Scope == model.ScopeGlobal || inst.Scope == model.ScopeProject || managed[inst.Name] {
 				continue
 			}
+			inst := inst
+			located := e.withPath(&inst)
 			pkg := model.Package{Name: inst.Name, Provider: provName, Scope: model.ScopeUser}
-			action := model.PlannedAction{Action: model.ActionRemove, State: model.State{Package: pkg, Current: &inst, Res: model.Resolution{Provider: provName}}}
+			action := model.PlannedAction{
+				Action:  model.ActionRemove,
+				State:   model.State{Package: pkg, Current: located, Res: model.Resolution{Provider: provName}},
+				Note:    "not declared in any configuration",
+				Outcome: model.OutcomePlanned,
+				Effects: e.plannedRemove(ctx, p, pkg, located),
+			}
+			model.SortEffects(action.Effects)
 			if opts.DryRun {
 				res.Applied = append(res.Applied, action)
 				continue
 			}
-			if err := p.Remove(ctx, pkg); err != nil {
+			obs := e.observe(ctx, p, pkg, located)
+			err := p.Remove(ctx, pkg)
+			observed := obs.finish(ctx, model.EffectDelete)
+			if err != nil {
 				failures = append(failures, provName+"/"+inst.Name+": "+err.Error())
+				action = finishEffects(failed(action, err), observed)
+				res.Applied = append(res.Applied, action)
+				res.Warnings = append(res.Warnings, action.Warnings...)
 				continue
 			}
+			observed = append(observed, packageEffect(model.EffectDelete, provName, pkg.Name, located,
+				inst.Version, "", model.EvidenceReported))
+			action = finishEffects(action, observed)
+			action.Outcome = model.OutcomeApplied
 			res.Applied = append(res.Applied, action)
+			res.Warnings = append(res.Warnings, action.Warnings...)
 		}
 	}
 	if len(failures) > 0 {
