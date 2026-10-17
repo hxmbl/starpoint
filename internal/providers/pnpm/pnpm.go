@@ -349,3 +349,16 @@ func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string
 	}
 	return strings.TrimSpace(shell.FirstLine(p.stripNoise(res.Stdout))), nil
 }
+
+var _ provider.Privileged = (*Provider)(nil)
+
+// Privilege classifies pnpm by its global directory (`pnpm root -g`), asked
+// as the invoking user: in their home or owned by them, pnpm runs as them;
+// a system location runs it as root.
+func (p *Provider) Privilege(ctx context.Context, q exec.Runner, t provider.PrivilegeTarget) provider.PrivilegeDecision {
+	dir := ""
+	if res, err := q.Run(ctx, p.exec(), "root", "-g"); err == nil && !res.Failed() {
+		dir = strings.TrimSpace(shell.FirstLine(res.Stdout))
+	}
+	return shell.PrivilegeAt(dir, "pnpm's global directory", t)
+}

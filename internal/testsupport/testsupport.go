@@ -149,6 +149,11 @@ type FakeProvider struct {
 	InstallGuard func(req provider.Request) error
 	// InstallHook runs after a successful Install.
 	InstallHook func(req provider.Request)
+	// RunsAs is the fake's classification for an elevated run. Empty means
+	// root, the classification of a provider that does not declare one.
+	RunsAs provider.Privilege
+	// InstallDirsFor is what InstallDirs reports.
+	InstallDirsFor func(pkg model.Package) []string
 
 	// InstalledDelay makes Installed take this long, honouring context
 	// cancellation. Tests use it to prove a slow provider cannot hang a command,
@@ -166,6 +171,27 @@ type FakeProvider struct {
 }
 
 var _ provider.Provider = (*FakeProvider)(nil)
+
+var (
+	_ provider.Privileged         = (*FakeProvider)(nil)
+	_ provider.InstallDirProvider = (*FakeProvider)(nil)
+)
+
+// Privilege implements provider.Privileged from RunsAs.
+func (f *FakeProvider) Privilege(context.Context, exec.Runner, provider.PrivilegeTarget) provider.PrivilegeDecision {
+	if f.RunsAs == provider.PrivilegeUser {
+		return provider.PrivilegeDecision{Privilege: provider.PrivilegeUser, Reason: "fake " + f.ProviderName + " installs into the user's home"}
+	}
+	return provider.PrivilegeDecision{Privilege: provider.PrivilegeRoot, Reason: "fake " + f.ProviderName + " installs system software"}
+}
+
+// InstallDirs implements provider.InstallDirProvider from InstallDirsFor.
+func (f *FakeProvider) InstallDirs(_ context.Context, pkg model.Package) []string {
+	if f.InstallDirsFor == nil {
+		return nil
+	}
+	return f.InstallDirsFor(pkg)
+}
 
 // NewFakeProvider builds a provider with sensible defaults.
 func NewFakeProvider(name string, kind provider.Kind) *FakeProvider {

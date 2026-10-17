@@ -31,7 +31,6 @@ package rustup
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -550,12 +549,12 @@ func (p *Provider) ToolchainHome() string {
 // home whose bin directory holds its proxies.
 func (p *Provider) StateDirs(context.Context) []string {
 	var out []string
-	if dir := os.Getenv("RUSTUP_HOME"); dir != "" {
+	if dir := exec.Getenv(p.runner, "RUSTUP_HOME"); dir != "" {
 		out = append(out, dir)
 	} else if p.home != "" {
 		out = append(out, filepath.Join(p.home, ".rustup"))
 	}
-	if dir := os.Getenv("CARGO_HOME"); dir != "" {
+	if dir := exec.Getenv(p.runner, "CARGO_HOME"); dir != "" {
 		out = append(out, dir)
 	} else if p.home != "" {
 		out = append(out, filepath.Join(p.home, ".cargo"))
@@ -616,4 +615,12 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 		return shell.Failure(p.Name(), "verify", "executable failed verification", nil)
 	}
 	return nil
+}
+
+var _ provider.Privileged = (*Provider)(nil)
+
+// Privilege classifies the provider for an elevated run: it runs as the
+// invoking user.
+func (p *Provider) Privilege(context.Context, exec.Runner, provider.PrivilegeTarget) provider.PrivilegeDecision {
+	return shell.UserPrivilege("rustup manages toolchains in the user's home (~/.rustup, ~/.cargo)")
 }

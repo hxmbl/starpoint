@@ -199,10 +199,10 @@ func (p *Provider) Update(ctx context.Context, pkg model.Package) (*model.Instal
 // Starpoint watch the wrong directory with confidence. With it set, effects are
 // still reported through the paths Cargo returns.
 func (p *Provider) ExecutableDir(context.Context) string {
-	if root := os.Getenv("CARGO_INSTALL_ROOT"); root != "" {
+	if root := exec.Getenv(p.runner, "CARGO_INSTALL_ROOT"); root != "" {
 		return filepath.Join(root, "bin")
 	}
-	if home := os.Getenv("CARGO_HOME"); home != "" {
+	if home := exec.Getenv(p.runner, "CARGO_HOME"); home != "" {
 		return filepath.Join(home, "bin")
 	}
 	if p.home == "" {
@@ -215,7 +215,7 @@ func (p *Provider) ExecutableDir(context.Context) string {
 // index and cache, git checkouts and install records (.crates.toml), which
 // `cargo install` writes beside the bin directory.
 func (p *Provider) StateDirs(context.Context) []string {
-	if home := os.Getenv("CARGO_HOME"); home != "" {
+	if home := exec.Getenv(p.runner, "CARGO_HOME"); home != "" {
 		return []string{home}
 	}
 	if p.home == "" {
@@ -337,4 +337,12 @@ func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string
 		return strings.Trim(strings.TrimSpace(rest), `"`), nil
 	}
 	return "", nil
+}
+
+var _ provider.Privileged = (*Provider)(nil)
+
+// Privilege classifies the provider for an elevated run: it runs as the
+// invoking user.
+func (p *Provider) Privilege(context.Context, exec.Runner, provider.PrivilegeTarget) provider.PrivilegeDecision {
+	return shell.UserPrivilege("cargo install writes to the user's Cargo home (~/.cargo)")
 }

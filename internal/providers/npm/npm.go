@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/hxmbl/starpoint/internal/exec"
@@ -290,4 +291,64 @@ func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string
 		return "", shell.Failure(p.Name(), "latest", shell.Diagnostic(res.Field()), nil)
 	}
 	return strings.TrimSpace(shell.FirstLine(res.Stdout)), nil
+}
+
+var (
+	_ provider.Privileged         = (*Provider)(nil)
+	_ provider.InstallDirProvider = (*Provider)(nil)
+	_ provider.StateDirProvider   = (*Provider)(nil)
+)
+
+// Privilege classifies npm by its global prefix, asked as the invoking user
+// (so their ~/.npmrc decides): a prefix in their home (nvm, ~/.npm-global)
+// or owned by them runs npm as them; a system prefix (/usr, a root-owned
+// /usr/local) runs it as root, and what it creates there is made readable by
+// everyone.
+func (p *Provider) Privilege(ctx context.Context, q exec.Runner, t provider.PrivilegeTarget) provider.PrivilegeDecision {
+	dir := ""
+	if res, err := q.Run(ctx, "npm", "config", "get", "prefix"); err == nil && !res.Failed() {
+		dir = strings.TrimSpace(shell.FirstLine(res.Stdout))
+	}
+	return shell.PrivilegeAt(dir, "npm's global prefix", t)
+}
+
+// globalModules is the directory global packages are installed in:
+// <prefix>/lib/node_modules, or <prefix>/node_modules on Windows.
+func (p *Provider) globalModules(ctx context.Context) string {
+	if p.prefix == "" {
+		p.prefix = p.resolvePrefix(ctx)
+	}
+	if p.prefix == "" {
+		return ""
+	}
+	if runtime.GOOS == "windows" {
+		return filepath.Join(p.prefix, "node_modules")
+	}
+	return filepath.Join(p.prefix, "lib", "node_modules")
+}
+
+// InstallDirs reports where a global package's files land, beside the
+// command npm links into <prefix>/bin.
+func (p *Provider) InstallDirs(ctx context.Context, pkg model.Package) []string {
+	dir := p.globalModules(ctx)
+	if dir == "" || pkg.Name == "" {
+		return nil
+	}
+	return []string{filepath.Join(dir, filepath.FromSlash(pkg.Name))}
+}
+
+// StateDirs reports npm's cache (~/.npm by default), which every install
+// writes to, and the global node_modules directory. They are only ever
+// checked for root-owned entries under the invoking user's home.
+func (p *Provider) StateDirs(ctx context.Context) []string {
+	var out []string
+	if res, err := p.runner.Run(ctx, "npm", "config", "get", "cache"); err == nil && !res.Failed() {
+		if dir := strings.TrimSpace(shell.FirstLine(res.Stdout)); filepath.IsAbs(dir) {
+			out = append(out, dir)
+		}
+	}
+	if dir := p.globalModules(ctx); dir != "" {
+		out = append(out, dir)
+	}
+	return out
 }

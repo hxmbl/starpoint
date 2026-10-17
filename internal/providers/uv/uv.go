@@ -221,10 +221,10 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 // ExecutableDir reports the directory uv links tool executables into, following
 // uv's own precedence: UV_TOOL_BIN_DIR, then XDG_BIN_HOME, then ~/.local/bin.
 func (p *Provider) ExecutableDir(context.Context) string {
-	if dir := os.Getenv("UV_TOOL_BIN_DIR"); dir != "" {
+	if dir := exec.Getenv(p.runner, "UV_TOOL_BIN_DIR"); dir != "" {
 		return dir
 	}
-	if dir := os.Getenv("XDG_BIN_HOME"); dir != "" {
+	if dir := exec.Getenv(p.runner, "XDG_BIN_HOME"); dir != "" {
 		return dir
 	}
 	if p.home == "" {
@@ -240,18 +240,18 @@ func (p *Provider) ExecutableDir(context.Context) string {
 func (p *Provider) StateDirs(context.Context) []string {
 	var out []string
 	switch {
-	case os.Getenv("UV_TOOL_DIR") != "":
-		out = append(out, os.Getenv("UV_TOOL_DIR"))
-	case os.Getenv("XDG_DATA_HOME") != "":
-		out = append(out, filepath.Join(os.Getenv("XDG_DATA_HOME"), "uv", "tools"))
+	case exec.Getenv(p.runner, "UV_TOOL_DIR") != "":
+		out = append(out, exec.Getenv(p.runner, "UV_TOOL_DIR"))
+	case exec.Getenv(p.runner, "XDG_DATA_HOME") != "":
+		out = append(out, filepath.Join(exec.Getenv(p.runner, "XDG_DATA_HOME"), "uv", "tools"))
 	case p.home != "":
 		out = append(out, filepath.Join(p.home, ".local", "share", "uv", "tools"))
 	}
 	switch {
-	case os.Getenv("UV_CACHE_DIR") != "":
-		out = append(out, os.Getenv("UV_CACHE_DIR"))
-	case os.Getenv("XDG_CACHE_HOME") != "":
-		out = append(out, filepath.Join(os.Getenv("XDG_CACHE_HOME"), "uv"))
+	case exec.Getenv(p.runner, "UV_CACHE_DIR") != "":
+		out = append(out, exec.Getenv(p.runner, "UV_CACHE_DIR"))
+	case exec.Getenv(p.runner, "XDG_CACHE_HOME") != "":
+		out = append(out, filepath.Join(exec.Getenv(p.runner, "XDG_CACHE_HOME"), "uv"))
 	case p.home != "":
 		out = append(out, filepath.Join(p.home, ".cache", "uv"))
 	}
@@ -307,4 +307,12 @@ func classify(op string, res exec.Result) error {
 		}
 		return shell.Failure(Name, op, msg, nil)
 	}
+}
+
+var _ provider.Privileged = (*Provider)(nil)
+
+// Privilege classifies the provider for an elevated run: it runs as the
+// invoking user.
+func (p *Provider) Privilege(context.Context, exec.Runner, provider.PrivilegeTarget) provider.PrivilegeDecision {
+	return shell.UserPrivilege("uv installs tools into the user's home (~/.local/share/uv/tools, ~/.local/bin)")
 }

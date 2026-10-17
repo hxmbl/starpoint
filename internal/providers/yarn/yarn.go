@@ -359,3 +359,16 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 	}
 	return nil
 }
+
+var _ provider.Privileged = (*Provider)(nil)
+
+// Privilege classifies yarn by its global directory (`yarn global dir`),
+// asked as the invoking user: by default it is under their home
+// (~/.config/yarn/global), so yarn runs as them.
+func (p *Provider) Privilege(ctx context.Context, q exec.Runner, t provider.PrivilegeTarget) provider.PrivilegeDecision {
+	dir := ""
+	if res, err := q.Run(ctx, "yarn", "global", "dir"); err == nil && !res.Failed() {
+		dir = strings.TrimSpace(shell.FirstLine(res.Stdout))
+	}
+	return shell.PrivilegeAt(dir, "yarn's global directory", t)
+}

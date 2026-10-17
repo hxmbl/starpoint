@@ -365,3 +365,23 @@ func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string
 	}
 	return "", nil
 }
+
+var _ provider.Privileged = (*Provider)(nil)
+
+// Privilege classifies Homebrew by its own rule: brew runs as the owner of
+// its prefix and refuses to run as root. A prefix that belongs to the
+// invoking user (the normal case on macOS, and for a Linuxbrew in their home)
+// runs brew as them. Any other prefix is left to root, which brew itself
+// will refuse, so the refusal reaches the user in brew's own words instead
+// of Starpoint running brew as some third account.
+func (p *Provider) Privilege(ctx context.Context, q exec.Runner, t provider.PrivilegeTarget) provider.PrivilegeDecision {
+	dir := ""
+	if res, err := q.Run(ctx, "brew", "--prefix"); err == nil && !res.Failed() {
+		dir = strings.TrimSpace(shell.FirstLine(res.Stdout))
+	}
+	d := shell.PrivilegeAt(dir, "Homebrew's prefix", t)
+	if d.Privilege == provider.PrivilegeRoot {
+		d.Reason += "; Homebrew runs as the owner of its prefix and refuses to run as root"
+	}
+	return d
+}

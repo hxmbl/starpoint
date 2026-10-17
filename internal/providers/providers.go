@@ -6,9 +6,6 @@
 package providers
 
 import (
-	"os"
-
-	"github.com/hxmbl/starpoint/internal/exec"
 	"github.com/hxmbl/starpoint/internal/provider"
 	"github.com/hxmbl/starpoint/internal/providers/apt"
 	"github.com/hxmbl/starpoint/internal/providers/brew"
@@ -42,23 +39,50 @@ import (
 // not software on this machine, and Bun and Deno cannot enumerate what they have
 // installed — a provider that cannot answer "what do you own?" would make
 // Starpoint's central promise false. Both are recorded in docs/next-tasks.md.
-func DefaultRegistry() *provider.Registry {
-	r := exec.RealRunner{}
-	home, _ := os.UserHomeDir()
+func DefaultRegistry() *provider.Registry { return New(nil) }
+
+// New builds the built-in registry for a run whose privileges pv describes.
+// A nil pv, or one without an Identity, runs every provider as Starpoint
+// itself. With an Identity (an elevated run for an invoking user), each
+// provider's commands run as the account its classification names: see
+// Privileges.
+func New(pv *Privileges) *provider.Registry {
+	home := pv.home()
 	reg := provider.NewRegistry()
-	reg.Register(system.New(r))
-	reg.Register(brew.New(r))
-	reg.Register(apt.New(r))
-	reg.Register(dnf.New(r))
-	reg.Register(pacman.New(r))
-	reg.Register(uv.New(r, home))
-	reg.Register(pip.New(r))
-	reg.Register(rustup.New(r, home))
-	reg.Register(cargo.New(r, home))
-	reg.Register(npm.New(r))
-	reg.Register(pnpm.New(r))
-	reg.Register(yarn.New(r))
-	reg.Register(gem.New(r))
-	reg.Register(golang.New(r, home))
+	var (
+		sysP    *system.Provider
+		brewP   *brew.Provider
+		aptP    *apt.Provider
+		dnfP    *dnf.Provider
+		pacmanP *pacman.Provider
+		uvP     *uv.Provider
+		pipP    *pip.Provider
+		rustupP *rustup.Provider
+		cargoP  *cargo.Provider
+		npmP    *npm.Provider
+		pnpmP   *pnpm.Provider
+		yarnP   *yarn.Provider
+		gemP    *gem.Provider
+		goP     *golang.Provider
+	)
+	// Each runner asks for its provider lazily, because the provider is
+	// built with the runner.
+	sysP = system.New(pv.Runner(func() provider.Provider { return sysP }))
+	brewP = brew.New(pv.Runner(func() provider.Provider { return brewP }))
+	aptP = apt.New(pv.Runner(func() provider.Provider { return aptP }))
+	dnfP = dnf.New(pv.Runner(func() provider.Provider { return dnfP }))
+	pacmanP = pacman.New(pv.Runner(func() provider.Provider { return pacmanP }))
+	uvP = uv.New(pv.Runner(func() provider.Provider { return uvP }), home)
+	pipP = pip.New(pv.Runner(func() provider.Provider { return pipP }))
+	rustupP = rustup.New(pv.Runner(func() provider.Provider { return rustupP }), home)
+	cargoP = cargo.New(pv.Runner(func() provider.Provider { return cargoP }), home)
+	npmP = npm.New(pv.Runner(func() provider.Provider { return npmP }))
+	pnpmP = pnpm.New(pv.Runner(func() provider.Provider { return pnpmP }))
+	yarnP = yarn.New(pv.Runner(func() provider.Provider { return yarnP }))
+	gemP = gem.New(pv.Runner(func() provider.Provider { return gemP }))
+	goP = golang.New(pv.Runner(func() provider.Provider { return goP }), home)
+	for _, p := range []provider.Provider{sysP, brewP, aptP, dnfP, pacmanP, uvP, pipP, rustupP, cargoP, npmP, pnpmP, yarnP, gemP, goP} {
+		reg.Register(p)
+	}
 	return reg
 }

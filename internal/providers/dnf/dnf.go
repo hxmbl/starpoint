@@ -317,3 +317,10 @@ func osReleaseIDs(contents string) map[string]bool {
 	}
 	return ids
 }
+
+var _ provider.Privileged = (*Provider)(nil)
+
+// Privilege classifies the provider for an elevated run: it runs as root.
+func (p *Provider) Privilege(context.Context, exec.Runner, provider.PrivilegeTarget) provider.PrivilegeDecision {
+	return shell.RootPrivilege("dnf installs system packages, which needs root")
+}

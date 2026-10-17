@@ -110,10 +110,10 @@ func (p *Provider) binDir(ctx context.Context) string {
 // and the default, which is still where a later `go install` would write.
 func (p *Provider) ExecutableDir(ctx context.Context) string {
 	if _, err := p.runner.LookPath("go"); err != nil {
-		if dir := os.Getenv("GOBIN"); dir != "" {
+		if dir := exec.Getenv(p.runner, "GOBIN"); dir != "" {
 			return dir
 		}
-		if gopath := filepath.SplitList(os.Getenv("GOPATH")); len(gopath) > 0 && gopath[0] != "" {
+		if gopath := filepath.SplitList(exec.Getenv(p.runner, "GOPATH")); len(gopath) > 0 && gopath[0] != "" {
 			return filepath.Join(gopath[0], "bin")
 		}
 		if p.home == "" {
@@ -372,4 +372,12 @@ func (p *Provider) Verify(ctx context.Context, pkg model.Package) error {
 		return shell.Failure(p.Name(), "verify", "executable failed verification", nil)
 	}
 	return nil
+}
+
+var _ provider.Privileged = (*Provider)(nil)
+
+// Privilege classifies the provider for an elevated run: it runs as the
+// invoking user.
+func (p *Provider) Privilege(context.Context, exec.Runner, provider.PrivilegeTarget) provider.PrivilegeDecision {
+	return shell.UserPrivilege("go install writes to the user's GOPATH or GOBIN and module cache")
 }

@@ -16,7 +16,6 @@ package pip
 
 import (
 	"context"
-	"os"
 	pathpkg "path"
 	"path/filepath"
 	"runtime"
@@ -383,7 +382,7 @@ func (p *Provider) ExecutableDir(ctx context.Context) string {
 		// rather than guess, report that the location is unknown.
 		return ""
 	}
-	base := os.Getenv("PYTHONUSERBASE")
+	base := exec.Getenv(p.runner, "PYTHONUSERBASE")
 	if base == "" {
 		base = p.userBase(ctx)
 	}
@@ -395,7 +394,27 @@ func (p *Provider) ExecutableDir(ctx context.Context) string {
 }
 
 // userBase asks the interpreter pip belongs to for its user base.
-func (p *Provider) userBase(ctx context.Context) string {
+func (p *Provider) userBase(ctx context.Context) string { return p.site(ctx, "--user-base") }
+
+var _ provider.StateDirProvider = (*Provider)(nil)
+
+// StateDirs reports the user site-packages directory (`python -m site
+// --user-site`), where `pip install --user` puts the packages themselves.
+// It is only ever checked for root-owned entries under the invoking user's
+// home, after pip ran as that user.
+func (p *Provider) StateDirs(ctx context.Context) []string {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	if dir := p.site(ctx, "--user-site"); filepath.IsAbs(dir) {
+		return []string{dir}
+	}
+	return nil
+}
+
+// site asks the interpreter pip belongs to for one of its user-scheme
+// directories.
+func (p *Provider) site(ctx context.Context, flag string) string {
 	if _, _, err := p.locate(); err != nil {
 		return ""
 	}
@@ -410,7 +429,7 @@ func (p *Provider) userBase(ctx context.Context) string {
 		if _, err := p.runner.LookPath(python); err != nil {
 			continue
 		}
-		res, err := p.runner.Run(ctx, python, "-m", "site", "--user-base")
+		res, err := p.runner.Run(ctx, python, "-m", "site", flag)
 		if err != nil || res.Failed() {
 			continue
 		}
@@ -447,4 +466,12 @@ func parenthesisedVersion(line string) string {
 		return ""
 	}
 	return strings.TrimSpace(strings.Fields(line[open+1:end] + " ")[0])
+}
+
+var _ provider.Privileged = (*Provider)(nil)
+
+// Privilege classifies the provider for an elevated run: it runs as the
+// invoking user.
+func (p *Provider) Privilege(context.Context, exec.Runner, provider.PrivilegeTarget) provider.PrivilegeDecision {
+	return shell.UserPrivilege("pip installs with --user, into the user's site-packages and ~/.local/bin")
 }

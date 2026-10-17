@@ -163,3 +163,10 @@ func OwnsPath(path string) bool {
 	}
 	return false
 }
+
+var _ provider.Privileged = (*Provider)(nil)
+
+// Privilege classifies the provider for an elevated run: it runs as root.
+func (p *Provider) Privilege(context.Context, exec.Runner, provider.PrivilegeTarget) provider.PrivilegeDecision {
+	return shell.RootPrivilege("the operating system's own software is read-only to Starpoint; its inventory is read as root")
+}

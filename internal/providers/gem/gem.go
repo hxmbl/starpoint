@@ -304,3 +304,17 @@ func (p *Provider) LatestVersion(ctx context.Context, pkg model.Package) (string
 	}
 	return "", nil
 }
+
+var _ provider.Privileged = (*Provider)(nil)
+
+// Privilege classifies gem by the directory `gem install` writes to (`gem
+// environment gemdir`), asked as the invoking user: an rbenv, rvm, chruby or
+// GEM_HOME installation in their home runs gem as them; the system Ruby's gem
+// directory runs it as root.
+func (p *Provider) Privilege(ctx context.Context, q exec.Runner, t provider.PrivilegeTarget) provider.PrivilegeDecision {
+	dir := ""
+	if res, err := q.Run(ctx, "gem", "environment", "gemdir"); err == nil && !res.Failed() {
+		dir = strings.TrimSpace(shell.FirstLine(res.Stdout))
+	}
+	return shell.PrivilegeAt(dir, "gem's installation directory", t)
+}
