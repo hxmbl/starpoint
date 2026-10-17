@@ -10,7 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/hxmbl/starpoint/internal/auditlog"
+	"github.com/hxmbl/starpoint/internal/config"
 	"github.com/hxmbl/starpoint/internal/engine"
 	"github.com/hxmbl/starpoint/internal/locator"
 	"github.com/hxmbl/starpoint/internal/model"
@@ -22,6 +25,7 @@ import (
 	"github.com/hxmbl/starpoint/internal/providers/rustup"
 	"github.com/hxmbl/starpoint/internal/providers/system"
 	"github.com/hxmbl/starpoint/internal/providers/uv"
+	"github.com/hxmbl/starpoint/internal/report"
 	"github.com/hxmbl/starpoint/internal/testsupport"
 	"github.com/hxmbl/starpoint/internal/tracking"
 )
@@ -100,9 +104,10 @@ func newHarness(t *testing.T, configBody string) *harness {
 	cfg := filepath.Join(dir, ".starpoint.toml")
 	testsupport.WriteFile(t, cfg, configBody)
 
-	// Set up test-specific tracking file
-	trackingPath := filepath.Join(dir, "runs.json")
-	tracker, _ := tracking.New(trackingPath)
+	// Tracking lives in the harness's own state directory, which is where
+	// `starpoint runs` reads from.
+	stateDir, _ := config.StateDir(cfg)
+	tracker, _ := tracking.New(tracking.PathIn(stateDir))
 
 	out := &bytes.Buffer{}
 	errBuf := &bytes.Buffer{}
@@ -143,8 +148,10 @@ func newHarness(t *testing.T, configBody string) *harness {
 	}
 	// Hook into newEngine to set tracker. Resolve the locator at call time so a
 	// test that swaps PATH resolution mid-harness still reaches the live locator.
+	// The state directory is the harness's own, so a test run never writes
+	// transition history or run records into the developer's real ~/.starpoint.
 	env.newEngineFn = func() *engine.Engine {
-		eng := engine.New(env.registry(), env.loc())
+		eng := engine.New(env.registry(), env.loc(), engine.WithStateDir(env.stateDir()))
 		eng.SetTracker(tracker)
 		return eng
 	}
@@ -202,6 +209,32 @@ func (h *harness) mustRun(args ...string) string {
 func (h *harness) configBody() string {
 	h.t.Helper()
 	return testsupport.ReadFile(h.t, h.config)
+}
+
+// auditEntries returns what this harness's run recorded in Starpoint's own log.
+func (h *harness) auditEntries() []auditlog.Entry {
+	h.t.Helper()
+	dir, err := config.StateDir(h.config)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	entries, err := auditlog.New(auditlog.PathIn(dir)).Entries(time.Time{})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return entries
+}
+
+// withEvent returns the logged entries of one kind.
+func (h *harness) withEvent(event string) []auditlog.Entry {
+	h.t.Helper()
+	var out []auditlog.Entry
+	for _, e := range h.auditEntries() {
+		if e.Event == event {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // decode parses JSON output from the last command.
@@ -784,7 +817,7 @@ func TestExplainJSON(t *testing.T) {
 		} `json:"steps"`
 	}
 	h.decode(out, &payload)
-	if payload.SchemaVersion != 2 {
+	if payload.SchemaVersion != report.SchemaVersion {
 		t.Errorf("unexpected schema version: %d", payload.SchemaVersion)
 	}
 	if payload.Package.Name != "ruff" {

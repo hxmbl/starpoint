@@ -101,6 +101,60 @@ conflict. `--json` lists them under `pin_conflicts`. Newer versions are known fo
 pip, npm, pnpm, Homebrew, Cargo, RubyGems and APT; for other providers a pin is
 simply reported as left unchanged.
 
+### What Starpoint records
+
+Every command Starpoint runs is written to its own log, alongside a record of
+each change it made to the machine: what was installed, removed, updated or moved
+between providers, which provider was asked, and whether it worked. A command
+that fails is recorded with the failure, and so is a destructive operation
+Starpoint refused to perform. The log is JSON Lines, rotated daily, in
+`~/.starpoint/logs/`.
+
+Records older than the retention window are deleted automatically, on every
+command, so there is nothing to remember to run. The window is set with
+`retention_days` in the `[settings]` table of `~/.starpoint.toml` and defaults to
+30 days:
+
+```toml
+[settings]
+retention_days = 90
+```
+
+Retention covers the audit log, the transition history and the run history. It is
+read from the global file only, so a project you have checked out cannot shorten
+or lengthen it. A window that is unset, zero or negative means the default, never
+"keep nothing".
+
+`starpoint logging` reports what is kept, how long, and whether the system's own
+log rotation has been pointed at it; `starpoint logging prune` applies the window
+now and says what went. Retention does not depend on either — they are for
+looking, not for keeping.
+
+Removing every configured package in one command is refused unless
+`--allow-empty` says you mean it. Removing one is always allowed: the guard is
+about bulk, not about the configuration ever becoming empty.
+
+### Handing the logs to the system logger
+
+Starpoint's own retention already deletes expired logs without privileges, on
+every platform it supports. `starpoint logging config` additionally writes the
+system logger's own rotation configuration, so that logs still inside the window
+are compressed and their count is capped:
+
+- **Linux** generates a `logrotate` stanza. This is the easy case — logrotate
+  exists, its configuration is a plain text file, and the generated content says
+  where to copy it.
+- **macOS** generates a `newsyslog` line. This is the harder case: newsyslog runs
+  as root from `/etc` and has no per-user configuration, so the generated file is
+  written to Starpoint's own directory and the install is left to you.
+- **Windows** has no configuration generated. Windows' event log keeps its own
+  retention settings.
+
+Starpoint never writes to `/etc` or `/var`. A tool that manages other people's
+software has no business taking a privilege escalation on their behalf, so the
+generated file goes next to the logs it governs and the command that installs it
+is printed for you to run.
+
 ## Commands
 
 | Command | Purpose |
@@ -115,11 +169,12 @@ simply reported as left unchanged.
 | `starpoint explain <package>` | Explain how Starpoint resolves ownership |
 | `starpoint install <package> [provider]` | Install and record (aliases: `add`, `i`); `--version`, `--channel`, `--project`, `--dry-run`, `--no-confirm` |
 | `starpoint install .` | Install the current project's declared packages and dependencies; record its toolchain in the project config |
-| `starpoint remove <package> [provider]` | Uninstall and delete from config (aliases: `uninstall`, `rm`); `--dry-run`, `--no-confirm` |
+| `starpoint remove <package> [provider]` | Uninstall and delete from config (aliases: `uninstall`, `rm`); `--dry-run`, `--no-confirm`, `--allow-empty` |
 | `starpoint update [--self] [--dry-run] [--no-confirm]` | Update managed software; asks before moving past a pin (alias: `upgrade`) |
 | `starpoint prune [--dry-run] [--no-confirm]` | Preview and remove orphaned user-scoped installations; refuses when the configuration declares no packages |
 | `starpoint recover [--discard] [--no-confirm]` | Inspect and clear files left by an interrupted run |
 | `starpoint runs [--package <name>] [--directory <dir>]` | Show where Starpoint has been run (alias: `history`) |
+| `starpoint logging [prune\|config]` | Show, age out, or configure Starpoint's own logging (alias: `logs`) |
 | `starpoint help [command]` | General help, or one command's help (same as `<command> --help`) |
 
 A provider may be named after the package names, before them, or with

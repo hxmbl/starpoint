@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hxmbl/starpoint/internal/auditlog"
 	"github.com/hxmbl/starpoint/internal/config"
 	"github.com/hxmbl/starpoint/internal/engine"
 	"github.com/hxmbl/starpoint/internal/history"
@@ -30,6 +31,7 @@ import (
 	"github.com/hxmbl/starpoint/internal/recovery"
 	"github.com/hxmbl/starpoint/internal/report"
 	"github.com/hxmbl/starpoint/internal/resolve"
+	"github.com/hxmbl/starpoint/internal/retention"
 	"github.com/hxmbl/starpoint/internal/tracking"
 )
 
@@ -70,8 +72,104 @@ type Env struct {
 	// given writers. Nil means the real command. Tests replace it so
 	// `install .` can be exercised without npm or cargo.
 	RunInDir func(ctx context.Context, dir string, stdout, stderr io.Writer, name string, args ...string) error
+	// AuditLog is where Starpoint records what it did. Nil means the default
+	// location under ~/.starpoint/logs. Tests point it at a temporary directory
+	// so they can assert on what a command logged.
+	AuditLog *auditlog.Log
 	// newEngine is overridden in tests to inject a tracker
 	newEngineFn func() *engine.Engine
+}
+
+// stateDir is where this run keeps its records: the audit log, the transition
+// history, the run history and the mutation locks. It follows the global
+// configuration path, so pointing Starpoint at a different configuration also
+// points its records somewhere else.
+func (e *Env) stateDir() string {
+	path, err := e.globalPath()
+	if err != nil {
+		return ""
+	}
+	dir, err := config.StateDir(path)
+	if err != nil {
+		return ""
+	}
+	return dir
+}
+
+// auditLog is the log this run writes to.
+func (e *Env) auditLog() *auditlog.Log {
+	if e.AuditLog != nil {
+		return e.AuditLog
+	}
+	dir := e.stateDir()
+	if dir == "" {
+		if home, err := auditlog.DefaultDir(); err == nil {
+			dir = filepath.Dir(home)
+		}
+	}
+	return auditlog.New(auditlog.PathIn(dir))
+}
+
+// audit records one entry in Starpoint's own log of what it did.
+//
+// It is best effort by design. A log that cannot be written is a problem worth
+// reporting, but it must never be the reason Starpoint refuses to install or
+// remove software: refusing the user's work because the audit trail was
+// unwritable would make the tool worse at its actual job.
+func (e *Env) audit(entry auditlog.Entry) {
+	if entry.Directory == "" {
+		entry.Directory = e.WorkDir
+	}
+	_ = e.auditLog().Record(entry)
+}
+
+// auditTransition records one ownership move, which is the operation that
+// touches two providers at once and can therefore leave the machine mid-way.
+func (e *Env) auditTransition(t model.Transition, err error) {
+	result := string(t.Phase)
+	if err != nil {
+		result = "failed"
+	}
+	e.audit(auditlog.Entry{
+		Event:    auditlog.EventAction,
+		Command:  "transition",
+		Action:   "relocate",
+		Package:  t.Package.Name,
+		Provider: t.To.Name,
+		Result:   result,
+		Detail:   errorDetail(err),
+	})
+}
+
+// auditActions records the changes a command carried out. The engine's result
+// already holds them, so this is a translation rather than a second record of
+// the same events.
+func (e *Env) auditActions(command string, dryRun bool, results ...*engine.Result) {
+	result := ""
+	if dryRun {
+		result = "planned"
+	}
+	for _, r := range results {
+		if r == nil {
+			continue
+		}
+		for _, a := range r.Applied {
+			outcome := result
+			if outcome == "" {
+				outcome = string(a.Action) + "d"
+			}
+			e.audit(auditlog.Entry{
+				Event:    auditlog.EventAction,
+				Command:  command,
+				DryRun:   dryRun,
+				Action:   string(a.Action),
+				Package:  a.State.Package.Name,
+				Provider: a.State.Res.Provider,
+				Result:   outcome,
+				Detail:   a.Note,
+			})
+		}
+	}
 }
 
 func (e *Env) registry() *provider.Registry {
@@ -92,7 +190,7 @@ func (e *Env) newEngine() *engine.Engine {
 	if e.newEngineFn != nil {
 		return e.newEngineFn()
 	}
-	eng := engine.New(e.registry(), e.loc())
+	eng := engine.New(e.registry(), e.loc(), engine.WithStateDir(e.stateDir()))
 	// Tracker will be set by tests if needed
 	if err := eng.HistoryError(); err != nil {
 		// Reporting this matters: without history, `transition --reverse` cannot
@@ -202,6 +300,7 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	}
 
 	var err error
+	env.begin(cmd, cmdArgs)
 	switch cmd {
 	case "init":
 		err = cmdInit(ctx, env, w, cmdArgs, force)
@@ -232,6 +331,8 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		err = cmdPrune(ctx, env, w, cmdArgs, providers)
 	case "recover":
 		err = cmdRecover(env, w, cmdArgs)
+	case "logging", "logs":
+		err = cmdLogging(env, w, cmdArgs)
 	case "help":
 		if len(cmdArgs) > 0 && canonicalCommand(cmdArgs[0]) != "" {
 			printCommandHelp(env.Stdout, cmdArgs[0])
@@ -249,7 +350,7 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		if errors.Is(err, ErrUsage) {
 			fmt.Fprintf(env.Stderr, "error: %s\n\n", err)
 			printCommandHelp(env.Stderr, cmd)
-			return 2
+			return env.finish(canonicalCommand(cmd), cmdArgs, 2, err)
 		}
 		if asJSON {
 			enc := json.NewEncoder(env.Stderr)
@@ -258,9 +359,111 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		} else {
 			fmt.Fprintf(env.Stderr, "error: %s\n", err)
 		}
-		return 1
+		return env.finish(canonicalCommand(cmd), cmdArgs, 1, err)
 	}
-	return 0
+	return env.finish(canonicalCommand(cmd), cmdArgs, 0, nil)
+}
+
+// begin records that a command started and ages out expired records.
+//
+// Both happen on every command. Retention is what makes it safe to log
+// everything: a log nobody prunes is a log that eventually fills the disk, at
+// which point it is the tool's fault and it stops working.
+func (e *Env) begin(command string, args []string) {
+	canonical := canonicalCommand(command)
+	if canonical == "" {
+		return
+	}
+	e.applyRetention()
+	e.audit(auditlog.Entry{
+		Event:     auditlog.EventCommandStart,
+		Command:   canonical,
+		Args:      append([]string{}, args...),
+		DryRun:    hasFlag(args, "--dry-run", "-n"),
+		Directory: e.WorkDir,
+	})
+}
+
+// finish records how a command ended and returns its exit code.
+func (e *Env) finish(command string, args []string, code int, err error) int {
+	if command != "" {
+		result := "ok"
+		if err != nil {
+			result = "failed"
+		}
+		e.audit(auditlog.Entry{
+			Event:     auditlog.EventCommandFinish,
+			Command:   command,
+			Args:      append([]string{}, args...),
+			DryRun:    hasFlag(args, "--dry-run", "-n"),
+			Exit:      code,
+			Result:    result,
+			Detail:    errorDetail(err),
+			Directory: e.WorkDir,
+		})
+	}
+	return code
+}
+
+// errorDetail is the message an audit entry carries, if any.
+func errorDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// applyRetention ages every store out by the configured window.
+//
+// It reads the global configuration only, and treats an unreadable or
+// malformed file as "use the default" rather than as a failure: retention must
+// never be the reason a command cannot run.
+func (e *Env) applyRetention() {
+	days := retention.DefaultDays
+	if path, err := e.globalPath(); err == nil {
+		if doc, err := config.Load(config.LoadOptions{GlobalPath: path}); err == nil {
+			days = doc.Global.Raw.Settings.RetentionDays
+		}
+	}
+	dir := e.stateDir()
+	hist, _ := history.New(history.PathIn(dir))
+	tracker, _ := tracking.New(tracking.PathIn(dir))
+	rep := retention.Apply(retention.Options{
+		Days:    days,
+		Audit:   e.auditLog(),
+		History: hist,
+		Runs:    tracker,
+	})
+	if rep.Removed() {
+		e.audit(auditlog.Entry{
+			Event:   auditlog.EventRetention,
+			Command: "retain",
+			Result:  "removed",
+			Detail:  errorDetail(rep.Error()),
+		})
+	}
+	if rep.Error() != nil {
+		// A retention problem is worth saying out loud, but it is a warning:
+		// the command the user asked for has already been decided by now.
+		e.audit(auditlog.Entry{
+			Event:  auditlog.EventRetention,
+			Result: "incomplete",
+			Detail: errorDetail(rep.Error()),
+		})
+		fmt.Fprintf(e.Stderr, "warning: %s\n", rep.Error())
+	}
+}
+
+// hasFlag reports whether args contain one of the given flags.
+func hasFlag(args []string, flags ...string) bool {
+	for _, a := range args {
+		for _, f := range flags {
+			if a == f {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // leadingArgs returns the arguments before the first bare word, which is where
@@ -330,6 +533,8 @@ Commands:
                                  Remove orphaned user-scoped software
   recover [--discard]            Inspect, and with --discard clear, files left by an
                                  interrupted run
+  logging [prune|config]        Show, age out, or configure Starpoint's own logging
+                                 (alias: logs)
   help [command]                 Show this help, or help for one command
 
 A provider may be named after the package names, or with --provider:
@@ -665,7 +870,7 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 		return err
 	}
 	reg := env.registry()
-	eng := engine.New(reg, env.loc())
+	eng := engine.New(reg, env.loc(), engine.WithStateDir(env.stateDir()))
 
 	rep := report.DoctorReport{
 		Starpoint:     report.StarpointInfo{Version: Version},
@@ -989,6 +1194,7 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 			}
 			return err
 		}
+		env.auditActions("install", dryRun, res)
 		if w.JSON() {
 			return w.Render(map[string]any{"operations": []*engine.Result{res}, "dependencies": deps})
 		}
@@ -1087,6 +1293,7 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		// Tracking is now handled in the engine
 		results = append(results, res)
 	}
+	env.auditActions("install", dryRun, results...)
 	return reportInstall(w, results, surveys)
 }
 
@@ -1323,8 +1530,9 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	}
 
 	var (
-		dryRun    bool
-		noConfirm bool
+		dryRun     bool
+		noConfirm  bool
+		allowEmpty bool
 	)
 	var names []string
 	for i := 0; i < len(args); i++ {
@@ -1333,6 +1541,8 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 			dryRun = true
 		case "--no-confirm", "-y", "--yes":
 			noConfirm = true
+		case "--allow-empty":
+			allowEmpty = true
 		default:
 			if err := rejectOption("remove", args[i]); err != nil {
 				return err
@@ -1346,6 +1556,24 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	doc, eng, opts, _, err := env.setup(ctx, allowed)
 	if err != nil {
 		return err
+	}
+
+	// Removing every configured package in one go is the one removal with no undo
+	// and no partial success: one invocation, every managed tool gone. It takes
+	// an explicit --allow-empty to mean it. A dry run is allowed through so the
+	// shape of the change can still be inspected.
+	if !dryRun && !allowEmpty {
+		if emptied := emptiesConfiguration(doc, names); len(emptied) > 0 {
+			e := fmt.Errorf("refusing to remove every configured package (%s) in one command: that would leave Starpoint managing nothing. "+
+				"Remove them one at a time, or pass --allow-empty to mean it", strings.Join(emptied, ", "))
+			env.audit(auditlog.Entry{
+				Event:   auditlog.EventGuard,
+				Command: "remove",
+				Result:  "refused",
+				Detail:  e.Error(),
+			})
+			return e
+		}
 	}
 	if !dryRun {
 		path, _ := env.globalPath()
@@ -1384,6 +1612,7 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		}
 		results = append(results, res)
 	}
+	env.auditActions("remove", dryRun, results...)
 	if w.JSON() {
 		return w.Render(map[string]any{"operations": results})
 	}
@@ -1393,6 +1622,44 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		}
 	}
 	return nil
+}
+
+// emptiesConfiguration reports the configured packages that removing every one
+// of these names would remove, when that set is all of them and there is more
+// than one.
+//
+// It is deliberately about bulk rather than about "Starpoint would manage
+// nothing afterwards". Removing one named package is an ordinary, deliberate
+// act — people remove the last tool they declared all the time — and a guard
+// that fired on it would be noise. Removing every configured package in one
+// invocation is a different shape: no undo, no partial success, every managed
+// tool gone at once, which is exactly how a mistyped argument list becomes a
+// wiped machine.
+func emptiesConfiguration(doc *config.Document, names []string) []string {
+	// The document can name the same package from the global and a project file,
+	// so compare over distinct names.
+	configured := map[string]bool{}
+	for _, pkg := range doc.Packages() {
+		configured[pkg.Name] = true
+	}
+	if len(configured) < 2 {
+		return nil
+	}
+	wanted := map[string]bool{}
+	for _, raw := range names {
+		wanted[model.ParseSpec(raw).Name] = true
+	}
+	var gone []string
+	for name := range configured {
+		if wanted[name] {
+			gone = append(gone, name)
+		}
+	}
+	if len(gone) != len(configured) {
+		return nil
+	}
+	sort.Strings(gone)
+	return gone
 }
 
 // planRemoval resolves who would be asked to uninstall a package, for the sake of
@@ -1498,6 +1765,7 @@ func cmdTransition(ctx context.Context, env *Env, w *report.Writer, args []strin
 	for _, st := range selected.states {
 		t, err := eng.ExecuteTransition(ctx, st, opts)
 		applied = append(applied, t)
+		env.auditTransition(t, err)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %s", t.Package.Name, err))
 		}
@@ -1682,6 +1950,7 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		}
 		res.Applied = append(res.Applied, selfRes...)
 	}
+	env.auditActions("update", dryRun, res)
 	if w.JSON() {
 		_ = w.Update(res)
 		return updateErr
@@ -1845,8 +2114,9 @@ func cmdRuns(ctx context.Context, env *Env, w *report.Writer, args []string) err
 		}
 	}
 
-	// Load tracking data from the global tracking system
-	tracker, err := tracking.New("")
+	// The run history lives beside the configuration, like every other record
+	// Starpoint keeps, rather than at a hard-coded path in the home directory.
+	tracker, err := tracking.New(tracking.PathIn(env.stateDir()))
 	if err != nil {
 		return fmt.Errorf("loading execution tracker: %w", err)
 	}
@@ -1949,6 +2219,7 @@ func cmdPrune(ctx context.Context, env *Env, w *report.Writer, args []string, al
 			return err
 		}
 	}
+	env.auditActions("prune", dryRun, res)
 
 	return w.Prune(res, dryRun)
 }

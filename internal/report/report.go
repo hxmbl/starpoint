@@ -39,12 +39,18 @@ func (w *Writer) JSON() bool { return w.asJSON }
 // SchemaVersion is the version of the machine-readable response envelope. It is
 // independent of the TOML configuration `schema` field.
 //
+// Version 3 adds the logging surface: `logging`, `logging prune` and
+// `logging config`. Every existing command's payload is unchanged, so this bump
+// is conservative rather than forced: it is a new command, not a reshaped one.
+// A consumer that pins the version should widen its check rather than change how
+// it reads existing commands.
+//
 // Version 2 flattens every command payload into the top-level object.
 // Version 1 documented that same flat shape, but the implementation nested some
 // commands under their own key ("sync", "doctor", "explain") and others under
 // "data", so no consumer could rely on it. Version 2 makes the documented shape
 // the actual shape.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // respond emits one flat JSON object: schema_version plus the given fields.
 //

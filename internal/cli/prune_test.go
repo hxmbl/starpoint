@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/report"
 )
 
 // prune must refuse when the configuration declares nothing. With no source of
@@ -95,7 +96,7 @@ func TestInfoJSONIsOneDocument(t *testing.T) {
 	if _, ok := first["lookup"]; !ok {
 		t.Errorf("the provider survey should be folded into the same document:\n%s", out)
 	}
-	if v, ok := first["schema_version"].(float64); !ok || v != 2 {
-		t.Errorf("schema_version = %v, want 2", first["schema_version"])
+	if v, ok := first["schema_version"].(float64); !ok || v != report.SchemaVersion {
+		t.Errorf("schema_version = %v, want %d", first["schema_version"], report.SchemaVersion)
 	}
 }

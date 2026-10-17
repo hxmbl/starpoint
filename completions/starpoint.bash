@@ -6,7 +6,7 @@ _starpoint() {
   local cur prev cmd i commands globals providers flags
   cur=${COMP_WORDS[COMP_CWORD]}
   prev=${COMP_WORDS[COMP_CWORD-1]}
-  commands='init sync list ls info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover help'
+  commands='init sync list ls info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover logging logs help'
   globals='--json --provider --force --context --version --help'
   providers='apt brew cargo dnf gem go npm pacman pip pnpm rustup system uv yarn'
 
@@ -36,7 +36,8 @@ _starpoint() {
     explain) flags='--provider' ;;
     doctor) flags='--all' ;;
     install|add|i) flags='--version --channel --project --provider --dry-run --no-confirm' ;;
-    remove|uninstall|rm) flags='--provider --dry-run --no-confirm' ;;
+    remove|uninstall|rm) flags='--provider --dry-run --no-confirm --allow-empty' ;;
+    logging|logs) flags='' ;;
     transition|move) flags='--all --reverse --dry-run --no-confirm' ;;
     update|upgrade) flags='--self --dry-run --no-confirm' ;;
     runs|history) flags='--package --directory' ;;

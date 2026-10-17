@@ -30,6 +30,8 @@ var aliases = map[string]string{
 	"history":    "runs",
 	"prune":      "prune",
 	"recover":    "recover",
+	"logging":    "logging",
+	"logs":       "logging",
 	"help":       "help",
 }
 
@@ -48,12 +50,13 @@ var commandFlags = map[string][]string{
 	"explain":    {"--provider"},
 	"doctor":     {"--all"},
 	"install":    {"--version", "--channel", "--project", "--provider", "--dry-run", "--no-confirm"},
-	"remove":     {"--provider", "--dry-run", "--no-confirm"},
+	"remove":     {"--provider", "--dry-run", "--no-confirm", "--allow-empty"},
 	"transition": {"--all", "--reverse", "--dry-run", "--no-confirm"},
 	"update":     {"--self", "--dry-run", "--no-confirm"},
 	"runs":       {"--package", "--directory"},
 	"prune":      {"--dry-run", "--no-confirm"},
 	"recover":    {"--discard", "--no-confirm"},
+	"logging":    {},
 	"help":       {},
 }
 
@@ -181,10 +184,14 @@ Uninstall software and delete it from the configuration.
 
 Aliases: uninstall, rm
 
+Removing every configured package in one command is refused unless
+--allow-empty says you mean it: there is no undo for that shape.
+
 Options:
   --provider <name>    Use this provider
   --dry-run, -n        Show what would happen; change nothing
   --no-confirm, -y     Do not ask first
+  --allow-empty        Allow removing every configured package at once
   --json               Machine-readable output
 `,
 	"transition": `Usage: starpoint transition [package...] [options]
@@ -248,6 +255,25 @@ Options:
   --discard            Remove the leftover files
   --no-confirm, -y     Do not ask before discarding
   --json               Machine-readable output
+`,
+	"logging": `Usage: starpoint logging [prune | config]
+
+Show what Starpoint logs, how long it keeps it, and whether the system's own log
+rotation has been pointed at it. Every command records what it did, and records
+older than the retention window are deleted automatically; this command reports
+on that rather than being how it happens.
+
+Subcommands:
+  (none)              Show the log directory, files, entries and retention window
+  prune               Apply the retention window now and report what went
+  config              Write the system's log rotation configuration, if the
+                      platform has one, into Starpoint's own state directory
+
+Options:
+  --json              Machine-readable output
+
+Retention is set with retention_days in ~/.starpoint.toml and defaults to 30.
+It applies to the audit log, the transition history and the run history.
 `,
 	"help": `Usage: starpoint help [command]
 

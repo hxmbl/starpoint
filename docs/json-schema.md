@@ -4,9 +4,11 @@ This document describes Starpoint's machine-readable output envelope and payload
 
 ## Schema Version
 
-Current schema version: `2`
+Current schema version: `3`
 
-All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 2, ...command fields }`; errors are `{ "schema_version": 2, "error": "..." }`.
+All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 3, ...command fields }`; errors are `{ "schema_version": 3, "error": "..." }`.
+
+Version 3 adds the logging surface described below. Every command that existed at version 2 returns the same payload it did, so this bump is conservative: a consumer that pins the version should widen its check rather than change how it reads anything it already read.
 
 Version 2 flattened the envelope. Version 1 documented this flat shape, but the implementation nested several commands under their own key (`sync`, `doctor`, `explain`) and others under `data`, and `info` could emit more than one document. Version 2 is the documented shape made real; the payload fields themselves are unchanged, but a consumer that checked `schema_version == 1` must update that check.
 
@@ -411,6 +413,82 @@ command exits non-zero.
   }
 }
 ```
+
+### `starpoint logging`
+
+```json
+{
+  "state_dir": "string",
+  "audit_log_dir": "string",
+  "files": [
+    {
+      "name": "audit-2026-10-17.jsonl",
+      "path": "string",
+      "day": "YYYY-MM-DD",
+      "time": "RFC3339 string",
+      "bytes": "number"
+    }
+  ],
+  "entry_count": "number",
+  "retention_days": "number",
+  "retention_source": "config | default",
+  "os": {
+    "goos": "linux | darwin | windows | ...",
+    "supported": "boolean",
+    "mechanism": "logrotate | newsyslog | unsupported",
+    "path": "string | null",
+    "system_path": "string | null",
+    "content": "string | null",
+    "note": "string | null"
+  },
+  "os_configured": "boolean"
+}
+```
+
+`files` is oldest first. `entry_count` is how many entries are inside the
+retention window, which is what will still be there after the next pass.
+`retention_source` distinguishes a window the user set from the default, because
+an unconfigured retention window is still a promise about how long records live.
+
+`os.path` is always inside Starpoint's own state directory. Starpoint never
+writes to `system_path`, which is where the system logger expects such a file; the
+privileged step is left to the user.
+
+### `starpoint logging prune`
+
+```json
+{
+  "operation": "logging.prune",
+  "retention_days": "number",
+  "audit_logs_removed": "number",
+  "history_entries_removed": "number",
+  "run_records_removed": "number",
+  "problems": ["string"]
+}
+```
+
+Retention is applied on every command, so this reports and forces the effect
+rather than being how it happens. It exits non-zero when `problems` is non-empty.
+
+### `starpoint logging config`
+
+```json
+{
+  "operation": "logging.config",
+  "goos": "string",
+  "supported": "boolean",
+  "mechanism": "logrotate | newsyslog | unsupported",
+  "path": "string | null",
+  "written": "boolean",
+  "system_path": "string | null",
+  "install": "string | null",
+  "note": "string | null"
+}
+```
+
+`written` is false when the configuration is already current, and when the
+platform has none. A file in the logging directory that Starpoint did not write
+is never overwritten.
 
 ## Transition Schema
 

@@ -32,13 +32,14 @@ This file tracks work that remains after the current implementation. Completed i
 - `sync` does not adopt an installation merely because it exists. `starpoint install` is the explicit adoption path and records the selected provider in the source of truth.
 - An explicit provider in configuration wins. Otherwise an existing non-system owner is retained, known executable ownership mappings are considered, then ecosystem and project context guide a choice. Starpoint asks when multiple viable general providers remain ambiguous.
 - Transition phases are reconstructed from provider inventory and executable resolution. Re-running a transition resumes based on observed machine state; the history store supports audit and explicit reversal.
+- Removing every configured package in one command is refused without `--allow-empty`. Removing one package is ordinary and never refused.
 - Prune removes only orphaned user-scoped software that a provider can enumerate and remove. It excludes system/global scope and configured package names. It refuses when the configuration declares no packages, because there is then no source of truth to tell managed software from orphans, and it lists its candidates in both the human and JSON forms of `--dry-run`.
 
 ## Completed in this implementation
 
 - Crash recovery detection and safe cleanup for stale Starpoint TOML temporary files, with ambiguous or sole-copy data preserved. Config writes are flushed and renamed atomically, so an interrupted run cannot leave a half-written config; `starpoint recover` reports leftover files and `--discard` clears them.
 - Per-config mutation locks around state-changing CLI operations.
-- `starpoint prune`, with preview, confirmation, scope protections, and JSON output.
+- `starpoint prune`, with preview, confirmation, scope protections, and JSON output. It refuses when the configuration declares no packages, and its `--dry-run` lists the candidates in both human and JSON output.
 - Transition history and `starpoint transition --reverse`.
 - PATH executable inventory with symlink/duplicate reporting in `list` and `doctor`.
 - Resolver explanation through `starpoint explain <package>`.
@@ -46,6 +47,11 @@ This file tracks work that remains after the current implementation. Completed i
 - `info --json` emits a single document: the provider survey or a pending transition travels inside the same response instead of in a second JSON object.
 - `prune` refuses to run when the configuration declares no packages, and `--dry-run` lists the candidates in both human and JSON output.
 - Removed the vestigial `--record` flag, which was accepted but did nothing (recording is automatic), and the unused `internal/starpointcontext` package, which duplicated `internal/project`.
+- An append-only audit log of every command and every change to the machine, in `~/.starpoint/logs/`, rotated daily. Failures and refusals are recorded, not just successes.
+- Retention across every store — audit log, transition history, run history — applied automatically on every command, configurable with `retention_days` (default 30). `history.Prune` existed but nothing ever called it.
+- `starpoint logging [prune|config]`, reporting and configuring retention, plus generation of the system's own rotation configuration: logrotate on Linux, newsyslog on macOS, nothing on Windows. Starpoint writes only inside its own state directory and prints the privileged install step instead of taking it.
+- A guard on `remove`: removing every configured package in one command requires `--allow-empty`. A single removal is unaffected, and a dry run is still allowed to describe the change.
+- All of Starpoint's records now live in a state directory derived from the global configuration path, so a run against another configuration — including the test suite — writes nothing into a real home directory.
 - Bash, zsh, and fish completion scripts.
 - TOML writes that preserve comments and unrelated file content while updating package entries.
 - DNF and Pacman providers alongside the existing APT and Homebrew integrations. Neither can honour an arbitrary version pin, and both report that rather than claiming a capability they lack.

@@ -1,0 +1,125 @@
+package oslog
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const testLogDir = "/home/u/.starpoint/logs"
+
+func TestLinuxGeneratesLogrotate(t *testing.T) {
+	c := Generate("linux", testLogDir, 30)
+	if !c.Supported || c.Mechanism != Logrotate {
+		t.Fatalf("expected logrotate, got %+v", c)
+	}
+	if c.SystemPath != "/etc/logrotate.d/starpoint" {
+		t.Errorf("system path = %q", c.SystemPath)
+	}
+	// The path Starpoint writes must be its own, never a system directory.
+	if !strings.HasPrefix(c.Path, "/home/u/.starpoint") {
+		t.Errorf("Starpoint must not write into a system directory: %q", c.Path)
+	}
+	for _, want := range []string{"daily", "rotate 30", "maxage 30", "compress", testLogDir + "/audit-*.jsonl"} {
+		if !strings.Contains(c.Content, want) {
+			t.Errorf("logrotate config is missing %q:\n%s", want, c.Content)
+		}
+	}
+}
+
+// The window is user-defined, so the generated config has to follow it.
+func TestRetentionWindowFlowsIntoTheGeneratedConfig(t *testing.T) {
+	c := Generate("linux", testLogDir, 7)
+	if !strings.Contains(c.Content, "rotate 7") || !strings.Contains(c.Content, "maxage 7") {
+		t.Errorf("the configured window did not reach the config:\n%s", c.Content)
+	}
+}
+
+// A missing or nonsensical window must not generate a config that deletes
+// immediately.
+func TestGenerateFallsBackToThirtyDays(t *testing.T) {
+	for _, days := range []int{0, -5} {
+		c := Generate("linux", testLogDir, days)
+		if !strings.Contains(c.Content, "maxage 30") {
+			t.Errorf("days=%d should fall back to 30:\n%s", days, c.Content)
+		}
+	}
+}
+
+func TestMacOSGeneratesNewsyslog(t *testing.T) {
+	c := Generate("darwin", testLogDir, 30)
+	if !c.Supported || c.Mechanism != Newsyslog {
+		t.Fatalf("expected newsyslog, got %+v", c)
+	}
+	if c.SystemPath != "/etc/newsyslog.d/starpoint.conf" {
+		t.Errorf("system path = %q", c.SystemPath)
+	}
+	if strings.HasPrefix(c.Path, "/etc") {
+		t.Errorf("Starpoint must not write into a system directory: %q", c.Path)
+	}
+	// newsyslog's grammar is rigid, so the important property is that the file
+	// has exactly one configuration line and ends with the J flag.
+	var lines []string
+	for _, l := range strings.Split(c.Content, "\n") {
+		if l != "" && !strings.HasPrefix(strings.TrimSpace(l), "#") {
+			lines = append(lines, strings.TrimSpace(l))
+		}
+	}
+	if len(lines) != 1 {
+		t.Fatalf("expected one configuration line, got %v", lines)
+	}
+	if !strings.HasSuffix(lines[0], "* J") {
+		t.Errorf("newsyslog should be told to rotate and compress: %q", lines[0])
+	}
+	if !strings.Contains(lines[0], testLogDir+"/audit-*.jsonl") {
+		t.Errorf("the line does not name Starpoint's logs: %q", lines[0])
+	}
+}
+
+// Windows is out of scope, and says so rather than pretending otherwise.
+func TestWindowsIsUnsupported(t *testing.T) {
+	c := Generate("windows", testLogDir, 30)
+	if c.Supported || c.Mechanism != Unsupported {
+		t.Fatalf("windows should be unsupported: %+v", c)
+	}
+	if c.Content != "" || c.Path != "" {
+		t.Errorf("nothing should be generated: %+v", c)
+	}
+	if c.Note == "" {
+		t.Error("an unsupported platform should explain itself")
+	}
+}
+
+func TestInstallHintIsOnlyOfferedWhereItMakesSense(t *testing.T) {
+	if hint := InstallHint(Generate("linux", testLogDir, 30)); !strings.HasPrefix(hint, "sudo cp ") {
+		t.Errorf("hint = %q", hint)
+	}
+	if hint := InstallHint(Generate("windows", testLogDir, 30)); hint != "" {
+		t.Errorf("no hint for an unsupported platform, got %q", hint)
+	}
+}
+
+func TestLooksGeneratedOnlyMatchesItsOwnFiles(t *testing.T) {
+	own := Generate("linux", testLogDir, 30)
+	if !LooksGenerated(own.Content) {
+		t.Error("its own output should be recognised")
+	}
+	for _, foreign := range []string{
+		"/var/log/*/*.log {\n  daily\n}",
+		"",
+		"# Starpoint's audit log\n/var/log/starpoint.log 644 7 30 * J\n",
+	} {
+		if LooksGenerated(foreign) {
+			t.Errorf("should not claim ownership of %q", foreign)
+		}
+	}
+}
+
+// The generated path must sit beside the logs it governs, so that a state
+// directory keeps everything together.
+func TestGeneratedPathIsBesideTheLogs(t *testing.T) {
+	c := Generate("linux", testLogDir, 30)
+	if filepath.Dir(c.Path) != filepath.Join("/home/u/.starpoint", "logging") {
+		t.Errorf("path = %q", c.Path)
+	}
+}
