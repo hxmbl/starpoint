@@ -1,11 +1,17 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/hxmbl/starpoint/internal/auditlog"
 	"github.com/hxmbl/starpoint/internal/elevation"
+	"github.com/hxmbl/starpoint/internal/exec"
+	"github.com/hxmbl/starpoint/internal/model"
 )
 
 // notElevated is the status of an ordinary user, for test environments that
@@ -22,10 +28,16 @@ func viaSudo(home string) elevation.Status {
 }
 
 // elevated makes the harness run as root, recording where HOME was pointed.
+// Dropping privileges is assumed to work (the probe is replaced): the suite
+// does not run as root, and the fake providers start no processes. The
+// real-root tests use the real probe.
 func (h *harness) elevated(s elevation.Status) *[]string {
 	homes := &[]string{}
 	h.env.Elevation = func() elevation.Status { return s }
 	h.env.SetHome = func(home string) error { *homes = append(*homes, home); return nil }
+	if h.env.DropProbe == nil {
+		h.env.DropProbe = func(context.Context, *exec.Identity) error { return nil }
+	}
 	return homes
 }
 
@@ -160,13 +172,118 @@ func TestPlainRootCannotBeConfirmedInteractively(t *testing.T) {
 	}
 }
 
-func TestSudoWithoutAResolvableUserActsOnRootsEnvironment(t *testing.T) {
+func TestSudoWithoutAResolvableUserIsRefused(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")
-	s := viaSudo("")
-	homes := h.elevated(s)
-	h.mustRun("install", "cowsay", "--provider", "uv", "--yes", "--allow-root")
-	if len(*homes) != 0 {
-		t.Errorf("an invoking user without a known home is not targeted: %v", *homes)
+	homes := h.elevated(viaSudo(""))
+	code, _, errOut := h.run("install", "cowsay", "--provider", "uv", "--yes", "--allow-root")
+	if code != ExitRefusedElevated {
+		t.Fatalf("an invoking user who cannot be resolved must not become a plain root run: exit %d\n%s", code, errOut)
+	}
+	for _, want := range []string{"error [" + CodeInvokingUserUnresolved + "]", "home directory of alice", "Nothing was changed", "not run alice's providers as root"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("the refusal should say %q:\n%s", want, errOut)
+		}
+	}
+	if len(*homes) != 0 || len(h.uv.InstallCalls) != 0 {
+		t.Errorf("nothing may be targeted or installed: homes %v, installs %d", *homes, len(h.uv.InstallCalls))
+	}
+	var logged bool
+	for _, e := range h.withEvent(auditlog.EventGuard) {
+		if e.Result == "refused" && strings.HasPrefix(e.Detail, CodeInvokingUserUnresolved) {
+			logged = true
+		}
+	}
+	if !logged {
+		t.Error("the refusal is in the audit log")
+	}
+
+	// A read-only command still runs, and says why providers run as root.
+	code, out, _ := h.run("doctor", "--json")
+	if code != 0 && code != 1 {
+		t.Fatalf("doctor exited %d", code)
+	}
+	if !strings.Contains(out, model.WarnPrivilegeDropFailed) {
+		t.Errorf("a read-only command carries the warning:\n%s", out)
+	}
+}
+
+func TestAFailedPrivilegeDropIsRefused(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	h.env.DropProbe = func(context.Context, *exec.Identity) error {
+		return errors.New("could not start a process as alice (uid 4242): operation not permitted")
+	}
+	h.elevated(viaSudo(h.home))
+	code, _, errOut := h.run("install", "cowsay", "--provider", "uv", "--yes", "--allow-root", "--json")
+	if code != ExitRefusedElevated {
+		t.Fatalf("expected exit %d, got %d\n%s", ExitRefusedElevated, code, errOut)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(errOut), &doc); err != nil {
+		t.Fatalf("one JSON document: %v\n%s", err, errOut)
+	}
+	if doc["code"] != CodePrivilegeDropFailed || !strings.Contains(doc["error"].(string), "operation not permitted") {
+		t.Errorf("wrong refusal: %v", doc)
+	}
+	if len(h.uv.InstallCalls) != 0 {
+		t.Error("nothing may be installed")
+	}
+}
+
+func TestRunAsSaysWhoEachProviderRanAs(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	h.elevated(viaSudo(h.home))
+
+	op := decodeOperation(t, h.mustRun("install", "cowsay", "--provider", "uv", "--yes", "--allow-root", "--json"))
+	if len(op.Actions) != 1 || len(op.Actions[0].RunAs) != 1 {
+		t.Fatalf("one action, one identity: %+v", op.Actions)
+	}
+	ra := op.Actions[0].RunAs[0]
+	want := model.RunAs{Provider: "uv", User: "alice", UID: 4242, GID: 4243, Elevated: true, Dropped: true,
+		Privilege: "user", Reason: ra.Reason}
+	if ra != want || ra.Reason == "" {
+		t.Errorf("uv runs as alice with privileges dropped: %+v", ra)
+	}
+
+	op = decodeOperation(t, h.mustRun("install", "jq", "--provider", "brew", "--yes", "--allow-root", "--json"))
+	ra = op.Actions[0].RunAs[0]
+	if ra.Provider != "brew" || ra.Dropped || !ra.Elevated || ra.Privilege != "root" || ra.User == "alice" {
+		t.Errorf("a provider classified root keeps Starpoint's own account: %+v", ra)
+	}
+
+	var logged bool
+	for _, e := range h.withEvent(auditlog.EventAction) {
+		if e.Package == "cowsay" && len(e.RunAs) == 1 && e.RunAs[0].Dropped && e.RunAs[0].User == "alice" {
+			logged = true
+		}
+	}
+	if !logged {
+		t.Error("the audit log records who the action ran as")
+	}
+
+	if out := h.mustRun("install", "httpie", "--provider", "uv", "--yes", "--allow-root"); strings.Contains(out, "runs as") {
+		t.Errorf("only --verbose lists identities:\n%s", out)
+	}
+	out := h.mustRun("install", "ruff", "--provider", "uv", "--yes", "--allow-root", "--verbose")
+	if !strings.Contains(out, "uv runs as alice (uid 4242, gid 4243), privileges dropped") {
+		t.Errorf("--verbose says who the provider ran as:\n%s", out)
+	}
+}
+
+func TestRunAsOfOrdinaryAndPlainRootRuns(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	h.elevated(notElevated())
+	op := decodeOperation(t, h.mustRun("install", "cowsay", "--provider", "uv", "--yes", "--json"))
+	ra := op.Actions[0].RunAs[0]
+	if ra.Elevated || ra.Dropped || ra.Privilege != "" || ra.UID != os.Getuid() {
+		t.Errorf("an ordinary run reports its own account: %+v", ra)
+	}
+
+	h2 := newHarness(t, "schema = 1\n")
+	h2.elevated(plainRoot())
+	op = decodeOperation(t, h2.mustRun("install", "cowsay", "--provider", "uv", "--yes", "--allow-root", "--json"))
+	ra = op.Actions[0].RunAs[0]
+	if !ra.Elevated || ra.Dropped || !strings.Contains(ra.Reason, "plain root run") {
+		t.Errorf("a plain root run drops nothing and says why: %+v", ra)
 	}
 }
 

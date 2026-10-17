@@ -53,6 +53,10 @@ type observation struct {
 	// providers are the providers whose operation is observed, for their
 	// state directories when an elevated run aligns ownership.
 	providers []provider.Provider
+	// installDirs are the package directories providers named (npm's
+	// <prefix>/lib/node_modules/<name>), as they were before the step. Only
+	// an elevated run asks for them.
+	installDirs map[string]fsEntry
 }
 
 // shellProfiles are the start-up files a provider's installer is known to
@@ -110,6 +114,18 @@ func (e *Engine) observeAll(ctx context.Context, ps []provider.Provider, pkg mod
 	}
 	if len(named) == 1 {
 		o.provider = named[0]
+	}
+	if e.align.Enabled() {
+		o.installDirs = map[string]fsEntry{}
+		for _, p := range o.providers {
+			if ip, ok := p.(provider.InstallDirProvider); ok {
+				for _, dir := range ip.InstallDirs(ctx, pkg) {
+					if filepath.IsAbs(dir) {
+						o.installDirs[filepath.Clean(dir)] = readEntry(dir)
+					}
+				}
+			}
+		}
 	}
 	for _, inst := range known {
 		o.addInstallation(inst)
@@ -317,15 +333,28 @@ func (o *observation) finish(ctx context.Context, reportedOp model.EffectOp, rep
 // the engine runs elevated, and reports each fix as an effect.
 //
 // The touched paths are the ones the snapshot saw change (and the ones the
-// provider reported); only those the step created or replaced have their
-// permissions widened, because anything that existed before keeps the mode
-// its owner gave it. Under the target user's home, the providers' own state
-// directories are aligned too: Cargo writes its registry, Go its module
-// cache, uv its tool environments, far from the paths they report.
+// provider reported), plus the package directories the provider named; only
+// those the step created or replaced have their permissions widened, because
+// anything that existed before keeps the mode its owner gave it. Under the
+// target user's home, the providers' own state directories are aligned too:
+// Cargo writes its registry, Go its module cache, uv its tool environments,
+// far from the paths they report.
+//
+// When every provider in the step ran as the invoking user, nothing should
+// need fixing: they wrote as that user, with that user's umask. Shared paths
+// are then left as the user's umask made them, and any root-owned entry still
+// found under the user's home is fixed and marked unexpected, which raises a
+// root-owned-after-drop warning.
 func (o *observation) align(ctx context.Context, effects []model.Effect) []model.Effect {
 	p := o.e.align
 	if !p.Enabled() {
 		return nil
+	}
+	dropped := len(o.providers) > 0
+	for _, prov := range o.providers {
+		if ra, ok := o.e.RunAs(ctx, prov); !ok || !ra.Dropped {
+			dropped = false
+		}
 	}
 	var touched []align.Touched
 	for _, eff := range effects {
@@ -338,7 +367,24 @@ func (o *observation) align(ctx context.Context, effects []model.Effect) []model
 		}
 		created := eff.Evidence == model.EvidenceObserved &&
 			(eff.Op == model.EffectCreate || eff.Op == model.EffectReplace)
-		touched = append(touched, align.Touched{Path: eff.Path, Created: created})
+		touched = append(touched, align.Touched{Path: eff.Path, Created: created && !dropped})
+	}
+	dirs := make([]string, 0, len(o.installDirs))
+	for dir := range o.installDirs {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	for _, dir := range dirs {
+		before, after := o.installDirs[dir], readEntry(dir)
+		if !after.exists {
+			continue
+		}
+		changed := !before.exists || !before.mod.Equal(after.mod) ||
+			(before.info != nil && after.info != nil && !os.SameFile(before.info, after.info))
+		if !changed {
+			continue
+		}
+		touched = append(touched, align.Touched{Path: dir, Created: !dropped})
 	}
 	out := p.Align(touched)
 	if p.Owner != nil {
@@ -348,14 +394,41 @@ func (o *observation) align(ctx context.Context, effects []model.Effect) []model
 				continue
 			}
 			for _, dir := range sp.StateDirs(ctx) {
-				out = append(out, p.Tree(dir)...)
+				fixes := p.Tree(dir)
+				if ra, ok := o.e.RunAs(ctx, prov); ok && ra.Dropped {
+					markUnexpected(fixes, prov.Name(), ra.User)
+				}
+				out = append(out, fixes...)
 			}
 		}
+	}
+	if dropped {
+		markUnexpected(out, o.provider, "")
 	}
 	for i := range out {
 		out[i].Provider = o.provider
 	}
 	return out
+}
+
+// markUnexpected flags ownership fixes made after a provider ran as the
+// invoking user.
+func markUnexpected(effects []model.Effect, providerName, user string) {
+	for i := range effects {
+		if effects[i].Op != model.EffectChown || effects[i].Unexpected {
+			continue
+		}
+		effects[i].Unexpected = true
+		who := "the invoking user"
+		if user != "" {
+			who = user
+		}
+		by := "the provider"
+		if providerName != "" {
+			by = providerName
+		}
+		effects[i].Detail += "; unexpected: " + by + " ran as " + who + ", so nothing it wrote should have been root's"
+	}
 }
 
 // diffEntry compares one path across the step.
@@ -580,6 +653,12 @@ func effectWarnings(pkg string, effects []model.Effect) []model.Warning {
 				Severity: model.SeverityWarn, Code: model.WarnShellProfileChanged, Package: pkg, Provider: eff.Provider,
 				Message: eff.Path + " changed while " + pkg + " was being changed; new shells may see a different PATH",
 			})
+		case eff.Op == model.EffectChown && eff.Unexpected && eff.Error == "":
+			out = append(out, model.Warning{
+				Severity: model.SeverityWarn, Code: model.WarnRootOwnedAfterDrop, Package: pkg, Provider: eff.Provider,
+				Message: eff.Path + " was owned by root in the invoking user's home although " + orProvider(eff.Provider) +
+					" ran as that user; it has been given back. This points to a bug or to a provider that escalated on its own",
+			})
 		case (eff.Op == model.EffectChown || eff.Op == model.EffectChmod) && eff.Error != "":
 			out = append(out, model.Warning{
 				Severity: model.SeverityWarn, Code: model.WarnPermissionFixFailed, Package: pkg, Provider: eff.Provider,
@@ -594,6 +673,13 @@ func effectWarnings(pkg string, effects []model.Effect) []model.Warning {
 		}
 	}
 	return out
+}
+
+func orProvider(name string) string {
+	if name == "" {
+		return "the provider"
+	}
+	return name
 }
 
 // Watch observes directories around a step Starpoint runs that is not a

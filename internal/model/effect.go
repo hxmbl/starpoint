@@ -110,6 +110,12 @@ type Effect struct {
 	// Error says why an ownership or permission fix did not (fully) succeed.
 	// Such an effect also raises a permission-fix-failed warning.
 	Error string `json:"error,omitempty"`
+	// Unexpected marks an ownership fix that should not have been needed:
+	// something owned by root turned up in the invoking user's home after a
+	// provider ran as that user. It is still fixed, and it raises a
+	// root-owned-after-drop warning, because it means a bug or a provider
+	// that escalated on its own.
+	Unexpected bool `json:"unexpected,omitempty"`
 }
 
 // Key identifies an effect for de-duplication.

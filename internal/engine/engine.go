@@ -63,6 +63,10 @@ type Engine struct {
 	// touched: an elevated run gives what it wrote under the target user's
 	// home to that user, and widens what it created in shared locations.
 	align *align.Policy
+
+	// runAs reports the account a provider's commands run as in this run,
+	// when the caller knows. Nil means Starpoint's own account throughout.
+	runAs func(ctx context.Context, p provider.Provider) model.RunAs
 }
 
 // HistoryError reports why transition history is unavailable, or nil if it
@@ -75,6 +79,7 @@ type stores struct {
 	runsPath    string
 	home        string
 	align       *align.Policy
+	runAs       func(ctx context.Context, p provider.Provider) model.RunAs
 }
 
 // Option configures an Engine's own stores.
@@ -108,6 +113,25 @@ func WithAlignment(p *align.Policy) Option {
 	return func(s *stores) { s.align = p }
 }
 
+// WithRunAs tells the engine which account each provider's commands run as,
+// so that what it finds owned by root after a provider ran as the invoking
+// user is reported as unexpected. The CLI sets it from its privilege
+// decisions.
+func WithRunAs(f func(ctx context.Context, p provider.Provider) model.RunAs) Option {
+	return func(s *stores) { s.runAs = f }
+}
+
+// SetRunAs is WithRunAs for an engine that already exists.
+func (e *Engine) SetRunAs(f func(ctx context.Context, p provider.Provider) model.RunAs) { e.runAs = f }
+
+// RunAs reports the account p's commands run as, when the engine was told.
+func (e *Engine) RunAs(ctx context.Context, p provider.Provider) (model.RunAs, bool) {
+	if e.runAs == nil || p == nil {
+		return model.RunAs{}, false
+	}
+	return e.runAs(ctx, p), true
+}
+
 // New builds an Engine.
 func New(reg *provider.Registry, loc *locator.Locator, options ...Option) *Engine {
 	cfg := stores{}
@@ -128,7 +152,7 @@ func New(reg *provider.Registry, loc *locator.Locator, options ...Option) *Engin
 			}
 		}
 	}
-	return &Engine{reg: reg, locator: loc, resolver: resolve.New(reg), tracker: tracker, history: hist, historyErr: histErr, home: cfg.home, align: cfg.align}
+	return &Engine{reg: reg, locator: loc, resolver: resolve.New(reg), tracker: tracker, history: hist, historyErr: histErr, home: cfg.home, align: cfg.align, runAs: cfg.runAs}
 }
 
 // SetTracker sets the execution tracker. This is primarily for testing.

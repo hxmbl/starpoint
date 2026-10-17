@@ -307,6 +307,7 @@ func (e *Engine) ExecuteTransition(ctx context.Context, st model.State, opts Opt
 		t, err := e.executeTransition(ctx, st, opts)
 		t.Effects, t.Warnings = e.plannedTransition(ctx, start)
 		model.SortEffects(t.Effects)
+		t.RunAs = e.runAsFor(ctx, start.To.Name, start.From.Name)
 		return t, err
 	}
 	target := e.providerOrNil(start.To.Name)
@@ -340,7 +341,28 @@ func (e *Engine) ExecuteTransition(ctx context.Context, st model.State, opts Opt
 		t.Warnings = append(t.Warnings, sharedWarning(start, shared))
 	}
 	t.Warnings = append(t.Warnings, effectWarnings(st.Package.Name, effects)...)
+	t.RunAs = e.runAsFor(ctx, start.To.Name, start.From.Name)
 	return t, err
+}
+
+// runAsFor reports the accounts the named providers' commands run as, in
+// order and without repeats, when the engine was told.
+func (e *Engine) runAsFor(ctx context.Context, names ...string) []model.RunAs {
+	if e.runAs == nil {
+		return nil
+	}
+	var out []model.RunAs
+	seen := map[string]bool{}
+	for _, name := range names {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		if p, ok := e.reg.Get(name); ok {
+			out = append(out, e.runAs(ctx, p))
+		}
+	}
+	return out
 }
 
 // executeTransition is ExecuteTransition without the observation around it.

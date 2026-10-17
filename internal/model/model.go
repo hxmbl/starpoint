@@ -439,4 +439,6 @@ const (
 	WarnShellProfileChanged  = "shell-profile-changed"
 	WarnElevated             = "running-elevated"
 	WarnPermissionFixFailed  = "permission-fix-failed"
+	WarnRootOwnedAfterDrop   = "root-owned-after-drop"
+	WarnPrivilegeDropFailed  = "privilege-drop-failed"
 )

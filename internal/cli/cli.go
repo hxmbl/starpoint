@@ -23,6 +23,7 @@ import (
 	"github.com/hxmbl/starpoint/internal/config"
 	"github.com/hxmbl/starpoint/internal/elevation"
 	"github.com/hxmbl/starpoint/internal/engine"
+	"github.com/hxmbl/starpoint/internal/exec"
 	"github.com/hxmbl/starpoint/internal/history"
 	"github.com/hxmbl/starpoint/internal/locator"
 	"github.com/hxmbl/starpoint/internal/lock"
@@ -55,6 +56,10 @@ type Env struct {
 	GlobalConfig string
 	// Registry supplies providers. Nil means the built-in set.
 	Registry *provider.Registry
+	// NewRegistry builds the providers for a run whose privileges are
+	// decided, when Registry is nil. Nil means providers.New, the built-in
+	// set. The root tests use it to run a real provider against a fake tool.
+	NewRegistry func(pv *providers.Privileges) *provider.Registry
 	// Locator resolves paths. Nil means a real host locator.
 	Locator *locator.Locator
 	// Confirm asks the user a yes/no question. Nil means no interaction.
@@ -118,6 +123,28 @@ type Env struct {
 	// started is when this Run began; an elevated run only reassigns what
 	// changed after it.
 	started time.Time
+	// DropProbe checks that commands can really be started as the invoking
+	// user before an elevated run relies on it. Nil means privdrop.Probe,
+	// which starts `id -u` as the user; tests that pretend to be elevated
+	// replace it.
+	DropProbe func(ctx context.Context, id *exec.Identity) error
+	// Environ is the environment the invoking user's environment is built
+	// from. Nil means os.Environ.
+	Environ func() []string
+	// privileges decides which account each provider's commands run as in
+	// this Run.
+	privileges *providers.Privileges
+	// identity is the invoking user's identity when this Run drops
+	// privileges for user-level providers.
+	identity *exec.Identity
+	// blockCode and blockMessage say why an elevated run for an invoking
+	// user cannot act for them; changing commands are refused.
+	blockCode    string
+	blockMessage string
+	// runCtx is this Run's context, for lookups made while reporting.
+	runCtx context.Context
+	// reg is the registry built for this Run.
+	reg *provider.Registry
 }
 
 // elevationStatus reports the privileges of this run, detected once per Run.
@@ -198,6 +225,7 @@ func (e *Env) auditTransition(t model.Transition, err error) {
 		Result:   result,
 		Detail:   errorDetail(err),
 		Effects:  t.Effects,
+		RunAs:    t.RunAs,
 		Destructive: func() bool {
 			for _, eff := range t.Effects {
 				if eff.Destructive {
@@ -249,6 +277,7 @@ func (e *Env) auditActions(command string, dryRun bool, results ...*engine.Resul
 			if !dryRun {
 				entry.Effects = a.Effects
 			}
+			entry.RunAs = e.actionRunAs(a)
 			e.audit(entry)
 		}
 	}
@@ -258,7 +287,14 @@ func (e *Env) registry() *provider.Registry {
 	if e.Registry != nil {
 		return e.Registry
 	}
-	return providers.DefaultRegistry()
+	if e.reg == nil {
+		build := e.NewRegistry
+		if build == nil {
+			build = providers.New
+		}
+		e.reg = build(e.privileges)
+	}
+	return e.reg
 }
 
 func (e *Env) loc() *locator.Locator {
@@ -274,9 +310,11 @@ func (e *Env) newEngine() *engine.Engine {
 		if p := e.alignPolicy(); p != nil {
 			eng.SetAlignment(p)
 		}
+		eng.SetRunAs(e.providerRunAs)
 		return eng
 	}
-	eng := engine.New(e.registry(), e.loc(), engine.WithStateDir(e.stateDir()), engine.WithAlignment(e.alignPolicy()))
+	eng := engine.New(e.registry(), e.loc(), engine.WithStateDir(e.stateDir()), engine.WithAlignment(e.alignPolicy()),
+		engine.WithRunAs(e.providerRunAs))
 	// Tracker will be set by tests if needed
 	if err := eng.HistoryError(); err != nil {
 		// Reporting this matters: without history, `transition --reverse` cannot
@@ -381,11 +419,17 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	env.elevation = nil
 	env.alignment = nil
 	env.started = time.Now()
-	env.retarget()
+	env.runCtx = ctx
+	env.reg = nil
+	env.retarget(ctx)
 	w := report.New(env.Stdout, asJSON)
 	env.jsonMode = asJSON
 	w.SetVerbose(env.Verbose)
+	w.SetRunAs(env.actionRunAs)
 	if warn := env.elevationWarning(); warn != nil {
+		w.SetContextWarnings(*warn)
+	}
+	if warn := env.dropWarning(); warn != nil {
 		w.SetContextWarnings(*warn)
 	}
 
@@ -414,7 +458,7 @@ func Run(ctx context.Context, env *Env, args []string) int {
 
 	if err != nil {
 		if refusal, ok := asRefusal(err); ok {
-			reportRefusal(env.Stderr, asJSON, refusal)
+			reportRefusal(env.Stderr, asJSON, refusal, env.actionRunAs)
 			return env.finish(canonicalCommand(cmd), cmdArgs, refusal.Exit, err)
 		}
 		if errors.Is(err, ErrUsage) {
@@ -1221,6 +1265,9 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 	if warn := env.elevationWarning(); warn != nil {
 		rep.Problems = append(rep.Problems, *warn)
 	}
+	if warn := env.dropWarning(); warn != nil {
+		rep.Problems = append(rep.Problems, *warn)
+	}
 	for _, p := range rep.Problems {
 		if p.Severity != model.SeverityInfo {
 			rep.Healthy = false
@@ -1764,10 +1811,14 @@ func (e *Env) runInDir(ctx context.Context, dir string, stdout, stderr io.Writer
 	if e.RunInDir != nil {
 		return e.RunInDir(ctx, dir, stdout, stderr, name, args...)
 	}
-	if _, err := osexec.LookPath(name); err != nil {
+	id := e.projectIdentity(dir)
+	cmd, err := exec.Command(ctx, id, name, args...)
+	if err != nil {
+		if exec.IsDropError(err) {
+			return err
+		}
 		return fmt.Errorf("%s is not on PATH; install it (for example 'starpoint install %s') and run this again", name, name)
 	}
-	cmd := osexec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

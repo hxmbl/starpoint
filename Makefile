@@ -28,11 +28,14 @@ test:
 test-race:
 	$(GO) test -race ./...
 
-## test-root: run the tests that need root (ownership and permission fixes)
+## test-root: run the tests that need root (ownership and permission fixes,
+## running providers as the invoking user)
 test-root:
 	$(GO) test -c -o /tmp/starpoint-align.test ./internal/align
+	$(GO) test -c -o /tmp/starpoint-privdrop.test ./internal/privdrop
 	$(GO) test -c -o /tmp/starpoint-cli.test ./internal/cli
 	cd internal/align && sudo STARPOINT_ROOT_TESTS=1 /tmp/starpoint-align.test -test.run AsRoot -test.v
+	cd internal/privdrop && sudo STARPOINT_ROOT_TESTS=1 /tmp/starpoint-privdrop.test -test.run AsRoot -test.v
 	cd internal/cli && sudo STARPOINT_ROOT_TESTS=1 /tmp/starpoint-cli.test -test.run AsRoot -test.v
 
 ## cover: report test coverage per package

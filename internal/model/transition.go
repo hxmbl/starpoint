@@ -181,6 +181,9 @@ type Transition struct {
 	// Warnings concern this move specifically, such as two providers writing
 	// the same executable.
 	Warnings []Warning `json:"warnings,omitempty"`
+	// RunAs is the account each provider's commands ran as (or will run as):
+	// the provider moved to, then the one moved away from.
+	RunAs []RunAs `json:"run_as,omitempty"`
 }
 
 // NeedsWork reports whether the transition is not in a resting state.

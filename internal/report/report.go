@@ -28,6 +28,8 @@ type Writer struct {
 	asJSON bool
 	// verbose lists every effect in human output, not only destructive ones.
 	verbose bool
+	// runAs reports the accounts an action's providers ran as.
+	runAs RunAsFunc
 	// context are warnings about the run itself (running elevated), carried
 	// by every operation response.
 	context      []model.Warning
@@ -99,7 +101,18 @@ func (w *Writer) JSON() bool { return w.asJSON }
 // in the ActionResult shape with every planned effect. Effects gain the `chown`
 // and `chmod` operations for the ownership and permission fixes an elevated
 // run makes. Every existing field keeps its meaning.
-const SchemaVersion = 6
+//
+// Version 7 says who each action ran as. Every ActionResult gains `run_as`, a
+// list with one entry per provider the action runs (the target provider of a
+// relocation first, then the one it moves away from): provider, user, uid,
+// gid, elevated, dropped, and for an elevated run on behalf of an invoking
+// user the provider's privilege ("user" or "root") and the reason. A
+// transition gains the same `run_as`. Effects gain `unexpected`, set on an
+// ownership fix that should not have been needed because the provider ran as
+// the invoking user; it raises the `root-owned-after-drop` warning. Refusals
+// gain the codes `invoking-user-unresolved` and `privilege-drop-failed`.
+// Every existing field keeps its meaning.
+const SchemaVersion = 7
 
 // respond emits one flat JSON object: schema_version plus the given fields.
 //
@@ -307,7 +320,7 @@ type SyncResult struct {
 func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) error {
 	engineActions := syncActions(res, plan)
 	warnings := mergeWarnings(append([]model.Warning{}, w.context...), res.Warnings...)
-	actions, warnings := buildActions(res.DryRun, warnings, engineActions)
+	actions, warnings := buildActions(res.DryRun, warnings, engineActions, w.runAs)
 	if warnings == nil {
 		warnings = []model.Warning{}
 	}
@@ -376,6 +389,7 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 		}
 		fmt.Fprintln(w.out, line)
 		WriteEffects(w.out, a.Effects, res.DryRun, res.DryRun || w.verbose, "      ")
+		w.writeRunAs(a.RunAs, "      ")
 	}
 	if res.DryRun {
 		fmt.Fprintln(w.out, "\nDry run: nothing was changed.")
@@ -534,6 +548,7 @@ func (w *Writer) writeTransitions(ts []model.Transition) {
 			}
 		}
 		WriteEffects(w.out, t.Effects, planned, w.dryRunTransitions || w.verbose, "      ")
+		w.writeRunAs(t.RunAs, "      ")
 		for _, warn := range t.Warnings {
 			fmt.Fprintf(w.out, "      %s [%s]: %s\n", warn.Severity, warn.Code, warn.Message)
 		}
@@ -780,7 +795,7 @@ func (w *Writer) Result(op string, res *engine.Result) error {
 		return w.respond(w.operationFields(op, res.DryRun, []*engine.Result{res}))
 	}
 	w.writeContextWarnings()
-	actions, warnings := buildActions(res.DryRun, res.Warnings, res.Applied)
+	actions, warnings := buildActions(res.DryRun, res.Warnings, res.Applied, w.runAs)
 	for _, a := range actions {
 		pkg := a.Package
 		if a.Provider != "" {
@@ -811,6 +826,7 @@ func (w *Writer) Result(op string, res *engine.Result) error {
 		}
 		fmt.Fprintln(w.out, line)
 		WriteEffects(w.out, a.Effects, res.DryRun, res.DryRun || w.verbose, "")
+		w.writeRunAs(a.RunAs, "  ")
 		w.writeActionWarnings(a.Warnings, "  ")
 	}
 	if changed {
@@ -858,7 +874,7 @@ func (w *Writer) Prune(res *engine.Result, dryRun bool) error {
 		return w.respond(w.operationFields("prune", dryRun, []*engine.Result{res}))
 	}
 	w.writeContextWarnings()
-	actions, warnings := buildActions(dryRun, res.Warnings, res.Applied)
+	actions, warnings := buildActions(dryRun, res.Warnings, res.Applied, w.runAs)
 	for _, warn := range warnings {
 		if warn.Package == "" {
 			fmt.Fprintf(w.out, "  %s\n", warn.Message)
@@ -888,6 +904,7 @@ func (w *Writer) Prune(res *engine.Result, dryRun bool) error {
 		}
 		fmt.Fprintln(w.out, line)
 		WriteEffects(w.out, a.Effects, dryRun, dryRun || w.verbose, "")
+		w.writeRunAs(a.RunAs, "  ")
 		w.writeActionWarnings(a.Warnings, "  ")
 	}
 	return nil
@@ -1131,4 +1148,45 @@ func (w *Writer) writeLookup(s engine.Survey) error {
 	}
 	fmt.Fprintf(w.out, "    (%d provider(s) asked in %.0fms)\n", len(s.Findings), s.DurationMS)
 	return nil
+}
+
+// writeRunAs prints, with --verbose, the account each provider of an action
+// ran as. An ordinary run says nothing new by listing its own user, so only
+// an elevated run's identities are printed.
+func (w *Writer) writeRunAs(runAs []model.RunAs, indent string) {
+	if !w.verbose {
+		return
+	}
+	for _, ra := range runAs {
+		if !ra.Elevated {
+			continue
+		}
+		fmt.Fprintf(w.out, "%s%s\n", indent, RunAsLine(ra))
+	}
+}
+
+// RunAsLine describes one provider's identity for humans, as in
+// "uv ran as alice (uid 1000, gid 1000), privileges dropped: uv installs ...".
+func RunAsLine(ra model.RunAs) string {
+	who := ra.User
+	if who == "" {
+		who = fmt.Sprintf("uid %d", ra.UID)
+	}
+	line := fmt.Sprintf("%s runs as %s (uid %d, gid %d)", orName(ra.Provider), who, ra.UID, ra.GID)
+	if ra.Dropped {
+		line += ", privileges dropped"
+	} else if ra.Elevated {
+		line += ", with full privileges"
+	}
+	if ra.Reason != "" {
+		line += ": " + ra.Reason
+	}
+	return line
+}
+
+func orName(name string) string {
+	if name == "" {
+		return "the provider"
+	}
+	return name
 }

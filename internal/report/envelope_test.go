@@ -220,10 +220,11 @@ func TestEmptyCollectionsAreArraysNotNull(t *testing.T) {
 	}
 }
 
-// actionKeys is the version 5 ActionResult: the version 4 fields plus what the
-// action did. A key missing here is a field a consumer can no longer rely on.
+// actionKeys is the version 7 ActionResult: the version 4 fields, what the
+// action did (version 5), and who it ran as (version 7). A key missing here is
+// a field a consumer can no longer rely on.
 var actionKeys = []string{"action", "package", "result", "dry_run", "destructive",
-	"transitions", "config_changes", "effects", "warnings"}
+	"transitions", "config_changes", "effects", "warnings", "run_as"}
 
 // operationKeys are the top-level fields every command that changes anything
 // carries.
@@ -319,5 +320,67 @@ func TestContextWarningsReachEveryOperation(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), `"running-elevated"`) {
 		t.Errorf("an elevated run is reported on every operation:\n%s", buf.String())
+	}
+}
+
+// Version 7: every action says who its providers ran as, through the
+// writer's RunAs function, and an elevated run's identity reads the same in
+// JSON and in --verbose output.
+func TestActionsCarryRunAs(t *testing.T) {
+	dropped := model.RunAs{Provider: "brew", User: "alice", UID: 1000, GID: 1000, Elevated: true, Dropped: true,
+		Privilege: "user", Reason: "Homebrew's prefix /opt/homebrew belongs to alice"}
+	res := &engine.Result{Applied: []model.PlannedAction{sampleAction()}}
+
+	var buf bytes.Buffer
+	w := New(&buf, true)
+	w.SetRunAs(func(a model.PlannedAction) []model.RunAs { return []model.RunAs{dropped} })
+	if err := w.Result("install", res); err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		SchemaVersion int `json:"schema_version"`
+		Actions       []struct {
+			RunAs []map[string]any `json:"run_as"`
+		} `json:"actions"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.SchemaVersion != 7 {
+		t.Errorf("run_as is schema version 7, got %d", payload.SchemaVersion)
+	}
+	if len(payload.Actions) != 1 || len(payload.Actions[0].RunAs) != 1 {
+		t.Fatalf("one identity per provider: %s", buf.String())
+	}
+	got := payload.Actions[0].RunAs[0]
+	for key, want := range map[string]any{"provider": "brew", "user": "alice", "uid": float64(1000), "gid": float64(1000),
+		"elevated": true, "dropped": true, "privilege": "user"} {
+		if got[key] != want {
+			t.Errorf("run_as.%s = %v, want %v", key, got[key], want)
+		}
+	}
+
+	buf.Reset()
+	w = New(&buf, false)
+	w.SetVerbose(true)
+	w.SetRunAs(func(a model.PlannedAction) []model.RunAs { return []model.RunAs{dropped} })
+	if err := w.Result("install", res); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "brew runs as alice (uid 1000, gid 1000), privileges dropped: Homebrew's prefix") {
+		t.Errorf("--verbose names the identity:\n%s", buf.String())
+	}
+}
+
+func TestUnexpectedChownIsMarkedInJSON(t *testing.T) {
+	a := sampleAction()
+	a.Effects = append(a.Effects, model.Effect{Op: model.EffectChown, Kind: model.EffectFile, Path: "/home/alice/.cargo/x",
+		From: "0:0", To: "1000:1000", Evidence: model.EvidenceObserved, Unexpected: true})
+	var buf bytes.Buffer
+	if err := New(&buf, true).Result("install", &engine.Result{Applied: []model.PlannedAction{a}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `"unexpected": true`) {
+		t.Errorf("an unexpected fix is flagged:\n%s", buf.String())
 	}
 }

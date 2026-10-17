@@ -91,12 +91,15 @@ func newHarness(t *testing.T, configBody string) *harness {
 	aptP.UnavailableReason = "apt-get not found on PATH"
 
 	uvP := testsupport.NewFakeProvider(uv.Name, provider.KindPython)
+	uvP.RunsAs = provider.PrivilegeUser
 	rustupP := testsupport.NewFakeProvider(rustup.Name, provider.KindRust)
 	rustupP.Caps = provider.Capabilities{
 		Discover: true, Install: true, Remove: true, Update: true,
 		PinVersion: true, Channels: true, DefaultScope: model.ScopeUser,
 	}
+	rustupP.RunsAs = provider.PrivilegeUser
 	cargoP := testsupport.NewFakeProvider(cargo.Name, provider.KindRust)
+	cargoP.RunsAs = provider.PrivilegeUser
 	npmP := testsupport.NewFakeProvider(npm.Name, provider.KindNode)
 
 	for _, p := range []*testsupport.FakeProvider{sys, brewP, aptP, uvP, rustupP, cargoP, npmP} {

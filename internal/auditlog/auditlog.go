@@ -84,6 +84,10 @@ type Entry struct {
 	// Elevated records that the command ran as root or as an elevated
 	// administrator, so its effects landed in that account's environment.
 	Elevated bool `json:"elevated,omitempty"`
+	// RunAs is the account each provider of an action ran as: under sudo or
+	// doas, the invoking user for user-level providers (dropped is true) and
+	// root for system providers.
+	RunAs []model.RunAs `json:"run_as,omitempty"`
 }
 
 // fileLayout is the rotation scheme: one file per UTC day.

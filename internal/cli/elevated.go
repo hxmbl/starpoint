@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,36 +10,73 @@ import (
 	"github.com/hxmbl/starpoint/internal/align"
 	"github.com/hxmbl/starpoint/internal/auditlog"
 	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/exec"
 	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/privdrop"
+	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers"
 )
 
 // This file is what Starpoint does differently when it runs as root or
 // elevated.
 //
-// Three things change:
+// Four things change:
 //
 //  1. Whose environment the run acts on. Under sudo or doas from an ordinary
 //     user, it is that user's: HOME is pointed at their home before anything
 //     reads it, so the configuration, the state directory, ~/.local/bin,
-//     ~/.cargo/bin and the shell profiles are theirs, and so is the
-//     environment every provider subprocess inherits. A plain root shell (or
+//     ~/.cargo/bin and the shell profiles are theirs. A plain root shell (or
 //     sudo from root) acts on root's own environment, as it always did.
-//  2. Whether a changing command runs at all. It needs --allow-root, or,
+//  2. Who each provider runs as. Under sudo or doas from an ordinary user,
+//     providers that install into that user's home (uv, pip --user, Cargo,
+//     Go, rustup; npm, pnpm, yarn, gem and Homebrew when their prefix is the
+//     user's) run as the user: their uid, gid and groups and an environment
+//     built for them (internal/privdrop). System providers (apt, dnf,
+//     pacman; npm, pnpm, yarn and gem into a system prefix) run as root,
+//     where root is the point. If the user cannot be resolved, or a process
+//     cannot actually be started as them, changing commands are refused
+//     rather than run as root.
+//  3. Whether a changing command runs at all. It needs --allow-root, or,
 //     under sudo or doas at a terminal, an explicit yes to a question that
 //     says whose environment will change. Read-only commands and doctor are
 //     always allowed.
-//  3. What happens to the files it touches. What a provider writes under the
-//     target user's home is given to that user; what it creates in shared
-//     locations is made readable and executable by everyone. Each fix is an
-//     effect (chown, chmod) on the action that caused it and so is in the
-//     audit log. Starpoint's own records under that home are given back at
-//     the end of every command.
+//  4. What happens to the files it touches. What a root provider creates in
+//     shared locations is made readable and executable by everyone. What is
+//     found owned by root under the target user's home is given to that
+//     user; after a provider that ran as the user nothing should be, so such
+//     a fix is marked unexpected and warned about. Each fix is an effect
+//     (chown, chmod) on the action that caused it and so is in the audit
+//     log.
+//
+// Starpoint's own records under that home (configuration, state directory,
+// audit log, locks) are written by Starpoint itself, as root, and given back
+// to the user at the end of every command. Writing them as the user instead
+// would mean switching the effective uid of the Starpoint process, which in
+// Go applies to every thread at once and races with the provider commands it
+// starts (a process whose effective uid is the user's can no longer start one
+// as root). The set of files is small, known and Starpoint's own, so the
+// chown-back is exact and cheap, and it is recorded in the audit log.
+
+// Error codes for an elevated run that cannot act for its invoking user.
+const (
+	CodeInvokingUserUnresolved = "invoking-user-unresolved"
+	CodePrivilegeDropFailed    = "privilege-drop-failed"
+)
 
 // retarget points the run at the invoking user's environment when it runs
-// elevated through sudo or doas. It runs before anything reads HOME.
-func (e *Env) retarget() {
+// elevated through sudo or doas, and decides who providers run as. It runs
+// before anything reads HOME.
+func (e *Env) retarget(ctx context.Context) {
 	e.target = nil
-	t, ok := e.elevationStatus().Target()
+	e.identity = nil
+	e.blockCode, e.blockMessage = "", ""
+	status := e.elevationStatus()
+	e.privileges = &providers.Privileges{Elevated: status.Elevated}
+	if msg := status.Unresolved(); msg != "" {
+		e.block(CodeInvokingUserUnresolved, msg)
+		return
+	}
+	t, ok := status.Target()
 	if !ok {
 		return
 	}
@@ -47,10 +85,83 @@ func (e *Env) retarget() {
 		set = func(home string) error { return os.Setenv("HOME", home) }
 	}
 	if err := set(t.Home); err != nil {
-		e.warn(fmt.Sprintf("could not act on %s's environment (%v); acting on the elevated account's", t.User, err))
+		e.block(CodeInvokingUserUnresolved, fmt.Sprintf("could not act on %s's environment: %v", t.User, err))
 		return
 	}
 	e.target = &t
+	environ := os.Environ
+	if e.Environ != nil {
+		environ = e.Environ
+	}
+	id := privdrop.Identity(t, status.Home, environ())
+	probe := e.DropProbe
+	if probe == nil {
+		probe = privdrop.Probe
+	}
+	if err := probe(ctx, id); err != nil {
+		e.block(CodePrivilegeDropFailed, err.Error())
+		return
+	}
+	e.identity = id
+	e.privileges.Identity = id
+}
+
+// block records that this elevated run cannot act for its invoking user.
+func (e *Env) block(code, msg string) {
+	e.blockCode, e.blockMessage = code, msg
+	e.privileges.Unavailable = msg + "; providers run as root"
+}
+
+// dropWarning is the warning a read-only command carries when the run
+// cannot act for its invoking user, or nil.
+func (e *Env) dropWarning() *model.Warning {
+	if e.blockCode == "" {
+		return nil
+	}
+	code := model.WarnPrivilegeDropFailed
+	return &model.Warning{Severity: model.SeverityWarn, Code: code,
+		Message: e.blockMessage + ". Provider commands run as root in this run, so changing commands are refused (" + e.blockCode + ")"}
+}
+
+// providerRunAs is the account p's commands run as in this Run.
+func (e *Env) providerRunAs(ctx context.Context, p provider.Provider) model.RunAs {
+	return e.privileges.RunAs(ctx, p)
+}
+
+// actionRunAs is the account each provider of an action runs as: the
+// action's provider, then for a relocation the one it moves away from.
+func (e *Env) actionRunAs(a model.PlannedAction) []model.RunAs {
+	ctx := e.runCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	names := []string{a.State.Res.Provider}
+	if a.Transition != nil {
+		names = append(names, a.Transition.To.Name, a.Transition.From.Name)
+	}
+	var out []model.RunAs
+	seen := map[string]bool{}
+	reg := e.registry()
+	for _, name := range names {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		if p, ok := reg.Get(name); ok {
+			out = append(out, e.providerRunAs(ctx, p))
+		}
+	}
+	return out
+}
+
+// projectIdentity is who a project's own dependency installer (`install .`)
+// runs as: the invoking user when privileges are dropped and the project
+// directory is theirs, Starpoint's own account otherwise.
+func (e *Env) projectIdentity(dir string) *exec.Identity {
+	if e.identity == nil || !privdrop.OwnedBy(dir, e.identity.UID) {
+		return nil
+	}
+	return e.identity
 }
 
 // changingCommand reports whether a command line would change the machine or
@@ -93,11 +204,22 @@ func (e *Env) guardElevated(cmd string, args []string) error {
 	if !status.Elevated || !changingCommand(cmd, args) {
 		return nil
 	}
+	command := canonicalCommand(cmd)
+	if e.blockCode != "" {
+		// --allow-root does not cover this: it allows acting as root on
+		// behalf of the invoking user, which is exactly what cannot be done.
+		user := status.InvokingUser
+		msg := fmt.Sprintf("refusing to %s: %s. Starpoint does not run %s's providers as root instead. Nothing was changed. "+
+			"Run it as %s without sudo, or, to act on root's own environment on purpose, from a root shell without SUDO_USER and DOAS_USER set",
+			command, e.blockMessage, user, user)
+		e.audit(auditlog.Entry{Event: auditlog.EventGuard, Command: command, Result: "refused", Elevated: true,
+			Detail: e.blockCode + ": " + msg})
+		return &RefusalError{Code: e.blockCode, Exit: ExitRefusedElevated, Message: msg, Command: command}
+	}
 	if e.allowRoot {
 		e.rootApproved = true
 		return nil
 	}
-	command := canonicalCommand(cmd)
 	unattended := hasFlag(args, "--yes", "-y", "--no-confirm")
 	if status.InvokingUser != "" && !unattended && e.interactive() && e.Confirm != nil {
 		out := e.promptOut()

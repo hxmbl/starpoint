@@ -2,7 +2,9 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/hxmbl/starpoint/internal/exec"
 	"path/filepath"
 
 	"github.com/hxmbl/starpoint/internal/config"
@@ -212,6 +214,14 @@ func failed(a model.PlannedAction, err error) model.PlannedAction {
 	a.Outcome = model.OutcomeFailed
 	if err != nil {
 		a.Error = err.Error()
+	}
+	var drop *exec.DropError
+	if errors.As(err, &drop) {
+		a.Warnings = append(a.Warnings, model.Warning{
+			Severity: model.SeverityError, Code: model.WarnPrivilegeDropFailed, Package: a.State.Package.Name,
+			Provider: a.State.Res.Provider,
+			Message:  drop.Error(),
+		})
 	}
 	return a
 }

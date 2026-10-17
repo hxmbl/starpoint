@@ -179,7 +179,7 @@ func transitionActions(ctx context.Context, eng *engine.Engine, ts []model.Trans
 // command that had a plan, every planned action and effect. Under --json it
 // is one document in the error envelope, with the plan in the ActionResult
 // shape every other command uses.
-func reportRefusal(w io.Writer, asJSON bool, r *RefusalError) {
+func reportRefusal(w io.Writer, asJSON bool, r *RefusalError, runAs report.RunAsFunc) {
 	if asJSON {
 		doc := map[string]any{
 			"schema_version": report.SchemaVersion,
@@ -188,7 +188,7 @@ func reportRefusal(w io.Writer, asJSON bool, r *RefusalError) {
 			"exit_code":      r.Exit,
 		}
 		if r.Actions != nil {
-			refused := report.RefusedPlan(r.Actions)
+			refused := report.RefusedPlan(r.Actions, runAs)
 			refused["operation"] = r.Command
 			doc["refused"] = refused
 		}

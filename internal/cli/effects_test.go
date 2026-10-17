@@ -47,6 +47,7 @@ type actionJSON struct {
 	ConfigChanges []model.ConfigChange     `json:"config_changes"`
 	Effects       []model.Effect           `json:"effects"`
 	Warnings      []model.Warning          `json:"warnings"`
+	RunAs         []model.RunAs            `json:"run_as"`
 }
 
 func decodeOperation(t *testing.T, out string) operation {

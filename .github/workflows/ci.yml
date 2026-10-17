@@ -38,15 +38,19 @@ jobs:
           git diff --exit-code go.mod go.sum
       - name: Build
         run: make build
-      # Ownership and permission alignment changes owners for real, which
-      # needs root. The test binaries are built as the runner user and only
-      # run with sudo, so nothing root-owned lands in the Go caches.
+      # Ownership and permission alignment changes owners for real, and
+      # running providers as the invoking user starts processes as another
+      # account, both of which need root. The test binaries are built as the
+      # runner user and only run with sudo, so nothing root-owned lands in the
+      # Go caches.
       - name: Root-only tests
         if: runner.os == 'Linux'
         run: |
           go test -c -o "$RUNNER_TEMP/align.test" ./internal/align
+          go test -c -o "$RUNNER_TEMP/privdrop.test" ./internal/privdrop
           go test -c -o "$RUNNER_TEMP/cli.test" ./internal/cli
           (cd internal/align && sudo STARPOINT_ROOT_TESTS=1 "$RUNNER_TEMP/align.test" -test.run AsRoot -test.v)
+          (cd internal/privdrop && sudo STARPOINT_ROOT_TESTS=1 "$RUNNER_TEMP/privdrop.test" -test.run AsRoot -test.v)
           (cd internal/cli && sudo STARPOINT_ROOT_TESTS=1 "$RUNNER_TEMP/cli.test" -test.run AsRoot -test.v)
 
   cross-build:

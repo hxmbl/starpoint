@@ -35,6 +35,12 @@ type ActionResult struct {
 	ConfigChanges []model.ConfigChange     `json:"config_changes"`
 	Effects       []model.Effect           `json:"effects"`
 	Warnings      []model.Warning          `json:"warnings"`
+	// RunAs (version 7) is the account each provider involved ran as, or
+	// will run as: user, uid, gid, whether Starpoint was elevated, whether
+	// it dropped privileges for the provider, and why. Empty for an action
+	// that runs no provider, such as recording a package that is already
+	// installed.
+	RunAs []model.RunAs `json:"run_as"`
 }
 
 // Summary condenses an operation's actions. It holds counts and names only;
@@ -81,7 +87,7 @@ func mergeWarnings(dst []model.Warning, more ...model.Warning) []model.Warning {
 // The invariant a consumer can rely on: every warning on an action also
 // appears in the top-level list, and an action's list holds every top-level
 // warning that names its package.
-func buildActions(dryRun bool, global []model.Warning, actions []model.PlannedAction) ([]ActionResult, []model.Warning) {
+func buildActions(dryRun bool, global []model.Warning, actions []model.PlannedAction, runAs RunAsFunc) ([]ActionResult, []model.Warning) {
 	all := mergeWarnings(nil, global...)
 	for _, a := range actions {
 		all = mergeWarnings(all, a.Warnings...)
@@ -90,6 +96,9 @@ func buildActions(dryRun bool, global []model.Warning, actions []model.PlannedAc
 	for _, a := range actions {
 		ar := actionResult(a)
 		ar.DryRun = dryRun
+		if runAs != nil {
+			ar.RunAs = append(ar.RunAs, runAs(a)...)
+		}
 		if ar.Result == "" {
 			ar.Result = string(model.OutcomeApplied)
 			if dryRun {
@@ -118,6 +127,7 @@ func actionResult(a model.PlannedAction) ActionResult {
 		Error:         a.Error,
 		Destructive:   a.Destructive(),
 		Transitions:   append([]model.ActionTransition{}, a.Changes...),
+		RunAs:         []model.RunAs{},
 		ConfigChanges: append([]model.ConfigChange{}, a.ConfigChanges...),
 		Effects:       append([]model.Effect{}, a.Effects...),
 		Warnings:      append([]model.Warning{}, a.Warnings...),
@@ -187,7 +197,7 @@ func collect(results []*engine.Result) ([]model.PlannedAction, []model.Warning) 
 func (w *Writer) operationFields(op string, dryRun bool, results []*engine.Result) map[string]any {
 	actions, warnings := collect(results)
 	warnings = mergeWarnings(append([]model.Warning{}, w.context...), warnings...)
-	ars, all := buildActions(dryRun, warnings, actions)
+	ars, all := buildActions(dryRun, warnings, actions, w.runAs)
 	changed := false
 	path := ""
 	for _, r := range results {
@@ -230,15 +240,15 @@ func ActionsFromResults(results ...*engine.Result) []ActionResult {
 			dryRun = true
 		}
 	}
-	ars, _ := buildActions(dryRun, warnings, actions)
+	ars, _ := buildActions(dryRun, warnings, actions, nil)
 	return ars
 }
 
 // RefusedPlan is the plan of a command Starpoint refused to run: the actions
 // it would have carried out, in the ActionResult shape, with the warnings and
 // summary an operation carries. Every action's result is "planned".
-func RefusedPlan(actions []model.PlannedAction) map[string]any {
-	ars, ws := buildActions(true, nil, actions)
+func RefusedPlan(actions []model.PlannedAction, runAs RunAsFunc) map[string]any {
+	ars, ws := buildActions(true, nil, actions, runAs)
 	if ws == nil {
 		ws = []model.Warning{}
 	}
@@ -274,6 +284,12 @@ func (w *Writer) Operation(op string, dryRun bool, results []*engine.Result, ext
 // SetContextWarnings adds warnings about the run itself, such as running
 // elevated, to every operation response.
 func (w *Writer) SetContextWarnings(ws ...model.Warning) { w.context = append(w.context, ws...) }
+
+// RunAsFunc reports the accounts an action's providers run as.
+type RunAsFunc func(a model.PlannedAction) []model.RunAs
+
+// SetRunAs makes every action report the accounts its providers ran as.
+func (w *Writer) SetRunAs(f RunAsFunc) { w.runAs = f }
 
 // SetVerbose asks the human renderer to list every effect, not only the
 // destructive ones.
