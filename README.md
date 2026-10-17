@@ -200,7 +200,8 @@ configuration) skips the question; a stream that provides no answer at all is
 refused rather than assumed.
 
 Global options work anywhere on the line: `--json`, `--provider <name>`
-(repeatable, restricts automatic resolution), `--force`, `--version`, `--help`.
+(repeatable, restricts automatic resolution), `--force`, `--verbose` (`-v`),
+`--version`, `--help`.
 `--help` (or `-h`) after a command prints that command's help, as does
 `starpoint help <command>`; it is never taken as a package name. Any other
 unrecognised `-`-prefixed token is a usage error rather than a package name.
@@ -210,6 +211,19 @@ unrecognised `-`-prefixed token is a usage error rather than a package name.
 Human output is the default; `--json` produces the same structured data the
 engine produced, not a re-parse of the text. Every read command supports it, so
 another tool never has to parse a table.
+
+Every change says what it does to the machine. Each action lists its effects:
+the package installed or uninstalled, every file and link created, rewritten,
+replaced or deleted in the places the provider writes to, commands that start
+or stop resolving on PATH, shell profiles that changed, and the configuration
+entries edited. Effects are observed on disk before and after each step, not
+inferred, and anything that removes or overwrites something is marked
+destructive. Before asking for confirmation, and in every human-readable result,
+destructive effects are listed with a `!`; `--dry-run` lists every effect;
+`--verbose` lists every effect of a real run too. Warnings carry a stable code
+and are attached to the package they concern. Running as root, or as an
+elevated Windows administrator, is reported on every changing command, because
+`~` and everything under it then belong to that account.
 
 ## Providers
 

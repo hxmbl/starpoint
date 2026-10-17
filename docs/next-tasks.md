@@ -10,9 +10,17 @@ This file tracks work that remains after the current implementation. Completed i
 
 ## Remaining CLI and API work
 
-4. **Publish the JSON schema as a machine-readable artifact.** `docs/json-schema.md` documents schema version 2 and the command shapes. Generate or validate a formal JSON Schema document from the actual Go output types so external clients can validate payloads without duplicating the prose contract.
+4. **Publish the JSON schema as a machine-readable artifact.** `docs/json-schema.md` documents the current schema version and the command shapes. Generate or validate a formal JSON Schema document from the actual Go output types so external clients can validate payloads without duplicating the prose contract.
 5. **Generate shell completions.** Bash, zsh, and fish completions are hand-written; a test (internal/cli/completions_test.go) checks them against the command, flag and provider tables. Generating them from those tables would remove the duplication. The zsh and fish files have not been exercised in a real shell in CI.
 6. **Improve PATH inventory controls.** `doctor` summarises the PATH inventory (counts, shadowed names, unknown owners; `--all` for everything) and PATH directories are de-duplicated by real path. `list` still prints every unaccounted executable; consider the same summary there and richer filters (by directory or owner) for very large PATHs, keeping the full data in machine output.
+
+7. **Watch more of what providers write.** Effects are observed in the provider's executable directory (uv, pip), the directory of the provider's own binary, the directories of known installations and PATH resolution, and the shell profiles. Providers that write elsewhere (`go install` into GOBIN when go itself lives in /usr/local/go, rustup's toolchain directories, a uv tool environment's contents) are reported only through the paths they return, with evidence `reported`. Adding `ExecutableDir` to cargo and go would let those be observed; it changes how transitions detect a shared executable, so it needs its own tests.
+
+## Open product decisions
+
+- **Destructive actions without a terminal.** `--yes`/`--no-confirm` approves every effect, destructive or not, and `--json` runs are usually unattended. Recommendation: require an explicit `--allow-destructive` (or `--yes=destructive`) when a non-interactive run would delete or replace anything, and refuse otherwise with the planned effect list. Not implemented; reporting only.
+- **Elevated runs.** Starpoint reports `running-elevated` but proceeds. Recommendation: refuse changing commands as root unless `--allow-root` is given, or `SUDO_USER` is set and the user confirms interactively; `doctor` and read commands stay allowed.
+- **Where effects are watched.** Observation is a bounded set of directories. Recommendation: keep it bounded (watching all of `$HOME` is too slow and too noisy), and grow it per provider as in item 7.
 
 ## Provider coverage
 
@@ -55,3 +63,5 @@ This file tracks work that remains after the current implementation. Completed i
 - DNF and Pacman providers alongside the existing APT and Homebrew integrations. Neither can honour an arbitrary version pin, and both report that rather than claiming a capability they lack.
 - Optional provider executable verification after install/update and during transitions.
 - Rust `rust-toolchain` / `rust-toolchain.toml` and Go `go.mod` toolchain declaration detection.
+- Per-action transparency (JSON schema 5): every action reports its outcome, provider and version transitions, configuration changes, and effects observed on disk (paths created, modified, replaced or deleted, packages, PATH resolution, shell profiles) with a destructive flag, plus coded warnings attached to their package and a top-level summary. Confirmation steps and results list destructive effects; `--dry-run` and `--verbose` list them all. The audit log records each applied action's effects, and whether a command ran elevated.
+- A `running-elevated` warning on every changing command and in `doctor` when Starpoint runs as root or elevated.
