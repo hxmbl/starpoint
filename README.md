@@ -238,27 +238,83 @@ Under `sudo` or `doas` from an ordinary user, Starpoint acts on *that user's*
 environment, not root's: `HOME` is pointed at their home (from `SUDO_USER` /
 `SUDO_UID` / `SUDO_GID` or `DOAS_USER`, resolved through the user database)
 before anything reads it, so the configuration, `~/.local/bin`,
-`~/.cargo/bin`, shell profiles and every provider subprocess are theirs. So
-that nothing it installs is unusable afterwards:
+`~/.cargo/bin` and the shell profiles are theirs.
 
-- what a provider writes under that home, and the provider's own state
-  directories there (Cargo's home, Go's module and build caches, rustup's home,
-  uv's tool environments and cache), is given back to the user if it ended up
-  owned by root during the run, along with any directories it created on the
-  way; Starpoint's own configuration, audit log, history and locks are given
-  back at the end of every command;
-- what a provider creates in shared locations (`/usr/local`, `/opt`, ...) is
-  made readable by everyone, and its directories and executables executable
-  by everyone (0755 at least, 0644 for other files), so root's umask does not
-  leave it usable only by root. Bits are only ever added; anything that existed
-  before, and anything that looks like a key, token or credential, is left
-  alone.
+**Providers run as the account their work needs.** Providers that install into
+the user's home run *as the user*: Starpoint starts their commands with the
+user's uid, primary gid and supplementary groups (set by the kernel between
+fork and exec, so the provider never runs as root) and an environment built
+for the user rather than inherited from root. System providers run as root,
+where root is the point.
+
+| Provider | Under sudo/doas it runs as |
+|---|---|
+| `uv`, `pip` (always `--user`), `cargo`, `go`, `rustup` | the invoking user |
+| `npm`, `pnpm`, `yarn`, `gem` | the user when their global prefix / directory (asked as the user) is in the user's home or owned by them; root when it is a system location such as `/usr` |
+| `brew` | the user when the Homebrew prefix belongs to them (Homebrew runs as the owner of its prefix and refuses root); otherwise root, which Homebrew itself then refuses |
+| `apt`, `dnf`, `pacman`, `system` | root |
+| `install .` (a project's own installer) | the user when the project directory is theirs |
+
+A provider is classified once per run, so its inventory, install and
+verification all run as the same account. The user's environment is `HOME`,
+`USER`, `LOGNAME`, their login shell, a `PATH` that leads with their tool
+directories (`~/.cargo/bin` or `$CARGO_HOME/bin`, Go's bin, `~/.local/bin`,
+`PNPM_HOME`, `~/bin`) followed by sudo's own `PATH` minus anything in root's
+home, their own `XDG_RUNTIME_DIR`, terminal, locale, proxy and certificate
+settings, and each provider's configuration family (`UV_*`, `PIP_*`,
+`CARGO_*`, `npm_config_*`, `GOPROXY`, ...). Location variables
+(`CARGO_HOME`, `RUSTUP_HOME`, `GOPATH`, `GOBIN`, `UV_TOOL_DIR`,
+`PYTHONUSERBASE`, `XDG_*_HOME`, ...) are kept only when they point into the
+user's home, and nothing that points into root's home is ever passed on.
+
+Before a changing command, Starpoint checks that it really can start a process
+as the user (it runs `id -u` as them and checks they can write their home). If
+the invoking user's ids or home cannot be resolved, or that check fails, the
+command is refused with exit 4 and `code: "invoking-user-unresolved"` or
+`"privilege-drop-failed"`, even with `--allow-root`: Starpoint does not quietly
+run the user's providers as root instead. Read-only commands still run, with a
+`privilege-drop-failed` warning. A plain root shell (or `sudo` from root), with
+no invoking user, keeps acting on root's own environment as before.
+
+What a run still has to fix:
+
+- what a root provider creates in shared locations (`/usr/local`, `/opt`,
+  npm's `<prefix>/lib/node_modules/<package>`, ...) is made readable by
+  everyone, and its directories and executables executable by everyone (0755
+  at least, 0644 for other files), so root's umask does not leave it usable
+  only by root. Bits are only ever added; anything that existed before, and
+  anything that looks like a key, token or credential, is left alone. What a
+  provider wrote as the user keeps the user's own modes.
+- anything found owned by root under the user's home (the paths an action
+  touched, and the providers' state directories there: Cargo's home, Go's
+  module and build caches, rustup's home, uv's tool environments and cache,
+  pip's user site-packages, npm's cache and global modules) is given back to
+  the user. After a provider that ran as the user nothing should be, so such a
+  fix is marked `unexpected` and raises a `root-owned-after-drop` warning: it
+  points to a bug or to a provider that escalated on its own.
+- Starpoint's own configuration, audit log, history and locks are written by
+  Starpoint itself and given back to the user at the end of every command.
+  (Writing them as the user would mean switching the Starpoint process's own
+  effective uid, which in Go applies to every thread at once and races with
+  the provider commands it starts; the files are few and its own, so the
+  chown-back is exact.)
 
 Every fix is reported as an effect (`chown` or `chmod`, with evidence
 `observed`) on the action that caused it and is in the audit log; a fix that
-fails raises a `permission-fix-failed` warning. A plain root shell (or `sudo`
-from root) with `--allow-root` acts on root's own environment, with the
-`running-elevated` warning, and still gets the shared-location fixes.
+fails raises a `permission-fix-failed` warning. Every action reports `run_as`
+(who each of its providers ran as, and whether privileges were dropped) in
+JSON, in the audit log and, with `--verbose`, in human output:
+
+```
+$ sudo starpoint install ruff --provider uv --yes --allow-root --verbose
+installed ruff via uv
+  ...
+  uv runs as alice (uid 1000, gid 1000), privileges dropped: uv installs tools into the user's home (~/.local/share/uv/tools, ~/.local/bin)
+```
+
+On Windows there is nothing to drop: an elevated administrator token is the
+same account with more rights and carries no invoking user, so providers run
+elevated and no ownership is reassigned; the `--allow-root` guard applies.
 
 Exit status: `0` success, `1` failure, `2` usage error, `3` refused unattended
 destructive run, `4` refused elevated run. A refusal changes nothing.
@@ -487,6 +543,7 @@ internal/providers/…     one package per ecosystem
 internal/project         ecosystem and project-context detection
 internal/exec            command execution, behind an interface so tests never shell out
 internal/elevation       whether the run is elevated, and whose environment it acts on
+internal/privdrop        the invoking user's identity and environment for dropped providers
 internal/align           ownership and permission fixes for elevated runs
 internal/testsupport     scripted runner and fake providers
 ```
@@ -504,7 +561,7 @@ make build     # build ./bin/starpoint
 make test      # go test ./...
 make fmt       # gofmt -w
 make test-race # the suite under the race detector
-make test-root # the tests that change owners for real (uses sudo)
+make test-root # the tests that change owners and drop privileges for real (uses sudo)
 ```
 
 Tests never modify the machine: providers talk to an interface, and the test
@@ -561,13 +618,20 @@ suite substitutes a scripted command runner and in-memory providers.
   and curl — so killing only the direct child would leave those grandchildren
   writing to the filesystem after Starpoint had moved on. On platforms without
   process groups, cancellation stops at the direct child.
-- Ownership and permission fixes run on Linux and macOS. On Windows an
-  elevated token does not change file ownership the way root does, so nothing
-  is reassigned there; the `--allow-root` guard still applies.
-- An elevated run fixes what it can see: the paths each action observed or was
-  told about, and the state directories of Cargo, Go, rustup and uv. A provider
-  that writes somewhere else under the home as root (pip's user site-packages,
-  npm's prefix) and does not report it can still leave root-owned files there.
+- Privilege dropping and ownership fixes run on Linux and macOS. On Windows an
+  elevated token has no invoking user to return to and does not change file
+  ownership the way root does, so nothing is dropped or reassigned there; the
+  `--allow-root` guard still applies.
+- Under sudo, a provider is classified once per run by where it installs. npm,
+  pnpm, yarn and gem with a system prefix still run as root (and their shared
+  files are widened); a per-command choice (say, `npm -g` as root but `npm ls`
+  as the user) is not made, so a provider's inventory and its installs always
+  agree on whose files they are.
+- A planned `cargo install` names the command a crate installs when Cargo's
+  inventory knows it (an installed crate) or the crate is a known rename
+  (ripgrep → rg, fd-find → fd, bottom → btm, ...). For any other crate it
+  assumes the crate's own name and says so; crates.io knows the binary names,
+  but planning does not go to the network.
 - `starpoint update` on a Rust toolchain runs `rustup toolchain install` for the
   channel, which moves a channel forward. A concrete toolchain pinned in the
   configuration is never moved.

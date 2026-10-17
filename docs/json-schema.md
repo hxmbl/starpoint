@@ -4,9 +4,11 @@ This document describes Starpoint's machine-readable output envelope and payload
 
 ## Schema Version
 
-Current schema version: `6`
+Current schema version: `7`
 
-All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 6, ...command fields }`; errors are `{ "schema_version": 6, "error": "..." }` on stderr, and a refusal adds `code`, `exit_code` and, when the command had a plan, `refused` (see "Errors and refusals").
+All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 7, ...command fields }`; errors are `{ "schema_version": 7, "error": "..." }` on stderr, and a refusal adds `code`, `exit_code` and, when the command had a plan, `refused` (see "Errors and refusals").
+
+Version 7 says who each action ran as. Every `ActionResult` (and every applied or planned `Transition`) gains `run_as`: one `RunAs` per provider the action runs, with the account (`user`, `uid`, `gid`), whether Starpoint was `elevated`, whether it `dropped` privileges to run the provider as the invoking user, and, for an elevated run on behalf of an invoking user, the provider's `privilege` (`user` or `root`) and the `reason`. `Effect` gains `unexpected`, set on an ownership fix made after a provider ran as the invoking user, which also raises the new warning `root-owned-after-drop`. The warning `privilege-drop-failed` and the refusal codes `invoking-user-unresolved` and `privilege-drop-failed` are new. Every field a version 6 consumer read keeps its meaning. See "Migrating from schema 6 to 7".
 
 Version 6 adds refusals and the ownership and permission fixes of elevated runs. A command refused by a safety rule exits 3 (an unattended run that would delete or replace something, without `--allow-destructive`) or 4 (a changing command run as root, without `--allow-root`), and its error document gains a stable `code`, the `exit_code`, and `refused`: the operation and the `ActionResult`s it would have carried out, every planned effect included. `Effect.op` gains `chown` and `chmod`, and `Effect` gains an optional `error`. `Warning` gains the code `permission-fix-failed`; `running-elevated` now also says whose environment the run acts on. Every field a version 5 consumer read keeps its meaning. See "Migrating from schema 5 to 6".
 
@@ -90,6 +92,8 @@ consumer should act on the code and show the message. Codes in use:
 | Code | Meaning |
 | --- | --- |
 | `running-elevated` | Starpoint runs as root (euid 0) or with an elevated Windows token. Under sudo or doas from an ordinary user, the run acts on that user's environment and gives them what it creates there; otherwise `~`, `~/.local/bin`, the configuration and the shell profiles are the elevated account's. A changing command only gets this far with `--allow-root` or an interactive confirmation. |
+| `root-owned-after-drop` | After a provider ran as the invoking user (privileges dropped), something owned by root was still found in that user's home. It was given back (a `chown` effect with `unexpected: true`); it points to a bug or to a provider that escalated on its own. |
+| `privilege-drop-failed` | An elevated run for an invoking user cannot run providers as that user: the user's ids or home could not be resolved, or a process could not be started as them. On a read-only command providers run as root and this is a warning; a changing command is refused (see "Errors and refusals"). On an action (severity `error`), a provider command could not be started as the user and was not run as root instead. |
 | `permission-fix-failed` | An elevated run could not give a path to the invoking user (`chown`) or widen a shared path's permissions (`chmod`); the effect's `error` says why. The path may not be usable without root. |
 | `shared-executable` | Two providers write the same executable (uv and pip `--user` both use `~/.local/bin`); the old copy is removed before the new one installs, and restored if the new one fails. |
 | `not-on-path` | The directory a provider installs commands into is not on PATH. |
@@ -141,7 +145,8 @@ shape (below) and adds `summary`.
   "transitions": ["ActionTransition"],
   "config_changes": ["ConfigChange"],
   "effects": ["Effect"],
-  "warnings": ["Warning"]
+  "warnings": ["Warning"],
+  "run_as": ["RunAs"]
 }
 ```
 
@@ -151,6 +156,46 @@ did change, and `error` says why), `reported` for a conflict Starpoint reports
 but will not resolve, and `not_run` for a planned action an earlier failure
 stopped. `destructive` is true when any effect or configuration change is.
 Collections are always arrays, never null.
+
+### RunAs
+
+```json
+{
+  "provider": "string",
+  "user": "string",
+  "uid": "integer",
+  "gid": "integer",
+  "elevated": "boolean",
+  "dropped": "boolean",
+  "privilege": "user | root | null",
+  "reason": "string | null"
+}
+```
+
+The account a provider's commands ran as for this action, or will run as in a
+plan. `run_as` lists one entry per provider the action runs: the action's
+provider, then, for a relocation, the provider it moves away from. It is empty
+for an action that runs no provider.
+
+- An ordinary run: Starpoint's own account, `elevated: false`,
+  `dropped: false`, no `privilege`.
+- An elevated run under sudo or doas from an ordinary user: each provider is
+  classified once per run. `privilege: "user"` providers ran as the invoking
+  user (`dropped: true`, `user`/`uid`/`gid` are theirs); `privilege: "root"`
+  providers ran as root. `reason` names why: `"uv installs tools into the
+  user's home (~/.local/share/uv/tools, ~/.local/bin)"`, `"npm's global prefix
+  /usr is a system location"`.
+- A plain root run (no invoking user), or one whose invoking user could not be
+  acted for: root, `elevated: true`, `dropped: false`, and `reason` says which.
+- `uid` and `gid` are -1 on Windows, which has no numeric ids; nothing is
+  ever dropped there.
+
+| Provider | `privilege` under sudo or doas |
+| --- | --- |
+| `uv`, `pip`, `cargo`, `go`, `rustup` | `user` |
+| `npm`, `pnpm`, `yarn`, `gem` | `user` when the global prefix or directory (asked as the user) is in their home or owned by them, `root` otherwise |
+| `brew` | `user` when the Homebrew prefix belongs to them, `root` otherwise (Homebrew then refuses root itself) |
+| `apt`, `dnf`, `pacman`, `system` | `root` |
 
 ### ActionTransition
 
@@ -203,7 +248,8 @@ entry did not have is not destructive; `reason` is commentary and never is.
   "environment": "boolean",
   "evidence": "observed | reported | planned",
   "detail": "string | null",
-  "error": "string | null"
+  "error": "string | null",
+  "unexpected": "boolean | absent"
 }
 ```
 
@@ -232,7 +278,11 @@ on PATH (`from`/`to` are resolved paths), or a `shell_profile`.
   executables, executable) by everyone; `from`/`to` are octal modes, and bits
   are only ever added. A directory's fixes below it are counted in `detail`
   rather than listed. Neither is destructive. `error` is set when the fix
-  failed, together with a `permission-fix-failed` warning.
+  failed, together with a `permission-fix-failed` warning. After a provider
+  that ran as the invoking user nothing should need a `chown`; one that does
+  is still made, carries `unexpected: true`, and raises
+  `root-owned-after-drop`. What a provider wrote as the user is never
+  `chmod`ed: it keeps the user's own modes.
 - `environment` marks effects that change what a shell sees: anything in a PATH
   directory, a command's resolution, a shell profile.
 - `evidence` says how Starpoint knows. `observed`: the location was read
@@ -287,7 +337,7 @@ such as `running-elevated`, name no package and appear only at the top level.
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "operation": "remove",
   "dry_run": false,
   "config_changed": true,
@@ -325,6 +375,9 @@ such as `running-elevated`, name no package and appear only at the top level.
       "warnings": [
         { "severity": "warning", "code": "command-removed", "package": "ruff", "provider": "uv",
           "message": "ruff no longer resolves on PATH (it was /home/u/.local/bin/ruff)" }
+      ],
+      "run_as": [
+        { "provider": "uv", "user": "u", "uid": 1000, "gid": 1000, "elevated": false, "dropped": false }
       ]
     }
   ],
@@ -346,7 +399,7 @@ such as `running-elevated`, name no package and appear only at the top level.
 Every error is one JSON document on stderr:
 
 ```json
-{ "schema_version": 6, "error": "string" }
+{ "schema_version": 7, "error": "string" }
 ```
 
 A refusal is an error that a flag would have allowed. Nothing was changed. It
@@ -355,9 +408,9 @@ planned its work, `refused`:
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "error": "string",
-  "code": "destructive-unattended | elevated-refused",
+  "code": "destructive-unattended | elevated-refused | invoking-user-unresolved | privilege-drop-failed",
   "exit_code": 3,
   "refused": {
     "operation": "sync | install | remove | update | prune | transition",
@@ -372,6 +425,8 @@ planned its work, `refused`:
 | --- | --- | --- |
 | `destructive-unattended` | 3 | The run is unattended (`--yes`/`--no-confirm`, `no_confirm = true`, or stdin is not a terminal) and would delete or replace something: an action in `refused.actions` has `destructive: true`. Rerun with `--allow-destructive` (and `--yes` when there is no terminal at all). |
 | `elevated-refused` | 4 | A command that changes anything ran as root or elevated, without `--allow-root` and without an interactive confirmation (only possible under sudo or doas at a terminal). `refused` is absent: the refusal happens before any planning. |
+| `invoking-user-unresolved` | 4 | Under sudo or doas from an ordinary user, that user's uid, gid or home could not be resolved (or HOME could not be pointed at it). Starpoint will not run their providers as root instead, and `--allow-root` does not change that. `refused` is absent. |
+| `privilege-drop-failed` | 4 | Under sudo or doas from an ordinary user, a process could not actually be started as that user (Starpoint runs `id -u` as them before changing anything and checks they can write their home): no right to switch users, a uid the system rejects, an unwritable home. `--allow-root` does not change it. `refused` is absent. |
 
 Every action in `refused.actions` has `result: "planned"` and `dry_run: true`,
 and lists every planned effect and configuration change, destructive or not.
@@ -385,7 +440,7 @@ and `4` the refusals above.
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "error": "refusing to remove unattended: it would delete or replace something (ruff) and --yes (or --no-confirm) was given. Nothing was changed. Review the planned changes, then rerun with --allow-destructive to allow it",
   "code": "destructive-unattended",
   "exit_code": 3,
@@ -408,7 +463,10 @@ and `4` the refusals above.
           { "op": "delete", "kind": "symlink", "path": "/home/u/.local/bin/ruff", "provider": "uv",
             "destructive": true, "environment": true, "evidence": "planned", "detail": "the install location uv reports" }
         ],
-        "warnings": []
+        "warnings": [],
+        "run_as": [
+          { "provider": "uv", "user": "u", "uid": 1000, "gid": 1000, "elevated": false, "dropped": false }
+        ]
       }
     ],
     "warnings": [],
@@ -422,443 +480,55 @@ and `4` the refusals above.
 }
 ```
 
+### Example: a user-level provider run as the invoking user
+
+`sudo starpoint install ruff --provider uv --allow-root --yes --json`, run by
+alice (uid 1000). uv runs as alice, so what it writes is hers from the start
+and there is nothing to fix:
+
+```json
+"effects": [
+  { "op": "create", "kind": "package", "name": "ruff", "to": "0.6.9", "provider": "uv",
+    "path": "/home/alice/.local/bin/ruff", "destructive": false, "evidence": "reported", "detail": "uv installs ruff" },
+  { "op": "create", "kind": "symlink", "path": "/home/alice/.local/bin/ruff", "provider": "uv",
+    "destructive": false, "environment": true, "evidence": "observed" }
+],
+"run_as": [
+  { "provider": "uv", "user": "alice", "uid": 1000, "gid": 1000, "elevated": true, "dropped": true,
+    "privilege": "user", "reason": "uv installs tools into the user's home (~/.local/share/uv/tools, ~/.local/bin)" }
+]
+```
+
 ### Example: ownership and permission fixes
 
-`sudo starpoint install ruff --allow-root --yes --json`, run by alice (uid
-1000), reports among the install's effects:
+A system provider still runs as root, and what it creates in shared locations
+is widened. `sudo starpoint install prettier --provider npm --allow-root --yes
+--json` with npm's prefix at `/usr/local` (root's) reports:
 
 ```json
-{ "op": "create", "kind": "symlink", "path": "/home/alice/.local/bin/ruff", "provider": "uv",
-  "destructive": false, "environment": true, "evidence": "observed" },
-{ "op": "chown", "kind": "symlink", "path": "/home/alice/.local/bin/ruff", "from": "0:0", "to": "1000:1000",
-  "provider": "uv", "destructive": false, "evidence": "observed",
-  "detail": "given to alice, for whom the run acted, so it is not left owned by root" },
-{ "op": "chown", "kind": "directory", "path": "/home/alice/.local/share/uv/tools", "to": "1000:1000",
-  "provider": "uv", "destructive": false, "evidence": "observed",
-  "detail": "entries below given to alice; 214 entries below" }
+"effects": [
+  { "op": "create", "kind": "symlink", "path": "/usr/local/bin/prettier", "provider": "npm",
+    "destructive": false, "environment": true, "evidence": "observed" },
+  { "op": "chmod", "kind": "directory", "path": "/usr/local/lib/node_modules/prettier", "from": "0700", "to": "0755",
+    "provider": "npm", "destructive": false, "evidence": "observed",
+    "detail": "made readable (and, for directories and executables, executable) by everyone, so the elevated account's umask does not leave it usable only by root; 212 entries below" }
+],
+"run_as": [
+  { "provider": "npm", "user": "root", "uid": 0, "gid": 0, "elevated": true, "dropped": false,
+    "privilege": "root", "reason": "npm's global prefix /usr/local is a system location" }
+]
 ```
 
-## Command-Specific Schemas
-
-The following examples show payload fields; the actual response also has the top-level `schema_version` field.
-
-### `starpoint list`
+Something left to root in the user's home after a dropped run is still given
+back, and flagged:
 
 ```json
-{
-  "packages": [
-    {
-      "name": "string",
-      "path": "string | null",
-      "scope": "string",
-      "provider": "string",
-      "version": "string | null",
-      "status": "string",
-      "desired": "boolean",
-      "pinned": "boolean",
-      "channel": "string | null"
-    }
-  ]
-}
+{ "op": "chown", "kind": "file", "path": "/home/alice/.cargo/.package-cache", "from": "0:0", "to": "1000:1000",
+  "provider": "cargo", "destructive": false, "evidence": "observed", "unexpected": true,
+  "detail": "given to alice, for whom the run acted, so it is not left owned by root; unexpected: cargo ran as alice, so nothing it wrote should have been root's" }
 ```
 
-`unaccounted_path` lists PATH executables with no known owner, the same entries the human table shows below the package list.
-
-### `starpoint info <package>`
-
-```json
-{
-  "package": "State"
-}
-```
-
-When ownership is moving, a `transition` field carries the pending `Transition`. When the package is installed but unmanaged, a `lookup` field carries the provider survey that explains it (`{ "package": "Package", "findings": ["Finding"], "duration_ms": "number", "timed_out": "boolean" }`). Both are optional and always appear in the same single document.
-
-### `starpoint explain <package>`
-
-```json
-{
-  "package": "Package",
-  "final": "Resolution",
-  "steps": [
-    {
-      "rule": "string",
-      "outcome": "string",
-      "provider": "string | null",
-      "reason": "string | null",
-      "applied": "boolean"
-    }
-  ]
-}
-```
-
-### `starpoint sync`
-
-```json
-{
-  "dry_run": "boolean",
-  "converged": "boolean",
-  "config_changed": "boolean",
-  "config_path": "string | null",
-  "actions": ["ActionResult"],
-  "transitions": ["Transition"],
-  "states": ["State"],
-  "warnings": ["Warning"],
-  "problems": ["string"],
-  "project": "ProjectInfo | null",
-  "summary": "Summary"
-}
-```
-
-An action that ran reports what was observed; a planned action that an earlier
-failure stopped is reported with `result: "not_run"`.
-
-### `starpoint doctor`
-
-```json
-{
-  "starpoint": {
-    "version": "string",
-    "path": "string | null",
-    "provider": "string | null"
-  },
-  "config": {
-    "path": "string",
-    "exists": "boolean",
-    "schema": "number",
-    "package_count": "number",
-    "files": ["string"],
-    "project_file": "string | null",
-    "writable": "boolean"
-  },
-  "providers": [
-    {
-      "name": "string",
-      "description": "string",
-      "kind": "string",
-      "available": "boolean",
-      "reason": "string | null",
-      "binary": "string | null",
-      "version": "string | null",
-      "capabilities": {
-        "discover": "boolean",
-        "install": "boolean",
-        "remove": "boolean",
-        "update": "boolean",
-        "pin_version": "boolean",
-        "channels": "boolean",
-        "search": "boolean",
-        "project_install": "boolean",
-        "can_install_in_context": "boolean",
-        "verify": "boolean",
-        "default_scope": "string"
-      },
-      "contextAware": "boolean",
-      "hasExecutableMapping": "boolean"
-    }
-  ],
-  "ownership": ["State"],
-  "path_inventory": [
-    {
-      "installation": "Installation | null",
-      "path": "string",
-      "attributed": "boolean",
-      "reason": "string | null",
-      "duplicate": "boolean",
-      "symlink": "boolean",
-      "target": "string | null"
-    }
-  ],
-  "path_summary": {
-    "executables": "number",
-    "directories": "number",
-    "shadowed": "number",
-    "unknown_owner": "number"
-  },
-  "problems": ["Warning"],
-  "healthy": "boolean"
-}
-```
-
-`path_inventory` is always complete, whatever the human output shows. Each PATH
-directory is read once even when PATH names it several times or through a
-symlink; `duplicate` is true only for a different file shadowed by an earlier
-entry with the same name.
-
-### `starpoint install <package>`
-
-```json
-{
-  "operation": "install",
-  "dry_run": "boolean",
-  "config_changed": "boolean",
-  "config_path": "string | null",
-  "actions": ["ActionResult"],
-  "warnings": ["Warning"],
-  "summary": "Summary",
-  "lookup": ["Survey"]
-}
-```
-
-If an install fails part-way, the response still describes what the command
-did before the failure (and whatever the failed step left on disk) before the
-error is reported on stderr.
-
-`lookup` is the provider survey that preceded the choice, so a JSON consumer can
-see which providers were asked and what each answered.
-
-### `starpoint remove <package>`
-
-```json
-{
-  "operation": "remove",
-  "dry_run": "boolean",
-  "config_changed": "boolean",
-  "config_path": "string | null",
-  "actions": ["ActionResult"],
-  "warnings": ["Warning"],
-  "summary": "Summary"
-}
-```
-
-`--dry-run` lists every effect the removal would have: the package, each file
-Starpoint can attribute to it, the command that would stop resolving, and the
-configuration entry.
-
-### `starpoint update`
-
-```json
-{
-  "operation": "update",
-  "dry_run": "boolean",
-  "config_changed": "boolean",
-  "config_path": "string | null",
-  "actions": ["ActionResult"],
-  "warnings": ["Warning"],
-  "summary": "Summary",
-  "pin_conflicts": ["PinConflict"]
-}
-```
-
-Each update carries a `version` transition. A pin rewritten with the user's
-approval is a destructive `ConfigChange` of the `version` field. A package
-`update` left alone is a coded `info` warning naming the package.
-
-`pin_conflicts` has one entry per pinned package with a newer version
-available:
-
-```json
-{
-  "package": "string",
-  "provider": "string",
-  "pinned": "string",
-  "available": "string",
-  "resolution": "kept | updated | pending",
-  "config_path": "string | null"
-}
-```
-
-### `starpoint transition`
-
-```json
-{
-  "dry_run": "boolean",
-  "transitions": ["Transition"],
-  "pending": "number"
-}
-```
-
-Performing transitions (`starpoint transition <package>`, and
-`--reverse`) reports the operation fields with one `relocate` action per move,
-plus the full `transitions` records:
-
-```json
-{
-  "operation": "transition | transition-reverse",
-  "dry_run": "boolean",
-  "actions": ["ActionResult"],
-  "warnings": ["Warning"],
-  "summary": "Summary",
-  "transitions": ["Transition"]
-}
-```
-
-### `starpoint recover`
-
-```json
-{
-  "operation": "recover",
-  "interrupted": ["InterruptedOperation"],
-  "sole_copies": ["InterruptedOperation"]
-}
-```
-
-With `--discard`, the response reports what was removed and what was not:
-
-```json
-{
-  "operation": "recover",
-  "cleaned": ["InterruptedOperation"],
-  "remaining": ["InterruptedOperation"],
-  "sole_copies": ["InterruptedOperation"]
-}
-```
-
-An `InterruptedOperation` describes one file left behind by an interrupted run:
-
-```json
-{
-  "type": "temp_config",
-  "path": "string",
-  "timestamp": "RFC3339 string",
-  "recoverable": "boolean",
-  "sole_copy": "boolean",
-  "reason": "string"
-}
-```
-
-`sole_copy` means the configuration this file was writing does not exist, so the
-file holds the user's only copy of their declared state. Those are never deleted
-by `recover --discard` and never cleaned up automatically; they appear in
-`sole_copies` so a caller can offer to restore them. `remaining` lists files that
-could not be removed, with `reason` explaining why; when it is non-empty the
-command exits non-zero.
-
-### `starpoint prune`
-
-```json
-{
-  "operation": "prune",
-  "dry_run": "boolean",
-  "config_changed": "boolean",
-  "config_path": "string | null",
-  "actions": ["ActionResult"],
-  "warnings": ["Warning"],
-  "summary": "Summary"
-}
-```
-
-`prune` removes user-scoped software that no configuration declares. `--dry-run` reports the same `actions` it would perform, with every file each would delete. A removal that fails is reported as a `failed` action, after the ones that succeeded, and the command exits non-zero. With no configuration, or a configuration that declares no packages, prune refuses rather than treat every user-scoped package as an orphan.
-
-### `starpoint runs`
-
-```json
-{
-  "executions": [
-    {
-      "package_name": "string",
-      "directory": "string",
-      "timestamp": "RFC3339 string",
-      "working_dir": "string | null"
-    }
-  ]
-}
-```
-
-### `starpoint install .`
-
-```json
-{
-  "operation": "install",
-  "dry_run": "boolean",
-  "config_changed": "boolean",
-  "config_path": "string | null",
-  "actions": ["ActionResult"],
-  "warnings": ["Warning"],
-  "summary": "Summary",
-  "dependencies": {
-    "command": {
-      "tool": "string",
-      "args": ["string"]
-    },
-    "skipped": "string | null",
-    "ran": "boolean",
-    "dry_run": "boolean",
-    "effects": ["Effect"]
-  }
-}
-```
-
-`dependencies.effects` is what the ecosystem's installer changed in the
-dependency directory (one level deep: `node_modules` created, a lockfile
-rewritten) and in the shell profiles, observed around the run; in a dry run,
-one planned effect naming the directory it will write into.
-
-### `starpoint logging`
-
-```json
-{
-  "state_dir": "string",
-  "audit_log_dir": "string",
-  "files": [
-    {
-      "name": "audit-2026-10-17.jsonl",
-      "path": "string",
-      "day": "YYYY-MM-DD",
-      "time": "RFC3339 string",
-      "bytes": "number"
-    }
-  ],
-  "entry_count": "number",
-  "retention_days": "number",
-  "retention_source": "config | default",
-  "os": {
-    "goos": "linux | darwin | windows | ...",
-    "supported": "boolean",
-    "mechanism": "logrotate | newsyslog | unsupported",
-    "path": "string | null",
-    "system_path": "string | null",
-    "content": "string | null",
-    "note": "string | null"
-  },
-  "os_configured": "boolean"
-}
-```
-
-`files` is oldest first. `entry_count` is how many entries are inside the
-retention window, which is what will still be there after the next pass.
-`retention_source` distinguishes a window the user set from the default, because
-an unconfigured retention window is still a promise about how long records live.
-
-`os.path` is always inside Starpoint's own state directory. Starpoint never
-writes to `system_path`, which is where the system logger expects such a file; the
-privileged step is left to the user.
-
-### `starpoint logging prune`
-
-```json
-{
-  "operation": "logging.prune",
-  "retention_days": "number",
-  "audit_logs_removed": "number",
-  "history_entries_removed": "number",
-  "run_records_removed": "number",
-  "problems": ["string"]
-}
-```
-
-Retention is applied on every command, so this reports and forces the effect
-rather than being how it happens. It exits non-zero when `problems` is non-empty.
-
-### `starpoint logging config`
-
-```json
-{
-  "operation": "logging.config",
-  "goos": "string",
-  "supported": "boolean",
-  "mechanism": "logrotate | newsyslog | unsupported",
-  "path": "string | null",
-  "written": "boolean",
-  "system_path": "string | null",
-  "install": "string | null",
-  "note": "string | null"
-}
-```
-
-`written` is false when the configuration is already current, and when the
-platform has none. A file in the logging directory that Starpoint did not write
-is never overwritten.
+with a `root-owned-after-drop` warning on the action.
 
 ## Transition Schema
 
@@ -887,11 +557,13 @@ is never overwritten.
   "advice": "string | null",
   "note": "string | null",
   "effects": ["Effect"],
-  "warnings": ["Warning"]
+  "warnings": ["Warning"],
+  "run_as": ["RunAs"]
 }
 ```
 
-`effects` is what the move changed, observed while it ran (or predicted, in a
+`run_as` (version 7) is who the target provider, then the provider moved away
+from, ran as. `effects` is what the move changed, observed while it ran (or predicted, in a
 dry run); `warnings` carries move-specific warnings such as
 `shared-executable`. Both are absent on a transition that has only been
 inspected.
@@ -995,6 +667,26 @@ Version 6 adds; nothing a version 5 consumer read is removed or renamed.
 4. `Effect.op` gains `chown` and `chmod`, and `Effect` gains `error`. They only
    appear on elevated runs.
 5. `Warning.code` gains `permission-fix-failed`.
+
+## Migrating from schema 6 to 7
+
+Version 7 adds; nothing a version 6 consumer read is removed or renamed.
+
+1. The version number moved from 6 to 7.
+2. `ActionResult` gains `run_as` (always an array) and `Transition` gains
+   `run_as` (absent on a transition that has only been inspected). See
+   `RunAs`.
+3. `Effect` gains `unexpected`, only ever `true` and only on `chown`.
+4. `Warning.code` gains `root-owned-after-drop` and `privilege-drop-failed`.
+5. Refusal `code` gains `invoking-user-unresolved` and
+   `privilege-drop-failed`, both exit 4. This is a behaviour change: under
+   sudo or doas from an ordinary user whose ids or home cannot be resolved,
+   version 6 fell back to acting on root's environment with `--allow-root`;
+   version 7 refuses.
+6. Behaviour: under sudo or doas from an ordinary user, user-level providers
+   now run as that user, so their effects on an elevated run no longer
+   include `chown` fixes, and what they create outside the user's home is no
+   longer `chmod`-widened.
 
 ## Versioning Policy
 
