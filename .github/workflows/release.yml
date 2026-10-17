@@ -1,0 +1,65 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+# The workflow only reads until the gate passes; the publishing job asks for
+# write permission itself.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  # The gate: a tag only builds if the same lint and test suite that guards
+  # main passes first.
+  checks:
+    name: Lint and test
+    uses: ./.github/workflows/ci.yml
+
+  goreleaser:
+    name: Build and publish
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - uses: webfactory/ssh-agent@a6f90b1f127823b31d4d4a8d96047790581349bd # v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
+
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The formula is rendered into dist/ by GoReleaser (skip_upload: true in
+      # .goreleaser.yaml) and committed here over the same SSH key.
+      - name: Push Homebrew formula to tap
+        run: |
+          git clone git@github.com:Hxmbl/homebrew-tap.git /tmp/homebrew-tap
+          cp dist/homebrew/starpoint.rb /tmp/homebrew-tap/starpoint.rb
+          cd /tmp/homebrew-tap
+          git config user.name "hxmbl"
+          git config user.email "hxmbl@users.noreply.github.com"
+          git add starpoint.rb
+          if git diff --cached --quiet; then
+            echo "Formula unchanged, skipping commit"
+          else
+            git commit -m "starpoint ${GITHUB_REF_NAME}"
+            git push origin HEAD
+          fi

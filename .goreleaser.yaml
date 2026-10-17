@@ -1,0 +1,62 @@
+version: 2
+
+project_name: starpoint
+
+builds:
+  - main: ./cmd/starpoint
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/hxmbl/starpoint/internal/cli.Version={{.Version}}
+
+archives:
+  - name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    formats: ["tar.gz"]
+    format_overrides:
+      - goos: windows
+        formats: ["zip"]
+    files:
+      - LICENSE
+      - README.md
+      - completions/*
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+brews:
+  - name: starpoint
+    repository:
+      owner: Hxmbl
+      name: homebrew-tap
+    commit_author:
+      name: hxmbl
+      email: hxmbl@users.noreply.github.com
+    homepage: https://github.com/hxmbl/starpoint
+    description: Declarative orchestration over the package managers on your machine.
+    license: MIT
+    test: |
+      system "#{bin}/starpoint", "--version"
+    install: |
+      bin.install "starpoint"
+      bash_completion.install "completions/starpoint.bash" => "starpoint"
+      zsh_completion.install "completions/starpoint.zsh"
+      fish_completion.install "completions/starpoint.fish"
+    skip_upload: true
