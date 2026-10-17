@@ -61,7 +61,7 @@ var commandFlags = map[string][]string{
 }
 
 // globalFlags are accepted anywhere on the command line.
-var globalFlags = []string{"--json", "--provider", "--force", "--context", "--verbose", "--allow-destructive", "--version", "--help"}
+var globalFlags = []string{"--json", "--provider", "--force", "--context", "--verbose", "--allow-destructive", "--allow-root", "--version", "--help"}
 
 // isHelpFlag reports whether an argument asks for help.
 func isHelpFlag(a string) bool { return a == "--help" || a == "-h" }
@@ -91,6 +91,7 @@ use --force to replace it.
 
 Options:
   --force, -f    Overwrite an existing configuration
+  --allow-root   Let it run as root or elevated
   --json         Machine-readable output
 `,
 	"sync": `Usage: starpoint sync [--dry-run] [--no-confirm]
@@ -103,6 +104,7 @@ Options:
   --no-confirm, -y, --yes
                       Do not ask before changing anything
   --allow-destructive Let an unattended run delete or replace things
+  --allow-root        Let it run as root or elevated
   --provider <name>   Restrict automatic provider choice (repeatable)
   --json              Machine-readable output
   --verbose, -v       List every effect, not only what is removed or overwritten
@@ -174,6 +176,7 @@ Options:
   --dry-run, -n        Show what would happen; change nothing
   --no-confirm, -y     Do not ask first
   --allow-destructive  Let an unattended run delete or replace things
+  --allow-root         Let it run as root or elevated
   --json               Machine-readable output
   --verbose, -v        List every effect, not only what is removed or overwritten
 
@@ -197,6 +200,7 @@ Options:
   --dry-run, -n        Show what would happen; change nothing
   --no-confirm, -y     Do not ask first
   --allow-destructive  Let an unattended run delete or replace things
+  --allow-root         Let it run as root or elevated
   --allow-empty        Allow removing every configured package at once
   --json               Machine-readable output
   --verbose, -v        List every effect, not only what is removed or overwritten
@@ -215,6 +219,7 @@ Options:
   --dry-run, -n        Describe the moves; change nothing
   --no-confirm, -y     Do not ask first
   --allow-destructive  Let an unattended run delete or replace things
+  --allow-root         Let it run as root or elevated
   --json               Machine-readable output
   --verbose, -v        List every effect, not only what is removed or overwritten
 `,
@@ -232,6 +237,7 @@ Options:
   --dry-run, -n        Show what would be updated; change nothing
   --no-confirm, -y     Do not ask first (pins are kept)
   --allow-destructive  Let an unattended run delete or replace things
+  --allow-root         Let it run as root or elevated
   --json               Machine-readable output
   --verbose, -v        List every effect, not only what is removed or overwritten
 `,
@@ -256,6 +262,7 @@ Options:
   --dry-run, -n        Show what would be removed; change nothing
   --no-confirm, -y     Do not ask first
   --allow-destructive  Let an unattended run delete or replace things
+  --allow-root         Let it run as root or elevated
   --json               Machine-readable output
   --verbose, -v        List every effect, not only what is removed or overwritten
 `,
@@ -267,6 +274,7 @@ given; a file that is the only copy of a configuration is never discarded.
 Options:
   --discard            Remove the leftover files
   --no-confirm, -y     Do not ask before discarding
+  --allow-root         Let --discard run as root or elevated
   --json               Machine-readable output
 `,
 	"logging": `Usage: starpoint logging [prune | config]

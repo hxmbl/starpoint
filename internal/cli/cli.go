@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hxmbl/starpoint/internal/align"
 	"github.com/hxmbl/starpoint/internal/auditlog"
 	"github.com/hxmbl/starpoint/internal/config"
 	"github.com/hxmbl/starpoint/internal/elevation"
@@ -99,15 +100,43 @@ type Env struct {
 	// allowRoot is --allow-root: a changing command may run as root or
 	// elevated.
 	allowRoot bool
+	// rootApproved is set when --allow-root was given or the invoking user
+	// confirmed an elevated run interactively.
+	rootApproved bool
+	// elevation caches the detected status for one Run.
+	elevation *elevation.Status
+	// SetHome points the process at another home directory. Nil means
+	// setting HOME in the process environment, which is what the providers,
+	// their subprocesses and the default configuration path all read. Tests
+	// replace it so the test binary's own HOME is never changed.
+	SetHome func(home string) error
+	// target is the invoking user's environment an elevated run acts on, if
+	// any.
+	target *elevation.Target
+	// alignment is the ownership and permission policy of an elevated run.
+	alignment *align.Policy
+	// started is when this Run began; an elevated run only reassigns what
+	// changed after it.
+	started time.Time
 }
 
-// elevationWarning is the warning for an elevated run, or nil.
-func (e *Env) elevationWarning() *model.Warning {
+// elevationStatus reports the privileges of this run, detected once per Run.
+func (e *Env) elevationStatus() elevation.Status {
+	if e.elevation != nil {
+		return *e.elevation
+	}
 	detect := e.Elevation
 	if detect == nil {
 		detect = elevation.Detect
 	}
-	return detect().Warning()
+	s := detect()
+	e.elevation = &s
+	return s
+}
+
+// elevationWarning is the warning for an elevated run, or nil.
+func (e *Env) elevationWarning() *model.Warning {
+	return e.elevationStatus().Warning()
 }
 
 // stateDir is where this run keeps its records: the audit log, the transition
@@ -241,9 +270,13 @@ func (e *Env) loc() *locator.Locator {
 
 func (e *Env) newEngine() *engine.Engine {
 	if e.newEngineFn != nil {
-		return e.newEngineFn()
+		eng := e.newEngineFn()
+		if p := e.alignPolicy(); p != nil {
+			eng.SetAlignment(p)
+		}
+		return eng
 	}
-	eng := engine.New(e.registry(), e.loc(), engine.WithStateDir(e.stateDir()))
+	eng := engine.New(e.registry(), e.loc(), engine.WithStateDir(e.stateDir()), engine.WithAlignment(e.alignPolicy()))
 	// Tracker will be set by tests if needed
 	if err := eng.HistoryError(); err != nil {
 		// Reporting this matters: without history, `transition --reverse` cannot
@@ -345,6 +378,10 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	}
 
 	cmd, cmdArgs := rest[0], rest[1:]
+	env.elevation = nil
+	env.alignment = nil
+	env.started = time.Now()
+	env.retarget()
 	w := report.New(env.Stdout, asJSON)
 	env.jsonMode = asJSON
 	w.SetVerbose(env.Verbose)
@@ -362,6 +399,51 @@ func Run(ctx context.Context, env *Env, args []string) int {
 
 	var err error
 	env.begin(cmd, cmdArgs)
+	if err = env.guardElevated(cmd, cmdArgs); err == nil {
+		err = env.dispatch(ctx, w, cmd, cmdArgs, force, providers)
+	}
+	if err == errHelpShown {
+		env.alignOwnFiles()
+		return 0
+	}
+	if err == errUnknownCommand {
+		fmt.Fprintf(env.Stderr, "unknown command %q\n\n", cmd)
+		printUsage(env.Stderr)
+		return 2
+	}
+
+	if err != nil {
+		if refusal, ok := asRefusal(err); ok {
+			reportRefusal(env.Stderr, asJSON, refusal)
+			return env.finish(canonicalCommand(cmd), cmdArgs, refusal.Exit, err)
+		}
+		if errors.Is(err, ErrUsage) {
+			fmt.Fprintf(env.Stderr, "error: %s\n\n", err)
+			printCommandHelp(env.Stderr, cmd)
+			return env.finish(canonicalCommand(cmd), cmdArgs, 2, err)
+		}
+		if asJSON {
+			enc := json.NewEncoder(env.Stderr)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(map[string]any{"schema_version": report.SchemaVersion, "error": err.Error()})
+		} else {
+			fmt.Fprintf(env.Stderr, "error: %s\n", err)
+		}
+		return env.finish(canonicalCommand(cmd), cmdArgs, 1, err)
+	}
+	return env.finish(canonicalCommand(cmd), cmdArgs, 0, nil)
+}
+
+// errHelpShown and errUnknownCommand let dispatch end a command without an
+// error being reported.
+var (
+	errHelpShown      = errors.New("help shown")
+	errUnknownCommand = errors.New("unknown command")
+)
+
+// dispatch runs one subcommand.
+func (env *Env) dispatch(ctx context.Context, w *report.Writer, cmd string, cmdArgs []string, force bool, providers []string) error {
+	var err error
 	switch cmd {
 	case "init":
 		err = cmdInit(ctx, env, w, cmdArgs, force)
@@ -397,36 +479,14 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	case "help":
 		if len(cmdArgs) > 0 && canonicalCommand(cmdArgs[0]) != "" {
 			printCommandHelp(env.Stdout, cmdArgs[0])
-			return 0
+			return errHelpShown
 		}
 		printUsage(env.Stdout)
-		return 0
+		return errHelpShown
 	default:
-		fmt.Fprintf(env.Stderr, "unknown command %q\n\n", cmd)
-		printUsage(env.Stderr)
-		return 2
+		return errUnknownCommand
 	}
-
-	if err != nil {
-		if refusal, ok := asRefusal(err); ok {
-			reportRefusal(env.Stderr, asJSON, refusal)
-			return env.finish(canonicalCommand(cmd), cmdArgs, refusal.Exit, err)
-		}
-		if errors.Is(err, ErrUsage) {
-			fmt.Fprintf(env.Stderr, "error: %s\n\n", err)
-			printCommandHelp(env.Stderr, cmd)
-			return env.finish(canonicalCommand(cmd), cmdArgs, 2, err)
-		}
-		if asJSON {
-			enc := json.NewEncoder(env.Stderr)
-			enc.SetIndent("", "  ")
-			_ = enc.Encode(map[string]any{"schema_version": report.SchemaVersion, "error": err.Error()})
-		} else {
-			fmt.Fprintf(env.Stderr, "error: %s\n", err)
-		}
-		return env.finish(canonicalCommand(cmd), cmdArgs, 1, err)
-	}
-	return env.finish(canonicalCommand(cmd), cmdArgs, 0, nil)
+	return err
 }
 
 // begin records that a command started and ages out expired records.
@@ -458,6 +518,9 @@ func (e *Env) begin(command string, args []string) {
 
 // finish records how a command ended and returns its exit code.
 func (e *Env) finish(command string, args []string, code int, err error) int {
+	// Starpoint's own records go back to the user an elevated run acts for
+	// before the last entry is appended; appending keeps the owner.
+	e.alignOwnFiles()
 	if command != "" {
 		result := "ok"
 		if err != nil {
@@ -655,6 +718,7 @@ Global options:
                        removes or overwrites
   --allow-destructive  Let an unattended run (--yes, or no terminal) delete
                        or replace things
+  --allow-root         Let a changing command run as root or elevated
   --version            Print the version
   --help               Show this help
 
@@ -669,9 +733,17 @@ An unattended run (--yes, --no-confirm, or no terminal to ask on) that would
 delete or replace anything is refused unless --allow-destructive is given; the
 refusal lists every planned change.
 
+Run as root or elevated, a command that changes anything is refused unless
+--allow-root is given or, under sudo or doas at a terminal, you confirm. Under
+sudo or doas Starpoint acts on your own environment (your home, configuration
+and ~/.local/bin) and gives you what it creates there; what it installs in
+shared locations is made readable and executable by everyone. Read-only
+commands and doctor always run.
+
 Exit status: 0 success, 1 failure, 2 usage error, 3 refused because an
-unattended run would delete or replace something (--allow-destructive).
-Nothing is changed by a refusal.
+unattended run would delete or replace something (--allow-destructive), 4
+refused because a changing command ran as root (--allow-root). Nothing is
+changed by a refusal.
 
 Examples:
   starpoint init

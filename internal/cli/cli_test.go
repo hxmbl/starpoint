@@ -287,7 +287,7 @@ func TestInitCreatesGlobalConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, ".starpoint.toml")
 	out := &bytes.Buffer{}
-	env := &Env{Stdout: out, Stderr: out, WorkDir: dir, GlobalConfig: cfg,
+	env := &Env{Elevation: notElevated, Stdout: out, Stderr: out, WorkDir: dir, GlobalConfig: cfg,
 		Registry: provider.NewRegistry()}
 	code := Run(context.Background(), env, []string{"init"})
 	if code != 0 {
@@ -442,7 +442,8 @@ func TestInstallAmbiguityPromptsAndHonoursTheAnswer(t *testing.T) {
 	out := &bytes.Buffer{}
 	var asked []string
 	env := &Env{
-		Stdout: out, Stderr: out, WorkDir: dir, GlobalConfig: cfg, Registry: reg,
+		Elevation: notElevated,
+		Stdout:    out, Stderr: out, WorkDir: dir, GlobalConfig: cfg, Registry: reg,
 		Choose: func(q string, options []string) (string, error) {
 			asked = options
 			return "apt", nil
@@ -481,7 +482,7 @@ func TestInstallWithoutTerminalAndAmbiguityFailsClearly(t *testing.T) {
 	testsupport.WriteFile(t, cfg, "schema = 1\n")
 
 	out := &bytes.Buffer{}
-	env := &Env{Stdout: out, Stderr: out, WorkDir: dir, GlobalConfig: cfg, Registry: reg}
+	env := &Env{Elevation: notElevated, Stdout: out, Stderr: out, WorkDir: dir, GlobalConfig: cfg, Registry: reg}
 	code := Run(context.Background(), env, []string{"install", "ripgrep"})
 	if code == 0 {
 		t.Fatal("an ambiguous choice with no way to ask must fail")
@@ -961,7 +962,7 @@ func TestDoctorFlagsMissingConfiguration(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "absent.toml")
 	out := &bytes.Buffer{}
-	env := &Env{Stdout: out, Stderr: out, WorkDir: dir, GlobalConfig: cfg, Registry: provider.NewRegistry()}
+	env := &Env{Elevation: notElevated, Stdout: out, Stderr: out, WorkDir: dir, GlobalConfig: cfg, Registry: provider.NewRegistry()}
 	if code := Run(context.Background(), env, []string{"doctor"}); code != 0 {
 		t.Fatalf("doctor should still succeed: %s", out.String())
 	}

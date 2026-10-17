@@ -34,3 +34,44 @@ func TestDetectMatchesTheProcess(t *testing.T) {
 		t.Error("an elevated status must say how it was detected")
 	}
 }
+
+func TestTargetIsTheInvokingUserWhenKnown(t *testing.T) {
+	s := Status{Elevated: true, InvokingUser: "alice", Via: "sudo", InvokingUID: 1000, InvokingGID: 1000, InvokingHome: "/home/alice"}
+	got, ok := s.Target()
+	if !ok || got != (Target{User: "alice", UID: 1000, GID: 1000, Home: "/home/alice"}) {
+		t.Fatalf("got %+v %v", got, ok)
+	}
+	w := s.Warning()
+	for _, want := range []string{"through sudo for alice", "/home/alice", "given to alice (uid 1000, gid 1000)", "readable and executable by everyone"} {
+		if !strings.Contains(w.Message, want) {
+			t.Errorf("message should mention %q: %s", want, w.Message)
+		}
+	}
+}
+
+func TestNoTargetWithoutAResolvableOrdinaryUser(t *testing.T) {
+	base := Status{Elevated: true, InvokingUser: "alice", InvokingUID: 1000, InvokingGID: 1000, InvokingHome: "/home/alice"}
+	for name, s := range map[string]Status{
+		"not elevated":  func() Status { c := base; c.Elevated = false; return c }(),
+		"no user":       func() Status { c := base; c.InvokingUser = ""; return c }(),
+		"sudo as root":  func() Status { c := base; c.InvokingUser = "root"; c.InvokingUID = 0; return c }(),
+		"uid zero":      func() Status { c := base; c.InvokingUID = 0; return c }(),
+		"unknown uid":   func() Status { c := base; c.InvokingUID = -1; return c }(),
+		"unknown gid":   func() Status { c := base; c.InvokingGID = -1; return c }(),
+		"no home found": func() Status { c := base; c.InvokingHome = ""; return c }(),
+	} {
+		if _, ok := s.Target(); ok {
+			t.Errorf("%s: there should be no target", name)
+		}
+	}
+}
+
+func TestDetectHasNoTargetWhenNotElevated(t *testing.T) {
+	s := Detect()
+	if s.Elevated {
+		t.Skip("the suite is running elevated")
+	}
+	if _, ok := s.Target(); ok {
+		t.Error("an ordinary run acts on its own environment")
+	}
+}

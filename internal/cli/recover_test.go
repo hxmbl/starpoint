@@ -89,6 +89,7 @@ func newHarnesslessEnv(t *testing.T) (*Env, string, *bytes.Buffer) {
 	cfg := filepath.Join(dir, ".starpoint.toml")
 	buf := &bytes.Buffer{}
 	return &Env{
+		Elevation:    notElevated,
 		Stdout:       buf,
 		Stderr:       buf,
 		Stdin:        strings.NewReader(""),
@@ -187,7 +188,7 @@ func TestRecoverWithNothingToDo(t *testing.T) {
 func TestRecoverRejectsUnknownOption(t *testing.T) {
 	dir := t.TempDir()
 	out := &bytes.Buffer{}
-	env := &Env{Stdout: out, Stderr: out, WorkDir: dir,
+	env := &Env{Elevation: notElevated, Stdout: out, Stderr: out, WorkDir: dir,
 		GlobalConfig: filepath.Join(dir, "c.toml"), Registry: provider.NewRegistry()}
 	if code := Run(context.Background(), env, []string{"recover", "--nope"}); code == 0 {
 		t.Errorf("unknown option should be a usage error, got success:\n%s", out.String())

@@ -8,7 +8,7 @@ BIN ?= bin/starpoint
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/hxmbl/starpoint/internal/cli.Version=$(VERSION)
 
-.PHONY: all check build test fmt fmt-check vet tidy clean run
+.PHONY: all check build test test-race test-root cover fmt fmt-check vet tidy clean run
 
 all: check
 
@@ -27,6 +27,13 @@ test:
 ## test-race: run the suite with the race detector
 test-race:
 	$(GO) test -race ./...
+
+## test-root: run the tests that need root (ownership and permission fixes)
+test-root:
+	$(GO) test -c -o /tmp/starpoint-align.test ./internal/align
+	$(GO) test -c -o /tmp/starpoint-cli.test ./internal/cli
+	cd internal/align && sudo STARPOINT_ROOT_TESTS=1 /tmp/starpoint-align.test -test.run AsRoot -test.v
+	cd internal/cli && sudo STARPOINT_ROOT_TESTS=1 /tmp/starpoint-cli.test -test.run AsRoot -test.v
 
 ## cover: report test coverage per package
 cover:
