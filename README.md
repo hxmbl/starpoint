@@ -117,7 +117,7 @@ simply reported as left unchanged.
 | `starpoint install .` | Install the current project's declared packages and dependencies; record its toolchain in the project config |
 | `starpoint remove <package> [provider]` | Uninstall and delete from config (aliases: `uninstall`, `rm`); `--dry-run`, `--no-confirm` |
 | `starpoint update [--self] [--dry-run] [--no-confirm]` | Update managed software; asks before moving past a pin (alias: `upgrade`) |
-| `starpoint prune [--dry-run] [--no-confirm]` | Preview and remove orphaned user-scoped installations |
+| `starpoint prune [--dry-run] [--no-confirm]` | Preview and remove orphaned user-scoped installations; refuses when the configuration declares no packages |
 | `starpoint recover [--discard] [--no-confirm]` | Inspect and clear files left by an interrupted run |
 | `starpoint runs [--package <name>] [--directory <dir>]` | Show where Starpoint has been run (alias: `history`) |
 | `starpoint help [command]` | General help, or one command's help (same as `<command> --help`) |
