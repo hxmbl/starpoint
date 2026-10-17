@@ -170,3 +170,36 @@ func TestExecutableDirIsUnknownWithoutAHome(t *testing.T) {
 		t.Errorf("no home and no CARGO_HOME means unknown, got %q", got)
 	}
 }
+
+func TestExecutableForPackage(t *testing.T) {
+	p, _ := newProvider(t)
+	if exe, ok := p.ExecutableForPackage("ripgrep"); !ok || exe != "rg" {
+		t.Errorf("ripgrep installs rg, known before anything is installed: %q %v", exe, ok)
+	}
+	if exe, ok := p.ExecutableForPackage("fd-find"); !ok || exe != "fd" {
+		t.Errorf("fd-find installs fd: %q %v", exe, ok)
+	}
+	if _, ok := p.ExecutableForPackage("cargo-edit"); ok {
+		t.Error("an unknown crate is not guessed before the inventory is read")
+	}
+	if _, err := p.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if exe, ok := p.ExecutableForPackage("cargo-edit"); !ok || exe != "cargo-add" {
+		t.Errorf("an installed crate's command comes from cargo install --list (the first one listed): %q %v", exe, ok)
+	}
+	if _, ok := p.ExecutableForPackage("hyperfine"); ok {
+		t.Error("a crate neither installed nor known is not guessed")
+	}
+}
+
+func TestAMultiBinaryCratesPathIsItsFirstExecutable(t *testing.T) {
+	p, _ := newProvider(t)
+	insts, err := p.Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(insts[0].Path) != "cargo-add" {
+		t.Errorf("cargo-edit's path is its first command, not its last: %s", insts[0].Path)
+	}
+}

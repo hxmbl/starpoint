@@ -553,7 +553,8 @@ func (e *Engine) plannedInstall(ctx context.Context, p provider.Provider, pkg mo
 	if dir == "" {
 		return effects, warnings
 	}
-	path := filepath.Join(dir, pkg.Name)
+	command, known := commandFor(p, pkg.Name)
+	path := filepath.Join(dir, command)
 	env := e.onPath(dir)
 	if entry := readEntry(path); entry.exists {
 		effects = append(effects, model.Effect{
@@ -562,10 +563,16 @@ func (e *Engine) plannedInstall(ctx context.Context, p provider.Provider, pkg mo
 			Detail: "something is already at the path " + p.Name() + " installs to; installing can overwrite it",
 		})
 	} else {
+		detail := "where " + p.Name() + " puts the commands it installs"
+		if command != pkg.Name {
+			detail += "; " + pkg.Name + " installs the command " + command
+		} else if !known && commandMayDiffer(p) {
+			detail += "; assumes the command is named after " + pkg.Name + ", which " + p.Name() + " cannot confirm before installing"
+		}
 		effects = append(effects, model.Effect{
 			Op: model.EffectCreate, Kind: model.EffectExecutable, Path: path, Provider: p.Name(),
 			Environment: env, Evidence: model.EvidencePlanned,
-			Detail: "where " + p.Name() + " puts the commands it installs",
+			Detail: detail,
 		})
 	}
 	if !env {
@@ -575,6 +582,26 @@ func (e *Engine) plannedInstall(ctx context.Context, p provider.Provider, pkg mo
 		})
 	}
 	return effects, warnings
+}
+
+// commandFor is the command a package installs, as far as its provider
+// knows: Cargo knows ripgrep installs rg. known is false when the provider
+// could not say and the package's own name is assumed.
+func commandFor(p provider.Provider, pkg string) (string, bool) {
+	if pe, ok := p.(provider.PackageExecutableProvider); ok {
+		if exe, ok := pe.ExecutableForPackage(pkg); ok && exe != "" && executableShaped(exe) {
+			return exe, true
+		}
+	}
+	return pkg, false
+}
+
+// commandMayDiffer reports whether a provider's packages commonly install
+// commands under other names, so a prediction from the package name is
+// worth qualifying.
+func commandMayDiffer(p provider.Provider) bool {
+	_, ok := p.(provider.PackageExecutableProvider)
+	return ok
 }
 
 // plannedRemove predicts what removing pkg through p would delete: the
@@ -609,7 +636,8 @@ func (e *Engine) plannedRemove(ctx context.Context, p provider.Provider, pkg mod
 	}
 	if dp, ok := p.(provider.ExecutableDirProvider); ok && executableShaped(pkg.Name) {
 		if dir := dp.ExecutableDir(ctx); dir != "" {
-			candidate := filepath.Join(dir, pkg.Name)
+			command, _ := commandFor(p, pkg.Name)
+			candidate := filepath.Join(dir, command)
 			if e.ownedBy(candidate, p.Name(), inst) {
 				add(candidate, "the command "+p.Name()+" put on PATH")
 			}

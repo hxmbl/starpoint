@@ -26,6 +26,9 @@ const Name = "cargo"
 type Provider struct {
 	runner exec.Runner
 	home   string
+	// bins maps an installed crate to the first executable `cargo install
+	// --list` listed for it, from the last inventory read.
+	bins map[string]string
 }
 
 var _ provider.Provider = (*Provider)(nil)
@@ -93,6 +96,7 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 // the executables the crate installed.
 func (p *Provider) parseList(out string) []model.Installation {
 	var res []model.Installation
+	bins := map[string]string{}
 	for _, line := range strings.Split(out, "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -103,7 +107,13 @@ func (p *Provider) parseList(out string) []model.Installation {
 				continue
 			}
 			exe := strings.TrimSpace(line)
-			res[len(res)-1].Path = p.binPath(exe)
+			last := &res[len(res)-1]
+			if _, seen := bins[last.Name]; !seen {
+				// A crate can install several executables; the first is the
+				// one its path names, so a multi-binary crate stays stable.
+				bins[last.Name] = exe
+				last.Path = p.binPath(exe)
+			}
 			continue
 		}
 		header := strings.TrimSuffix(strings.TrimSpace(line), ":")
@@ -123,6 +133,7 @@ func (p *Provider) parseList(out string) []model.Installation {
 			Scope:    model.ScopeUser,
 		})
 	}
+	p.bins = bins
 	return res
 }
 
@@ -345,4 +356,45 @@ var _ provider.Privileged = (*Provider)(nil)
 // invoking user.
 func (p *Provider) Privilege(context.Context, exec.Runner, provider.PrivilegeTarget) provider.PrivilegeDecision {
 	return shell.UserPrivilege("cargo install writes to the user's Cargo home (~/.cargo)")
+}
+
+var _ provider.PackageExecutableProvider = (*Provider)(nil)
+
+// knownBinaries are crates whose command is not named after the crate.
+// Cargo cannot say which binaries a crate builds without fetching and
+// reading it (crates.io's API knows, but planning does not go to the
+// network), so a planned install of one of these would otherwise predict
+// ~/.cargo/bin/ripgrep for a crate that installs ~/.cargo/bin/rg. Only
+// renames whose command is certain are listed; for any other crate the
+// command is assumed to share the crate's name, and the planned effect says
+// so.
+var knownBinaries = map[string]string{
+	"bottom":           "btm",
+	"difftastic":       "difft",
+	"du-dust":          "dust",
+	"dua-cli":          "dua",
+	"fd-find":          "fd",
+	"git-delta":        "delta",
+	"nushell":          "nu",
+	"ripgrep":          "rg",
+	"ripgrep_all":      "rga",
+	"rm-improved":      "rip",
+	"skim":             "sk",
+	"tealdeer":         "tldr",
+	"tree-sitter-cli":  "tree-sitter",
+	"typos-cli":        "typos",
+	"wasm-bindgen-cli": "wasm-bindgen",
+	"watchexec-cli":    "watchexec",
+}
+
+// ExecutableForPackage reports the command a crate installs: what `cargo
+// install --list` said for an installed crate, else a known rename. The
+// boolean is false when neither knows, and the caller assumes the crate's
+// own name.
+func (p *Provider) ExecutableForPackage(crate string) (string, bool) {
+	if exe, ok := p.bins[crate]; ok && exe != "" {
+		return exe, true
+	}
+	exe, ok := knownBinaries[crate]
+	return exe, ok
 }
