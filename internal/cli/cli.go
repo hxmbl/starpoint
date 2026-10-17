@@ -1190,13 +1190,13 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		res, deps, err := installProject(ctx, env, eng, doc, opts, proj, version, channel, w.JSON())
 		if err != nil {
 			if w.JSON() && res != nil {
-				_ = w.Render(map[string]any{"operations": []*engine.Result{res}, "dependencies": deps})
+				_ = w.Render(map[string]any{"actions": report.ActionsFromResults(res), "dependencies": deps})
 			}
 			return err
 		}
 		env.auditActions("install", dryRun, res)
 		if w.JSON() {
-			return w.Render(map[string]any{"operations": []*engine.Result{res}, "dependencies": deps})
+			return w.Render(map[string]any{"actions": report.ActionsFromResults(res), "dependencies": deps})
 		}
 		return reportInstall(w, []*engine.Result{res}, nil)
 	}
@@ -1294,6 +1294,9 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		results = append(results, res)
 	}
 	env.auditActions("install", dryRun, results...)
+	if w.JSON() {
+		return w.Render(map[string]any{"actions": report.ActionsFromResults(results...), "lookup": surveys})
+	}
 	return reportInstall(w, results, surveys)
 }
 
@@ -1310,9 +1313,16 @@ func singleProvider(allowed []string) string {
 // them. The lookup travels with the results because "which providers have this"
 // is the evidence behind the choice, and a JSON consumer has no other way to see
 // it.
+//
+// The action list is the documented ActionResult shape, shared with sync and
+// update, rather than the engine's own Result. A consumer should not have to
+// know which command produced a document to read its actions.
 func reportInstall(w *report.Writer, results []*engine.Result, surveys []engine.Survey) error {
 	if w.JSON() {
-		return w.Render(map[string]any{"operations": results, "lookup": surveys})
+		return w.Render(map[string]any{
+			"actions": report.ActionsFromResults(results...),
+			"lookup":  surveys,
+		})
 	}
 	for _, r := range results {
 		if err := w.Result("install", r); err != nil {
@@ -1614,7 +1624,7 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	}
 	env.auditActions("remove", dryRun, results...)
 	if w.JSON() {
-		return w.Render(map[string]any{"operations": results})
+		return w.Render(map[string]any{"actions": report.ActionsFromResults(results...)})
 	}
 	for _, r := range results {
 		if err := w.Result("remove", r); err != nil {

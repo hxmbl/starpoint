@@ -50,7 +50,24 @@ func (w *Writer) JSON() bool { return w.asJSON }
 // commands under their own key ("sync", "doctor", "explain") and others under
 // "data", so no consumer could rely on it. Version 2 makes the documented shape
 // the actual shape.
-const SchemaVersion = 3
+//
+// Version 3 added the logging surface: `logging`, `logging prune` and
+// `logging config`. Every existing command's payload was unchanged, so this bump
+// was conservative rather than forced: it is a new command, not a reshaped one.
+// A consumer that pins the version should widen its check rather than change how
+// it reads existing commands.
+//
+// Version 4 unifies the action vocabulary. `install`, `remove` and
+// `install .` used to expose the engine's own `Result` under an `operations`
+// key, with each entry carrying the full `State` (desired, current, resolution,
+// status). `sync`, `update` and `prune` already emitted the documented
+// `ActionResult` shape under `actions`. The two described the same kind of thing
+// differently, so a consumer had to know which command it was reading. Version 4
+// makes every command that performed changes emit `actions` as a list of
+// `ActionResult`, and drops `operations` and the nested `applied` entirely.
+// `install .` flattens the several results it runs into one list rather than
+// nesting them. This is a breaking change; nothing here is in wide use yet.
+const SchemaVersion = 4
 
 // respond emits one flat JSON object: schema_version plus the given fields.
 //
@@ -83,6 +100,26 @@ func flatten(v any) map[string]any {
 		return map[string]any{"data": v}
 	}
 	return m
+}
+
+// ActionsFromResults flattens the engine results from a multi-step command
+// (such as `starpoint install .`, which installs a project's declared packages
+// and then runs its dependency installer) into one documented action list.
+//
+// It exists because every command now shares one shape. Previously `install .`
+// nested its results under an `operations` key, which was the only place the
+// engine's full `Result` leaked into machine-readable output.
+func ActionsFromResults(results ...*engine.Result) []ActionResult {
+	var out []ActionResult
+	for _, r := range results {
+		if r == nil {
+			continue
+		}
+		for _, a := range r.Applied {
+			out = append(out, actionResult(a))
+		}
+	}
+	return out
 }
 
 // ListItem is one row of `starpoint list`.
