@@ -226,20 +226,85 @@ directory is read once even when PATH names it several times or through a
 symlink; `duplicate` is true only for a different file shadowed by an earlier
 entry with the same name.
 
-### `starpoint install` / `starpoint remove` / `starpoint update`
+### `starpoint install <package>`
 
 ```json
 {
-  "operation": "string",
+  "operations": ["OperationResult"],
+  "lookup": ["Survey"]
+}
+```
+
+`lookup` is the provider survey that preceded the choice, so a JSON consumer can
+see which providers were asked and what each answered.
+
+### `starpoint remove <package>`
+
+```json
+{
+  "operations": ["OperationResult"]
+}
+```
+
+An `OperationResult` is what the engine produced for one package:
+
+```json
+{
+  "states": ["State"],
+  "applied": ["PlannedAction"],
+  "transitions": ["Transition"],
+  "config_changed": "boolean",
+  "config_path": "string | null",
+  "warnings": ["Warning"],
+  "dry_run": "boolean"
+}
+```
+
+A `PlannedAction` is the engine's own record of one change, which nests the
+whole `State` it applied to:
+
+```json
+{
+  "action": "install | remove | update | adopt | relocate | record | reinstall",
+  "state": "State",
+  "config_change": "ConfigEdit | null",
+  "transition": "Transition | null",
+  "note": "string | null"
+}
+```
+
+Note that `install` and `remove` report `applied` as `PlannedAction`, whereas
+`sync`, `update` and `prune` report `actions` as `ActionResult` below. The two
+shapes are not interchangeable; see "Action vocabularies" under Migrating.
+
+### `starpoint update`
+
+```json
+{
+  "operation": "update",
   "dry_run": "boolean",
   "config_changed": "boolean",
   "config_path": "string | null",
   "actions": ["ActionResult"],
-  "warnings": ["Warning"]
+  "warnings": ["Warning"],
+  "pin_conflicts": ["PinConflict"]
 }
 ```
 
-`update` adds `pin_conflicts`, one per pinned package with a newer version
+An `ActionResult` is one applied or planned action, in the flat form used by
+`sync`, `update` and `prune`:
+
+```json
+{
+  "action": "install | remove | update | adopt | relocate | record | reinstall",
+  "package": "string",
+  "provider": "string | null",
+  "note": "string | null",
+  "result": "string | null"
+}
+```
+
+`pin_conflicts` has one entry per pinned package with a newer version
 available:
 
 ```json
@@ -389,6 +454,51 @@ command exits non-zero.
   "has_project_config": "boolean"
 }
 ```
+
+## Migrating from schema 1 to 2
+
+Version 2 flattened the envelope. The payload fields are largely the same; what
+changed is where they sit, and what `info` returns. Every response is still a
+single object.
+
+| Command | Version 1 | Version 2 |
+| --- | --- | --- |
+| `list` | `{schema_version, packages, unaccounted_path}` | unchanged |
+| `init` | `{schema_version, path, created, replaced}` | unchanged |
+| `transition` (listing) | `{schema_version, dry_run, transitions, pending}` | unchanged |
+| `info` | `{schema_version, package}`, then for an unmanaged package or a pending move a **second** document: `{schema_version, data: {lookup}}` or `{schema_version, data: {transition}}` | one document: `{schema_version, package, lookup?, transition?}` |
+| `explain` | `{schema_version, explain: {...}}` | `{schema_version, package, final, steps}` |
+| `sync` | `{schema_version, sync: {...}}` | `{schema_version, ...sync fields}` |
+| `doctor` | `{schema_version, doctor: {...}, providers, healthy}` | `{schema_version, starpoint, config, providers, ownership, path_inventory, path_summary, problems, healthy}` |
+| `install`, `remove`, `install .` | `{schema_version, data: {...}}` | `{schema_version, operations, lookup?, dependencies?}` |
+| `update` | `{schema_version, data: {operation, dry_run, actions, warnings, pin_conflicts}}` | `{schema_version, operation, dry_run, config_changed, config_path, actions, warnings, pin_conflicts}` |
+| `transition` (applying) | `{schema_version, data: {operation, dry_run, transitions}}` | `{schema_version, operation, dry_run, transitions}` |
+| `prune` | `{schema_version, data: {operation, dry_run, warnings}}` | `{schema_version, operation, dry_run, actions, warnings}`; `actions` is new |
+| `recover` | `{schema_version, data: {...}}` | `{schema_version, operation, interrupted, cleaned, remaining, sole_copies}` |
+| `runs` / `history` | `{schema_version, data: {executions}}`, `null` when empty | `{schema_version, executions}`, `[]` when empty |
+| errors | `{schema_version: 1, error}` | `{schema_version: 2, error}` |
+
+A consumer has to handle five things:
+
+1. The version number moved from 1 to 2.
+2. `sync`, `doctor`, `explain`, `update`, `transition`, `prune`, `recover`, `runs`, `install`, `remove` and `install .` moved their payload out of `data`, or out of a command-named key, to the top level. Read `payload["sync"]` as `payload`.
+3. `info --json` is now parseable. Previously a provider survey or a pending transition arrived as a second JSON object, so `json.Unmarshal` failed with "Extra data"; read `payload["lookup"]` or `payload["transition"]` instead.
+4. `doctor` dropped the `doctor` wrapper and the duplicate top-level `providers` and `healthy`. The fields themselves are unchanged and now appear once.
+5. `prune` gained `actions`, so a dry run reports what it would remove instead of an empty result.
+
+`list`, `init` and the `transition` listing changed only their version number.
+
+### Action vocabularies
+
+Two shapes describe one change, and they are not interchangeable:
+
+- `ActionResult` — `{action, package, provider, note, result}` — in `sync`, `update` and `prune`.
+- `PlannedAction` — `{action, state, config_change, transition, note}` — in `install`, `remove` and `install .`, under `operations[].applied`.
+
+`PlannedAction` nests the whole `State` the action applied to, so it is the
+richer shape; `ActionResult` is the one the schema originally described for
+every command. Unifying them is a breaking change and is tracked under
+Remaining CLI and API work.
 
 ## Versioning Policy
 
