@@ -175,6 +175,12 @@ type Transition struct {
 	Timestamp int64 `json:"timestamp,omitempty"`
 	// Reversible reports whether this transition can be reversed.
 	Reversible bool `json:"reversible,omitempty"`
+	// Effects are what the move changed on the machine, observed while it ran,
+	// or what it is expected to change when it has not run yet.
+	Effects []Effect `json:"effects,omitempty"`
+	// Warnings concern this move specifically, such as two providers writing
+	// the same executable.
+	Warnings []Warning `json:"warnings,omitempty"`
 }
 
 // NeedsWork reports whether the transition is not in a resting state.

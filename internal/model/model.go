@@ -223,6 +223,21 @@ type PlannedAction struct {
 	// Transition is the provider move this action performs, when it is one.
 	Transition *Transition `json:"transition,omitempty"`
 	Note       string      `json:"note,omitempty"`
+
+	// Outcome is what became of the action. Empty means the engine that
+	// produced it predates outcomes; reporting treats it by dry-run mode.
+	Outcome Outcome `json:"outcome,omitempty"`
+	// Error is why a failed action failed.
+	Error string `json:"error,omitempty"`
+	// Changes are the provider and version moves this action brings about.
+	Changes []ActionTransition `json:"changes,omitempty"`
+	// ConfigChanges are the configuration entries this action edits.
+	ConfigChanges []ConfigChange `json:"config_changes,omitempty"`
+	// Effects are the concrete changes to the machine, observed when the
+	// action ran or predicted when it is a plan.
+	Effects []Effect `json:"effects,omitempty"`
+	// Warnings are conditions that concern this action specifically.
+	Warnings []Warning `json:"warnings,omitempty"`
 }
 
 // ConfigEdit describes a pending mutation of the source of truth. Starpoint
@@ -249,9 +264,12 @@ const (
 // action Starpoint will take.
 type Warning struct {
 	Severity Severity `json:"severity"`
-	Package  string   `json:"package,omitempty"`
-	Provider string   `json:"provider,omitempty"`
-	Message  string   `json:"message"`
+	// Code is a stable identifier for the condition, so a consumer can act on
+	// a warning without matching its message. See the Warn* constants.
+	Code     string `json:"code,omitempty"`
+	Package  string `json:"package,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Message  string `json:"message"`
 }
 
 func (w Warning) String() string {
@@ -390,3 +408,34 @@ type PinConflict struct {
 	// ConfigPath is the file whose pin was rewritten, when it was.
 	ConfigPath string `json:"config_path,omitempty"`
 }
+
+// Warning codes. They are stable strings: a message can be reworded, a code
+// cannot change meaning without a schema version increment.
+const (
+	// Configuration and availability.
+	WarnDuplicateDeclaration = "duplicate-declaration"
+	WarnProviderUnknown      = "provider-unknown"
+	WarnProviderUnavailable  = "provider-unavailable"
+	WarnProjectScopeUndecl   = "project-scope-undeclared"
+	WarnOwnerUnavailable     = "owner-unavailable"
+	WarnRecordedNotInstalled = "recorded-not-installed"
+	WarnVerificationFailed   = "verification-failed"
+	WarnToolchainMissing     = "toolchain-missing"
+	WarnDiscoverFailed       = "discover-failed"
+	WarnPinKept              = "pin-kept"
+	WarnPinConflict          = "pin-conflict"
+	WarnUpdateUnsupported    = "update-unsupported"
+	WarnNotInstalled         = "not-installed"
+	WarnAlreadyCurrent       = "already-current"
+	WarnVersionUnsatisfiable = "version-unsatisfiable"
+	WarnTransitionIncomplete = "transition-incomplete"
+	WarnTransitionLeftBehind = "transition-left-behind"
+	WarnSharedExecutable     = "shared-executable"
+	WarnDuplicateCopy        = "duplicate-copy"
+	WarnShadowed             = "shadowed"
+	WarnMissing              = "missing"
+	WarnNotOnPath            = "not-on-path"
+	WarnCommandRemoved       = "command-removed"
+	WarnShellProfileChanged  = "shell-profile-changed"
+	WarnElevated             = "running-elevated"
+)
