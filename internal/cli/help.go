@@ -61,7 +61,7 @@ var commandFlags = map[string][]string{
 }
 
 // globalFlags are accepted anywhere on the command line.
-var globalFlags = []string{"--json", "--provider", "--force", "--context", "--version", "--help"}
+var globalFlags = []string{"--json", "--provider", "--force", "--context", "--verbose", "--version", "--help"}
 
 // isHelpFlag reports whether an argument asks for help.
 func isHelpFlag(a string) bool { return a == "--help" || a == "-h" }
@@ -103,6 +103,7 @@ Options:
   --no-confirm, -y    Do not ask before changing anything
   --provider <name>   Restrict automatic provider choice (repeatable)
   --json              Machine-readable output
+  --verbose, -v       List every effect, not only what is removed or overwritten
 `,
 	"list": `Usage: starpoint list [--managed] [--provider <name>]
 
@@ -171,6 +172,7 @@ Options:
   --dry-run, -n        Show what would happen; change nothing
   --no-confirm, -y     Do not ask first
   --json               Machine-readable output
+  --verbose, -v        List every effect, not only what is removed or overwritten
 
 Examples:
   starpoint install ruff
@@ -193,6 +195,7 @@ Options:
   --no-confirm, -y     Do not ask first
   --allow-empty        Allow removing every configured package at once
   --json               Machine-readable output
+  --verbose, -v        List every effect, not only what is removed or overwritten
 `,
 	"transition": `Usage: starpoint transition [package...] [options]
 
@@ -208,6 +211,7 @@ Options:
   --dry-run, -n        Describe the moves; change nothing
   --no-confirm, -y     Do not ask first
   --json               Machine-readable output
+  --verbose, -v        List every effect, not only what is removed or overwritten
 `,
 	"update": `Usage: starpoint update [--self] [--dry-run] [--no-confirm]
 
@@ -223,6 +227,7 @@ Options:
   --dry-run, -n        Show what would be updated; change nothing
   --no-confirm, -y     Do not ask first (pins are kept)
   --json               Machine-readable output
+  --verbose, -v        List every effect, not only what is removed or overwritten
 `,
 	"runs": `Usage: starpoint runs [--package <name>] [--directory <dir>]
 
@@ -245,6 +250,7 @@ Options:
   --dry-run, -n        Show what would be removed; change nothing
   --no-confirm, -y     Do not ask first
   --json               Machine-readable output
+  --verbose, -v        List every effect, not only what is removed or overwritten
 `,
 	"recover": `Usage: starpoint recover [--discard] [--no-confirm]
 

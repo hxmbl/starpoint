@@ -7,7 +7,7 @@ _starpoint() {
   local -a commands globals providers flags
   local cmd word
   commands=(init sync list ls info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover logging logs help)
-  globals=(--json --provider --force --context --version --help)
+  globals=(--json --provider --force --context --verbose --version --help)
   providers=(apt brew cargo dnf gem go npm pacman pip pnpm rustup system uv yarn)
 
   if [[ ${words[CURRENT-1]} == --provider || ${words[CURRENT-1]} == -p ]]; then

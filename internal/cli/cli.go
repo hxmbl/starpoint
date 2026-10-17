@@ -20,6 +20,7 @@ import (
 
 	"github.com/hxmbl/starpoint/internal/auditlog"
 	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/elevation"
 	"github.com/hxmbl/starpoint/internal/engine"
 	"github.com/hxmbl/starpoint/internal/history"
 	"github.com/hxmbl/starpoint/internal/locator"
@@ -78,6 +79,23 @@ type Env struct {
 	AuditLog *auditlog.Log
 	// newEngine is overridden in tests to inject a tracker
 	newEngineFn func() *engine.Engine
+	// Verbose lists every effect of an action in human output, not only the
+	// destructive ones. Set from --verbose.
+	Verbose bool
+	// Elevation reports whether the process runs elevated. Nil means the
+	// real check; tests replace it.
+	Elevation func() elevation.Status
+	// jsonMode is set for --json, so prompts keep off stdout.
+	jsonMode bool
+}
+
+// elevationWarning is the warning for an elevated run, or nil.
+func (e *Env) elevationWarning() *model.Warning {
+	detect := e.Elevation
+	if detect == nil {
+		detect = elevation.Detect
+	}
+	return detect().Warning()
 }
 
 // stateDir is where this run keeps its records: the audit log, the transition
@@ -138,6 +156,15 @@ func (e *Env) auditTransition(t model.Transition, err error) {
 		Provider: t.To.Name,
 		Result:   result,
 		Detail:   errorDetail(err),
+		Effects:  t.Effects,
+		Destructive: func() bool {
+			for _, eff := range t.Effects {
+				if eff.Destructive {
+					return true
+				}
+			}
+			return false
+		}(),
 	})
 }
 
@@ -156,18 +183,32 @@ func (e *Env) auditActions(command string, dryRun bool, results ...*engine.Resul
 		for _, a := range r.Applied {
 			outcome := result
 			if outcome == "" {
-				outcome = string(a.Action) + "d"
+				outcome = string(a.Outcome)
 			}
-			e.audit(auditlog.Entry{
-				Event:    auditlog.EventAction,
-				Command:  command,
-				DryRun:   dryRun,
-				Action:   string(a.Action),
-				Package:  a.State.Package.Name,
-				Provider: a.State.Res.Provider,
-				Result:   outcome,
-				Detail:   a.Note,
-			})
+			if outcome == "" {
+				outcome = string(model.OutcomeApplied)
+			}
+			detail := a.Note
+			if a.Error != "" {
+				detail = strings.TrimSpace(detail + "; " + a.Error)
+			}
+			entry := auditlog.Entry{
+				Event:       auditlog.EventAction,
+				Command:     command,
+				DryRun:      dryRun,
+				Action:      string(a.Action),
+				Package:     a.State.Package.Name,
+				Provider:    a.State.Res.Provider,
+				Result:      outcome,
+				Detail:      detail,
+				Destructive: a.Destructive(),
+			}
+			// What actually changed is the point of the log; predictions are
+			// left to the dry run's own output.
+			if !dryRun {
+				entry.Effects = a.Effects
+			}
+			e.audit(entry)
 		}
 	}
 }
@@ -261,6 +302,7 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		contextDir string
 	)
 	rest, flagErr := extractGlobalFlags(args, &asJSON, &force, &providers, &contextDir)
+	rest = extractVerbose(rest, &env.Verbose)
 	if contextDir != "" {
 		env.WorkDir = contextDir
 	}
@@ -290,6 +332,11 @@ func Run(ctx context.Context, env *Env, args []string) int {
 
 	cmd, cmdArgs := rest[0], rest[1:]
 	w := report.New(env.Stdout, asJSON)
+	env.jsonMode = asJSON
+	w.SetVerbose(env.Verbose)
+	if warn := env.elevationWarning(); warn != nil {
+		w.SetContextWarnings(*warn)
+	}
 
 	// `starpoint <command> --help` is help for that command, wherever the flag
 	// sits. It must be decided before dispatch: a command that took it as an
@@ -375,13 +422,20 @@ func (e *Env) begin(command string, args []string) {
 		return
 	}
 	e.applyRetention()
-	e.audit(auditlog.Entry{
+	entry := auditlog.Entry{
 		Event:     auditlog.EventCommandStart,
 		Command:   canonical,
 		Args:      append([]string{}, args...),
 		DryRun:    hasFlag(args, "--dry-run", "-n"),
 		Directory: e.WorkDir,
-	})
+	}
+	if warn := e.elevationWarning(); warn != nil {
+		// Who the command ran as decides where its effects landed, so the log
+		// says so on the entry that opens the command.
+		entry.Elevated = true
+		entry.Detail = warn.Message
+	}
+	e.audit(entry)
 }
 
 // finish records how a command ended and returns its exit code.
@@ -477,6 +531,21 @@ func leadingArgs(args []string) []string {
 	return args
 }
 
+// extractVerbose removes --verbose and -v wherever they appear. They are
+// global like --json: `starpoint remove ruff -v` and `starpoint -v remove ruff`
+// mean the same thing.
+func extractVerbose(args []string, verbose *bool) []string {
+	out := args[:0:0]
+	for _, a := range args {
+		if a == "--verbose" || a == "-v" {
+			*verbose = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 // extractGlobalFlags pulls the global options out of an argument list and
 // returns what remains: the subcommand and its own arguments.
 func extractGlobalFlags(args []string, asJSON, force *bool, providers *[]string, contextDir *string) ([]string, error) {
@@ -551,14 +620,17 @@ Global options:
   --provider <name>    Restrict automatic provider choice (repeatable)
   --force              Used by 'init' to overwrite an existing configuration
   --context <dir>      Override working directory for context detection
-  --record             Force recording execution even if auto-detection fails
+  --verbose, -v        List every effect of a change, not only what it
+                       removes or overwrites
   --version            Print the version
   --help               Show this help
 
 Anything that installs, removes or updates software asks first. Answer with
 --no-confirm to skip the question; a stream that provides no answer at all is
-refused rather than assumed. --dry-run shows what would happen and changes
-nothing.
+refused rather than assumed. --dry-run shows what would happen, with every
+file, package and configuration entry it would touch, and changes nothing.
+Anything a change would delete or overwrite is marked ! and always shown;
+--verbose lists the rest. --json reports all of it on every action.
 
 Examples:
   starpoint init
@@ -686,16 +758,17 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 
 // confirmPlan shows the user exactly what is about to happen.
 func confirmPlan(env *Env, plan model.Plan) (bool, error) {
-	fmt.Fprintln(env.Stdout, "The following changes will be made:")
+	fmt.Fprintln(env.promptOut(), "The following changes will be made:")
 	for _, a := range plan.Actions {
 		line := fmt.Sprintf("  %-10s %s", a.Action, a.State.Package.Name)
 		if a.State.Res.Provider != "" {
 			line += " via " + a.State.Res.Provider
 		}
-		fmt.Fprintln(env.Stdout, line)
+		fmt.Fprintln(env.promptOut(), line)
 		if a.Note != "" {
-			fmt.Fprintf(env.Stdout, "             %s\n", a.Note)
+			fmt.Fprintf(env.promptOut(), "             %s\n", a.Note)
 		}
+		report.WriteEffects(env.promptOut(), a.Effects, true, env.Verbose, "             ")
 	}
 	return env.Confirm("Proceed?")
 }
@@ -960,6 +1033,7 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 		for _, dup := range eng.Duplicates(ctx, doc, engine.Options{Dir: env.WorkDir}) {
 			rep.Problems = append(rep.Problems, model.Warning{
 				Severity: model.SeverityWarn,
+				Code:     model.WarnDuplicateCopy,
 				Package:  dup.Package,
 				Provider: dup.Owner,
 				Message: fmt.Sprintf("%s is also provided by %s at %s; decide which copy to keep",
@@ -973,6 +1047,7 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 			}
 			rep.Problems = append(rep.Problems, model.Warning{
 				Severity: severity,
+				Code:     model.WarnTransitionIncomplete,
 				Package:  t.Package.Name,
 				Provider: t.To.Name,
 				Message: fmt.Sprintf("provider transition is %s: %s. %s%s",
@@ -985,6 +1060,7 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 			}
 			rep.Problems = append(rep.Problems, model.Warning{
 				Severity: model.SeverityWarn,
+				Code:     model.WarnTransitionLeftBehind,
 				Package:  t.Package.Name,
 				Provider: t.From.Name,
 				Message: fmt.Sprintf("ownership moved to %s but the %s copy was left in place (%s). %s",
@@ -994,6 +1070,7 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 		for _, shadow := range eng.Shadowed(ctx, doc, engine.Options{Dir: env.WorkDir}) {
 			rep.Problems = append(rep.Problems, model.Warning{
 				Severity: model.SeverityError,
+				Code:     model.WarnShadowed,
 				Package:  shadow.Package,
 				Provider: shadow.Managed.Provider,
 				Message: fmt.Sprintf(
@@ -1006,12 +1083,14 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 			case model.StatusMissing:
 				rep.Problems = append(rep.Problems, model.Warning{
 					Severity: model.SeverityWarn,
+					Code:     model.WarnMissing,
 					Package:  st.Package.Name,
 					Message:  "declared in the configuration but not installed",
 				})
 			case model.StatusUnpinnedConflict:
 				rep.Problems = append(rep.Problems, model.Warning{
 					Severity: model.SeverityError,
+					Code:     model.WarnVersionUnsatisfiable,
 					Package:  st.Package.Name,
 					Provider: st.Res.Provider,
 					Message: fmt.Sprintf("configuration pins %s but provider %s cannot install that version",
@@ -1019,6 +1098,9 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 				})
 			}
 		}
+	}
+	if warn := env.elevationWarning(); warn != nil {
+		rep.Problems = append(rep.Problems, *warn)
 	}
 	for _, p := range rep.Problems {
 		if p.Severity != model.SeverityInfo {
@@ -1188,17 +1270,14 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 	// package name to look up or ask about.
 	if len(names) == 1 && (names[0] == "." || names[0] == "./") && named == "" {
 		res, deps, err := installProject(ctx, env, eng, doc, opts, proj, version, channel, w.JSON())
-		if err != nil {
-			if w.JSON() && res != nil {
-				_ = w.Render(map[string]any{"actions": report.ActionsFromResults(res), "dependencies": deps})
+		if res != nil {
+			env.auditActions("install", dryRun, res)
+			// Partial progress is reported, not swallowed by the error.
+			if rerr := w.Operation("install", dryRun, []*engine.Result{res}, map[string]any{"dependencies": deps}); rerr != nil && err == nil {
+				err = rerr
 			}
-			return err
 		}
-		env.auditActions("install", dryRun, res)
-		if w.JSON() {
-			return w.Render(map[string]any{"actions": report.ActionsFromResults(res), "dependencies": deps})
-		}
-		return reportInstall(w, []*engine.Result{res}, nil)
+		return err
 	}
 
 	type job struct {
@@ -1257,7 +1336,13 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		if err != nil {
 			return err
 		}
-		jobs = append(jobs, job{pkg: pkg, change: installChange(pkg, resolution, adopted), survey: survey})
+		// The preview is what the question shows: every effect the install is
+		// expected to have, from the same derivation the install itself uses.
+		preview, err := eng.AddPreview(ctx, doc, pkg, opts)
+		if err != nil {
+			return err
+		}
+		jobs = append(jobs, job{pkg: pkg, change: installChange(pkg, resolution, adopted, preview), survey: survey})
 	}
 
 	// One question for the whole command, describing every change it would make.
@@ -1279,6 +1364,15 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		surveys = append(surveys, j.survey)
 		res, err := eng.Add(ctx, doc, j.pkg, opts)
 		if err != nil {
+			// Report what this command already did, and whatever the failed
+			// step left behind, before the error.
+			if res != nil {
+				results = append(results, res)
+			}
+			env.auditActions("install", dryRun, results...)
+			if len(results) > 0 {
+				_ = w.Operation("install", dryRun, results, map[string]any{"lookup": surveys})
+			}
 			return err
 		}
 		// Record execution in tracking system
@@ -1294,10 +1388,7 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		results = append(results, res)
 	}
 	env.auditActions("install", dryRun, results...)
-	if w.JSON() {
-		return w.Render(map[string]any{"actions": report.ActionsFromResults(results...), "lookup": surveys})
-	}
-	return reportInstall(w, results, surveys)
+	return reportInstall(w, dryRun, results, surveys)
 }
 
 // singleProvider returns the one provider an option set names, or empty when the
@@ -1317,19 +1408,8 @@ func singleProvider(allowed []string) string {
 // The action list is the documented ActionResult shape, shared with sync and
 // update, rather than the engine's own Result. A consumer should not have to
 // know which command produced a document to read its actions.
-func reportInstall(w *report.Writer, results []*engine.Result, surveys []engine.Survey) error {
-	if w.JSON() {
-		return w.Render(map[string]any{
-			"actions": report.ActionsFromResults(results...),
-			"lookup":  surveys,
-		})
-	}
-	for _, r := range results {
-		if err := w.Result("install", r); err != nil {
-			return err
-		}
-	}
-	return nil
+func reportInstall(w *report.Writer, dryRun bool, results []*engine.Result, surveys []engine.Survey) error {
+	return w.Operation("install", dryRun, results, map[string]any{"lookup": surveys})
 }
 
 // askProvider presents the ambiguous candidates to the user.
@@ -1361,6 +1441,10 @@ type dependencyReport struct {
 	Ran bool `json:"ran"`
 	// DryRun echoes the mode.
 	DryRun bool `json:"dry_run"`
+	// Effects are what the dependency installer changed in the project
+	// directory and the shell profiles, observed around the run; a planned
+	// effect in a dry run.
+	Effects []model.Effect `json:"effects"`
 }
 
 // installProject handles `starpoint install .`.
@@ -1396,7 +1480,7 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 	projectConfig := filepath.Join(proj.Root, config.ProjectFileName)
 
 	deps, why := proj.Dependencies(osexec.LookPath)
-	report := &dependencyReport{Command: deps, Skipped: why, DryRun: opts.DryRun}
+	depReport := &dependencyReport{Command: deps, Skipped: why, DryRun: opts.DryRun, Effects: []model.Effect{}}
 	if deps != nil {
 		if err := env.confirmChanges([]change{{
 			verb:   "Run",
@@ -1407,8 +1491,8 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 			return nil, nil, err
 		}
 		if env.declined() {
-			report.Skipped = "declined"
-			return result, report, nil
+			depReport.Skipped = "declined"
+			return result, depReport, nil
 		}
 	}
 
@@ -1426,7 +1510,7 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 			}
 			res, err := eng.Add(ctx, doc, pkg, opts)
 			if err != nil {
-				return result, report, err
+				return result, depReport, err
 			}
 			result.Applied = append(result.Applied, res.Applied...)
 			result.ConfigChanged = result.ConfigChanged || res.ConfigChanged
@@ -1471,7 +1555,7 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 				Reason:   "adopted from " + proj.Marker + " in " + proj.Root,
 			}, projectOpts)
 			if err != nil {
-				return result, report, err
+				return result, depReport, err
 			}
 			result.Applied = append(result.Applied, res.Applied...)
 			result.ConfigChanged = result.ConfigChanged || res.ConfigChanged
@@ -1484,6 +1568,7 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 			fmt.Fprintf(out, "  %s\n", msg)
 			result.Warnings = append(result.Warnings, model.Warning{
 				Severity: model.SeverityWarn,
+				Code:     model.WarnToolchainMissing,
 				Package:  tool.Name,
 				Message:  msg,
 			})
@@ -1502,18 +1587,27 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 	// Finally, the dependencies themselves.
 	if deps == nil {
 		fmt.Fprintf(out, "Dependencies: %s\n", why)
-		return result, report, nil
+		return result, depReport, nil
 	}
 	if opts.DryRun {
 		fmt.Fprintf(out, "Would run: %s (in %s; %s)\n", deps.String(), deps.Dir, deps.Reason)
-		return result, report, nil
+		depReport.Effects = append(depReport.Effects, model.Effect{
+			Op: model.EffectModify, Kind: model.EffectDirectory, Path: deps.Dir, Evidence: model.EvidencePlanned,
+			Detail: deps.Tool + " writes the project's dependencies under this directory",
+		})
+		report.WriteEffects(out, depReport.Effects, true, true, "  ")
+		return result, depReport, nil
 	}
 	fmt.Fprintf(out, "Running: %s (in %s)\n", deps.String(), deps.Dir)
-	if err := env.runInDir(ctx, deps.Dir, out, env.Stderr, deps.Tool, deps.Args...); err != nil {
-		return result, report, fmt.Errorf("installing dependencies with '%s' in %s: %w", deps.String(), deps.Dir, err)
+	watch := eng.WatchDirs(deps.Dir)
+	runErr := env.runInDir(ctx, deps.Dir, out, env.Stderr, deps.Tool, deps.Args...)
+	depReport.Effects = append(depReport.Effects, watch.Finish(ctx)...)
+	report.WriteEffects(out, depReport.Effects, false, env.Verbose, "  ")
+	if runErr != nil {
+		return result, depReport, fmt.Errorf("installing dependencies with '%s' in %s: %w", deps.String(), deps.Dir, runErr)
 	}
-	report.Ran = true
-	return result, report, nil
+	depReport.Ran = true
+	return result, depReport, nil
 }
 
 // runInDir runs a command in a directory with its output streamed, which is
@@ -1605,7 +1699,10 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	for _, raw := range names {
 		pkg := model.ParseSpec(raw)
 		resolution := env.planRemoval(ctx, eng, doc, opts, pkg)
-		changes = append(changes, removeChange(pkg, resolution))
+		// A removal that would be refused is refused by Remove itself, with
+		// its own message; the preview only adds what it can describe.
+		preview, _ := eng.RemovePreview(ctx, doc, raw)
+		changes = append(changes, removeChange(pkg, resolution, preview))
 	}
 	if err := env.confirmChanges(changes, opts); err != nil {
 		return err
@@ -1618,20 +1715,19 @@ func cmdRemove(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	for _, raw := range names {
 		res, err := eng.Remove(ctx, doc, raw, opts)
 		if err != nil {
+			if res != nil {
+				results = append(results, res)
+			}
+			env.auditActions("remove", dryRun, results...)
+			if len(results) > 0 {
+				_ = w.Operation("remove", dryRun, results, nil)
+			}
 			return err
 		}
 		results = append(results, res)
 	}
 	env.auditActions("remove", dryRun, results...)
-	if w.JSON() {
-		return w.Render(map[string]any{"actions": report.ActionsFromResults(results...)})
-	}
-	for _, r := range results {
-		if err := w.Result("remove", r); err != nil {
-			return err
-		}
-	}
-	return nil
+	return w.Operation("remove", dryRun, results, nil)
 }
 
 // emptiesConfiguration reports the configured packages that removing every one
@@ -1758,7 +1854,7 @@ func cmdTransition(ctx context.Context, env *Env, w *report.Writer, args []strin
 	}
 
 	if !dryRun && !noConfirm && env.Confirm != nil {
-		if err := confirmTransitions(env, selected); err != nil {
+		if err := confirmTransitions(ctx, env, eng, selected); err != nil {
 			return err
 		}
 		if !env.lastConfirm {
@@ -1771,25 +1867,19 @@ func cmdTransition(ctx context.Context, env *Env, w *report.Writer, args []strin
 	}
 
 	var applied []model.Transition
+	var errs []error
 	var failures []string
 	for _, st := range selected.states {
 		t, err := eng.ExecuteTransition(ctx, st, opts)
 		applied = append(applied, t)
+		errs = append(errs, err)
 		env.auditTransition(t, err)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %s", t.Package.Name, err))
 		}
 	}
-	if w.JSON() {
-		if err := w.Render(map[string]any{
-			"operation":   "transition",
-			"dry_run":     dryRun,
-			"transitions": applied,
-		}); err != nil {
-			return err
-		}
-	} else {
-		w.Transitions(applied, dryRun)
+	if err := w.TransitionsApplied("transition", applied, errs, dryRun); err != nil {
+		return err
 	}
 	if len(failures) > 0 {
 		return fmt.Errorf("transitions did not complete:\n  %s", strings.Join(failures, "\n  "))
@@ -1847,19 +1937,24 @@ func visibleTransitions(ts []model.Transition) []model.Transition {
 
 // confirmTransitions shows exactly what a transition will do and whether it is
 // still recoverable.
-func confirmTransitions(env *Env, sel transitionSelection) error {
-	fmt.Fprintln(env.Stdout, "These provider transitions will be performed:")
+func confirmTransitions(ctx context.Context, env *Env, eng *engine.Engine, sel transitionSelection) error {
+	fmt.Fprintln(env.promptOut(), "These provider transitions will be performed:")
 	for _, t := range sel.transitions {
 		from := t.From.Name
 		if from == "" {
 			from = "nothing"
 		}
-		fmt.Fprintf(env.Stdout, "  %s: %s -> %s (currently %s)\n", t.Package.Name, from, t.To.Name, t.Phase)
+		fmt.Fprintf(env.promptOut(), "  %s: %s -> %s (currently %s)\n", t.Package.Name, from, t.To.Name, t.Phase)
 		if t.Advice != "" {
-			fmt.Fprintf(env.Stdout, "      %s\n", t.Advice)
+			fmt.Fprintf(env.promptOut(), "      %s\n", t.Advice)
+		}
+		effects, warnings := eng.PlannedTransitionEffects(ctx, t)
+		report.WriteEffects(env.promptOut(), effects, true, env.Verbose, "      ")
+		for _, w := range warnings {
+			fmt.Fprintf(env.promptOut(), "      %s [%s]: %s\n", w.Severity, w.Code, w.Message)
 		}
 	}
-	fmt.Fprintln(env.Stdout, "\nThe previous installation is only removed once the new one is confirmed working.")
+	fmt.Fprintln(env.promptOut(), "\nThe previous installation is only removed once the new one is confirmed working.")
 	ok, err := env.Confirm("Proceed?")
 	env.lastConfirm = ok
 	return err
@@ -1914,7 +2009,7 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	// update must not do.
 	if !opts.DryRun && !opts.NoConfirm && env.Confirm != nil {
 		for _, c := range previewRes.PinConflicts {
-			fmt.Fprintf(env.Stdout, "!!! There is a new version available for %s (%s), but config says %s\n",
+			fmt.Fprintf(env.promptOut(), "!!! There is a new version available for %s (%s), but config says %s\n",
 				c.Package, c.Available, c.Pinned)
 			ok, err := env.Confirm("Update anyway?")
 			if err != nil {
@@ -1932,10 +2027,12 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	var preview []change
 	for _, a := range previewRes.Applied {
 		preview = append(preview, change{
-			verb:   "Update",
-			target: a.State.Package.Spec(),
-			via:    a.State.Res.Provider,
-			detail: a.Note,
+			verb:     "Update",
+			target:   a.State.Package.Spec(),
+			via:      a.State.Res.Provider,
+			detail:   a.Note,
+			effects:  a.Effects,
+			warnings: a.Warnings,
 		})
 	}
 	if self {
@@ -1961,6 +2058,9 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		res.Applied = append(res.Applied, selfRes...)
 	}
 	env.auditActions("update", dryRun, res)
+	if warn := env.elevationWarning(); warn != nil && !w.JSON() {
+		fmt.Fprintf(env.Stdout, "%s [%s]: %s\n", warn.Severity, warn.Code, warn.Message)
+	}
 	if w.JSON() {
 		_ = w.Update(res)
 		return updateErr
@@ -1977,11 +2077,19 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 			c.Package, c.Available, c.Pinned, outcome)
 	}
 	for _, a := range res.Applied {
-		fmt.Fprintf(env.Stdout, "%s", strings.TrimSpace(actionLine("updated", a)))
+		verb := "updated"
+		switch {
+		case dryRun:
+			verb = "would update"
+		case a.Outcome == model.OutcomeFailed:
+			verb = "failed to update"
+		}
+		fmt.Fprintf(env.Stdout, "%s", strings.TrimSpace(actionLine(verb, a)))
 		fmt.Fprintln(env.Stdout)
+		report.WriteEffects(env.Stdout, a.Effects, dryRun, dryRun || env.Verbose, "")
 	}
 	for _, warn := range res.Warnings {
-		if strings.HasPrefix(warn.Message, "there is a new version available") {
+		if warn.Code == model.WarnPinConflict {
 			continue // already shown as a pin conflict above
 		}
 		fmt.Fprintf(env.Stdout, "  %s\n", warn.Message)
@@ -2213,6 +2321,15 @@ func cmdPrune(ctx context.Context, env *Env, w *report.Writer, args []string, al
 		if env.Confirm == nil {
 			return errors.New("prune requires confirmation; use --no-confirm to proceed")
 		}
+		// Every candidate, and everything that would go with it, is listed
+		// before the question. A count alone is not consent to a deletion.
+		// Under --json the list goes to stderr so stdout stays one document.
+		listing := env.promptOut()
+		fmt.Fprintln(listing, "These packages are not declared in any configuration and would be removed:")
+		for _, a := range preview.Applied {
+			fmt.Fprintf(listing, "  %s via %s\n", a.State.Package.Name, a.State.Res.Provider)
+			report.WriteEffects(listing, a.Effects, true, env.Verbose, "    ")
+		}
 		ok, err := env.Confirm(fmt.Sprintf("Remove %d orphaned user-scoped package(s)?", len(preview.Applied)))
 		if err != nil {
 			return err
@@ -2223,15 +2340,19 @@ func cmdPrune(ctx context.Context, env *Env, w *report.Writer, args []string, al
 		}
 	}
 	res := preview
+	var pruneErr error
 	if !dryRun {
-		res, err = eng.Prune(ctx, doc, opts)
-		if err != nil {
-			return err
+		res, pruneErr = eng.Prune(ctx, doc, opts)
+		if res == nil {
+			return pruneErr
 		}
 	}
 	env.auditActions("prune", dryRun, res)
-
-	return w.Prune(res, dryRun)
+	// What was removed before a failure is still reported.
+	if err := w.Prune(res, dryRun); err != nil {
+		return err
+	}
+	return pruneErr
 }
 
 // cmdRecover inspects and clears files left behind by an interrupted run.
@@ -2499,12 +2620,17 @@ func cmdTransitionReverse(ctx context.Context, env *Env, w *report.Writer, eng *
 
 	// Show what will be reversed
 	fmt.Fprintln(env.Stdout, "The following transitions will be reversed:")
-	for _, t := range toReverse {
+	for i, t := range toReverse {
 		fmt.Fprintf(env.Stdout, "  %s: %s -> %s (reversing transition from %s)\n",
 			t.Package.Name, t.To.Name, t.From.Name,
 			time.Unix(t.Timestamp, 0).Format("2006-01-02 15:04:05"))
 		if t.Note != "" {
 			fmt.Fprintf(env.Stdout, "      %s\n", t.Note)
+		}
+		effects, warnings := eng.PlannedTransitionEffects(ctx, eng.TransitionFor(ctx, selected[i], opts))
+		report.WriteEffects(env.Stdout, effects, true, dryRun || env.Verbose, "      ")
+		for _, w := range warnings {
+			fmt.Fprintf(env.Stdout, "      %s [%s]: %s\n", w.Severity, w.Code, w.Message)
 		}
 	}
 
@@ -2524,26 +2650,22 @@ func cmdTransitionReverse(ctx context.Context, env *Env, w *report.Writer, eng *
 
 	// Perform the reverse transitions
 	var applied []model.Transition
+	var errs []error
 	var failures []string
 	for _, st := range selected {
 		t, err := eng.ExecuteTransition(ctx, st, opts)
 		applied = append(applied, t)
+		errs = append(errs, err)
+		if !dryRun {
+			env.auditTransition(t, err)
+		}
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %s", t.Package.Name, err))
 		}
 	}
 
-	if w.JSON() {
-		if err := w.Render(map[string]any{
-			"operation":   "transition-reverse",
-			"dry_run":     dryRun,
-			"transitions": applied,
-		}); err != nil {
-			return err
-		}
-	}
-	if !w.JSON() {
-		w.Transitions(applied, dryRun)
+	if err := w.TransitionsApplied("transition-reverse", applied, errs, dryRun); err != nil {
+		return err
 	}
 
 	if len(failures) > 0 {

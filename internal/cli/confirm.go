@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/hxmbl/starpoint/internal/engine"
 	"github.com/hxmbl/starpoint/internal/model"
+	"github.com/hxmbl/starpoint/internal/report"
 )
 
 // change is one thing a command is about to do to the machine.
@@ -28,6 +30,11 @@ type change struct {
 	detail string
 	// after is what will have happened when it is done.
 	after string
+	// effects are what the change is expected to do to the machine. The
+	// destructive ones are always shown before asking.
+	effects []model.Effect
+	// warnings concern this change.
+	warnings []model.Warning
 }
 
 // confirmChanges describes changes and asks whether to proceed.
@@ -55,21 +62,31 @@ func (e *Env) confirmChanges(changes []change, opts engine.Options) error {
 			ErrUsage, strings.ToLower(changes[0].verb), changes[0].target)
 	}
 
-	fmt.Fprintln(e.Stdout, "About to change your machine:")
+	fmt.Fprintln(e.promptOut(), "About to change your machine:")
 	for _, c := range changes {
-		fmt.Fprintf(e.Stdout, "  %s %s", c.verb, c.target)
+		fmt.Fprintf(e.promptOut(), "  %s %s", c.verb, c.target)
 		if c.via != "" {
-			fmt.Fprintf(e.Stdout, " (%s)", c.via)
+			fmt.Fprintf(e.promptOut(), " (%s)", c.via)
 		}
-		fmt.Fprintln(e.Stdout, "")
+		fmt.Fprintln(e.promptOut(), "")
 		if c.detail != "" {
-			fmt.Fprintf(e.Stdout, "      %s\n", c.detail)
+			fmt.Fprintf(e.promptOut(), "      %s\n", c.detail)
 		}
 		if c.after != "" {
-			fmt.Fprintf(e.Stdout, "      then: %s\n", c.after)
+			fmt.Fprintf(e.promptOut(), "      then: %s\n", c.after)
+		}
+		report.WriteEffects(e.promptOut(), c.effects, true, e.Verbose, "      ")
+		for _, w := range c.warnings {
+			if w.Severity == model.SeverityInfo && !e.Verbose {
+				continue
+			}
+			fmt.Fprintf(e.promptOut(), "      %s [%s]: %s\n", w.Severity, w.Code, w.Message)
 		}
 	}
-	fmt.Fprintln(e.Stdout, "")
+	if n := destructiveCount(changes); n > 0 {
+		fmt.Fprintf(e.promptOut(), "\n%d change(s) marked ! remove or overwrite something that is there now.\n", n)
+	}
+	fmt.Fprintln(e.promptOut(), "")
 
 	ok, err := e.Confirm("Proceed?")
 	e.confirmAsked = true
@@ -78,9 +95,31 @@ func (e *Env) confirmChanges(changes []change, opts engine.Options) error {
 		return err
 	}
 	if !ok {
-		fmt.Fprintln(e.Stdout, "Nothing was changed.")
+		fmt.Fprintln(e.promptOut(), "Nothing was changed.")
 	}
 	return nil
+}
+
+// promptOut is where questions and the descriptions before them go: stdout
+// normally, stderr under --json so stdout stays one JSON document.
+func (e *Env) promptOut() io.Writer {
+	if e.jsonMode {
+		return e.Stderr
+	}
+	return e.Stdout
+}
+
+// destructiveCount counts the destructive effects across changes.
+func destructiveCount(changes []change) int {
+	n := 0
+	for _, c := range changes {
+		for _, eff := range c.effects {
+			if eff.Destructive {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // declined reports whether the user was asked and said no.
@@ -98,7 +137,7 @@ func (e *Env) declined() bool { return e.confirmAsked && !e.lastConfirm }
 // the software is already present through Homebrew and is simply being recorded,
 // the install turns into an adoption with no mutation at all — and it is worth
 // telling them that instead of silently doing nothing.
-func installChange(pkg model.Package, resolution model.Resolution, adopted *model.Installation) change {
+func installChange(pkg model.Package, resolution model.Resolution, adopted *model.Installation, preview model.PlannedAction) change {
 	verb := "Install"
 	target := pkg.Spec()
 	after := ""
@@ -112,22 +151,26 @@ func installChange(pkg model.Package, resolution model.Resolution, adopted *mode
 			"the provider is the one you asked for, not the one Starpoint would choose")
 	}
 	return change{
-		verb:   verb,
-		target: target,
-		via:    resolution.Provider,
-		detail: resolution.Reason,
-		after:  strings.TrimSpace(after),
+		verb:     verb,
+		target:   target,
+		via:      resolution.Provider,
+		detail:   resolution.Reason,
+		after:    strings.TrimSpace(after),
+		effects:  preview.Effects,
+		warnings: preview.Warnings,
 	}
 }
 
 // removeChange describes what removing a package would do.
-func removeChange(pkg model.Package, resolution model.Resolution) change {
+func removeChange(pkg model.Package, resolution model.Resolution, preview model.PlannedAction) change {
 	return change{
 		verb:   "Remove",
 		target: pkg.Spec(),
 		via:    resolution.Provider,
 		detail: "uninstalls through " + resolution.Provider +
 			" and deletes the entry from the configuration",
+		effects:  preview.Effects,
+		warnings: preview.Warnings,
 	}
 }
 

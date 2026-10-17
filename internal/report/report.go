@@ -26,6 +26,17 @@ import (
 type Writer struct {
 	out    io.Writer
 	asJSON bool
+	// verbose lists every effect in human output, not only destructive ones.
+	verbose bool
+	// context are warnings about the run itself (running elevated), carried
+	// by every operation response.
+	context      []model.Warning
+	contextShown bool
+	// dryRunTransitions renders transition effects as predictions.
+	dryRunTransitions bool
+	// transitionDetail lists each transition's effects and warnings, for the
+	// transition command; sync shows them under its actions instead.
+	transitionDetail bool
 }
 
 // New builds a Writer.
@@ -67,7 +78,19 @@ func (w *Writer) JSON() bool { return w.asJSON }
 // `ActionResult`, and drops `operations` and the nested `applied` entirely.
 // `install .` flattens the several results it runs into one list rather than
 // nesting them. This is a breaking change; nothing here is in wide use yet.
-const SchemaVersion = 4
+//
+// Version 5 makes every action say what it did. Each ActionResult gains its
+// outcome, its provider and version transitions, the configuration entries it
+// edits, every effect on the machine (paths created, modified, replaced or
+// deleted, packages installed or uninstalled, commands that start or stop
+// resolving, shell profiles that changed) with a destructive flag, and the
+// structured warnings that concern it. Warnings gain a stable code. Every
+// command that changes anything carries the same top-level operation fields
+// (operation, dry_run, config_changed, config_path, actions, warnings,
+// summary), so install and remove report warnings and dry runs again, and
+// transition reports actions. Old fields keep their meaning except `result`,
+// which was always empty and now carries the outcome.
+const SchemaVersion = 5
 
 // respond emits one flat JSON object: schema_version plus the given fields.
 //
@@ -100,26 +123,6 @@ func flatten(v any) map[string]any {
 		return map[string]any{"data": v}
 	}
 	return m
-}
-
-// ActionsFromResults flattens the engine results from a multi-step command
-// (such as `starpoint install .`, which installs a project's declared packages
-// and then runs its dependency installer) into one documented action list.
-//
-// It exists because every command now shares one shape. Previously `install .`
-// nested its results under an `operations` key, which was the only place the
-// engine's full `Result` leaked into machine-readable output.
-func ActionsFromResults(results ...*engine.Result) []ActionResult {
-	var out []ActionResult
-	for _, r := range results {
-		if r == nil {
-			continue
-		}
-		for _, a := range r.Applied {
-			out = append(out, actionResult(a))
-		}
-	}
-	return out
 }
 
 // ListItem is one row of `starpoint list`.
@@ -285,33 +288,19 @@ type SyncResult struct {
 	Actions       []ActionResult     `json:"actions"`
 	Transitions   []model.Transition `json:"transitions,omitempty"`
 	States        []model.State      `json:"states"`
-	Warnings      []model.Warning    `json:"warnings,omitempty"`
+	Warnings      []model.Warning    `json:"warnings"`
 	Problems      []string           `json:"problems,omitempty"`
 	Project       *project.Info      `json:"project,omitempty"`
-}
-
-// ActionResult is one applied or planned action.
-type ActionResult struct {
-	Action   string `json:"action"`
-	Package  string `json:"package"`
-	Provider string `json:"provider,omitempty"`
-	Note     string `json:"note,omitempty"`
-	Result   string `json:"result,omitempty"`
+	Summary       Summary            `json:"summary"`
 }
 
 // Sync renders the outcome of a sync.
 func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) error {
-	actions := []ActionResult{}
-	seen := map[string]bool{}
-	for _, a := range plan.Actions {
-		actions = append(actions, actionResult(a))
-		seen[a.State.Package.Name] = true
-	}
-	for _, a := range res.Applied {
-		if seen[a.State.Package.Name] {
-			continue
-		}
-		actions = append(actions, actionResult(a))
+	engineActions := syncActions(res, plan)
+	warnings := mergeWarnings(append([]model.Warning{}, w.context...), res.Warnings...)
+	actions, warnings := buildActions(res.DryRun, warnings, engineActions)
+	if warnings == nil {
+		warnings = []model.Warning{}
 	}
 	transitions := append(append([]model.Transition{}, plan.Transitions...), res.Transitions...)
 	out := SyncResult{
@@ -321,8 +310,9 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 		Actions:       actions,
 		Transitions:   dedupeTransitions(transitions),
 		States:        plan.States,
-		Warnings:      res.Warnings,
+		Warnings:      warnings,
 		Project:       proj,
+		Summary:       summarize(actions, warnings),
 	}
 	// Converged means every desired package is actually satisfied, which is
 	// stricter than having produced no actions.
@@ -336,6 +326,7 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 	if w.asJSON {
 		return w.respond(flatten(out))
 	}
+	w.writeContextWarnings()
 
 	if len(actions) == 0 {
 		// "No actions" is not the same claim as "everything is right". A package
@@ -357,11 +348,11 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 		w.writeWarnings(res.Warnings)
 		return nil
 	}
-	verb := "will"
+	verb := "were made"
 	if res.DryRun {
-		verb = "would"
+		verb = "would be made"
 	}
-	fmt.Fprintf(w.out, "%d change(s) %s be made:\n", len(actions), verb)
+	fmt.Fprintf(w.out, "%d change(s) %s:\n", len(actions), verb)
 	for _, a := range actions {
 		target := a.Package
 		if a.Provider != "" {
@@ -371,7 +362,11 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 		if a.Note != "" {
 			line += " (" + a.Note + ")"
 		}
+		if a.Result == string(model.OutcomeFailed) || a.Result == string(model.OutcomeNotRun) {
+			line += " [" + a.Result + "]"
+		}
 		fmt.Fprintln(w.out, line)
+		WriteEffects(w.out, a.Effects, res.DryRun, res.DryRun || w.verbose, "      ")
 	}
 	if res.DryRun {
 		fmt.Fprintln(w.out, "\nDry run: nothing was changed.")
@@ -382,8 +377,39 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 	if res.ConfigChanged {
 		fmt.Fprintf(w.out, "\nConfiguration updated: %s\n", res.ConfigPath)
 	}
-	w.writeWarnings(res.Warnings)
+	w.writeWarnings(warnings)
 	return nil
+}
+
+// syncActions lines up what sync planned with what it did. An applied action
+// replaces its plan entry, so the outcome and the observed effects are what
+// is reported; a planned action that never ran is reported as not run.
+func syncActions(res *engine.Result, plan model.Plan) []model.PlannedAction {
+	key := func(a model.PlannedAction) string { return string(a.Action) + "\x00" + a.State.Package.Name }
+	applied := map[string]model.PlannedAction{}
+	for _, a := range res.Applied {
+		applied[key(a)] = a
+	}
+	used := map[string]bool{}
+	var out []model.PlannedAction
+	for _, a := range plan.Actions {
+		k := key(a)
+		if done, ok := applied[k]; ok {
+			out = append(out, done)
+			used[k] = true
+			continue
+		}
+		if !res.DryRun {
+			a.Outcome = model.OutcomeNotRun
+		}
+		out = append(out, a)
+	}
+	for _, a := range res.Applied {
+		if !used[key(a)] {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // dedupeTransitions keeps one record per package, preferring the later phase. The
@@ -430,6 +456,37 @@ func countPending(ts []model.Transition) int {
 	return n
 }
 
+// TransitionsApplied renders transitions the transition command performed (or,
+// in a dry run, would perform). The JSON form carries the transitions as
+// before, plus the same operation fields every changing command reports, so
+// a provider move's effects read exactly like a sync's.
+func (w *Writer) TransitionsApplied(op string, ts []model.Transition, errs []error, dryRun bool) error {
+	if w.asJSON {
+		res := &engine.Result{DryRun: dryRun}
+		for i, t := range ts {
+			var err error
+			if i < len(errs) {
+				err = errs[i]
+			}
+			a := engine.TransitionAction(t, err, dryRun)
+			res.Applied = append(res.Applied, a)
+		}
+		fields := w.operationFields(op, dryRun, []*engine.Result{res})
+		delete(fields, "config_changed")
+		delete(fields, "config_path")
+		if ts == nil {
+			ts = []model.Transition{}
+		}
+		fields["transitions"] = ts
+		return w.respond(fields)
+	}
+	w.writeContextWarnings()
+	w.dryRunTransitions = dryRun
+	w.transitionDetail = true
+	defer func() { w.dryRunTransitions, w.transitionDetail = false, false }()
+	return w.Transitions(ts, dryRun)
+}
+
 // writeTransitions prints transitions with the evidence behind each decision. The
 // phase and the verification are the point: a user deciding whether to trust a
 // change of ownership needs to see why Starpoint believes it worked.
@@ -455,6 +512,21 @@ func (w *Writer) writeTransitions(ts []model.Transition) {
 		}
 		if t.Advice != "" {
 			fmt.Fprintf(w.out, "      next: %s\n", t.Advice)
+		}
+		if !w.transitionDetail {
+			// Sync lists these under its actions already.
+			continue
+		}
+		planned := w.dryRunTransitions
+		for _, eff := range t.Effects {
+			if eff.Evidence == model.EvidencePlanned {
+				planned = true
+				break
+			}
+		}
+		WriteEffects(w.out, t.Effects, planned, w.dryRunTransitions || w.verbose, "      ")
+		for _, warn := range t.Warnings {
+			fmt.Fprintf(w.out, "      %s [%s]: %s\n", warn.Severity, warn.Code, warn.Message)
 		}
 	}
 }
@@ -490,15 +562,6 @@ func (w *Writer) writeTransitionDetail(t model.Transition) error {
 	}
 	_, err := io.WriteString(w.out, b.String())
 	return err
-}
-
-func actionResult(a model.PlannedAction) ActionResult {
-	return ActionResult{
-		Action:   string(a.Action),
-		Package:  a.State.Package.Name,
-		Provider: a.State.Res.Provider,
-		Note:     a.Note,
-	}
 }
 
 // ProviderHealth is the machine-readable shape of the provider section of doctor.
@@ -705,26 +768,17 @@ func (w *Writer) pathRows(found []locator.Found) error {
 func (w *Writer) Result(op string, res *engine.Result) error {
 	changed := res.ConfigChanged && !res.DryRun
 	if w.asJSON {
-		actions := make([]ActionResult, 0, len(res.Applied))
-		for _, a := range res.Applied {
-			actions = append(actions, actionResult(a))
-		}
-		return w.respond(map[string]any{
-			"operation":      op,
-			"dry_run":        res.DryRun,
-			"config_changed": changed,
-			"config_path":    res.ConfigPath,
-			"actions":        actions,
-			"warnings":       res.Warnings,
-		})
+		return w.respond(w.operationFields(op, res.DryRun, []*engine.Result{res}))
 	}
-	for _, a := range res.Applied {
-		pkg := a.State.Package.Name
-		if a.State.Res.Provider != "" {
-			pkg += " via " + a.State.Res.Provider
+	w.writeContextWarnings()
+	actions, warnings := buildActions(res.DryRun, res.Warnings, res.Applied)
+	for _, a := range actions {
+		pkg := a.Package
+		if a.Provider != "" {
+			pkg += " via " + a.Provider
 		}
 		verb := op
-		switch a.Action {
+		switch model.Action(a.Action) {
 		case model.ActionAdopt:
 			verb = "record"
 		case model.ActionRemove:
@@ -732,11 +786,14 @@ func (w *Writer) Result(op string, res *engine.Result) error {
 		case model.ActionUpdate:
 			verb = "update"
 		}
-		if res.DryRun {
+		switch {
+		case res.DryRun:
 			// "would installed" is not English, and "installed" would be a lie
 			// about the machine: nothing happened.
 			verb = "would " + verb
-		} else {
+		case a.Result == string(model.OutcomeFailed):
+			verb = "failed to " + verb
+		default:
 			verb = pastTense(verb)
 		}
 		line := fmt.Sprintf("%s %s", verb, pkg)
@@ -744,77 +801,85 @@ func (w *Writer) Result(op string, res *engine.Result) error {
 			line += " (" + a.Note + ")"
 		}
 		fmt.Fprintln(w.out, line)
+		WriteEffects(w.out, a.Effects, res.DryRun, res.DryRun || w.verbose, "")
+		w.writeActionWarnings(a.Warnings, "  ")
 	}
 	if changed {
 		fmt.Fprintf(w.out, "Configuration updated: %s\n", res.ConfigPath)
 	} else if res.DryRun {
 		fmt.Fprintln(w.out, "Dry run: nothing was changed.")
 	}
-	for _, warn := range res.Warnings {
+	// Warnings that name no package belong to no action line.
+	for _, warn := range warnings {
+		if warn.Package != "" {
+			continue
+		}
+		if warn.Severity == model.SeverityInfo && !w.verbose {
+			continue
+		}
 		fmt.Fprintf(w.out, "warning: %s\n", warn.Message)
 	}
 	return nil
 }
 
 // Update renders the machine-readable result of `starpoint update`. It shares
-// install and remove's action shape and adds the pin conflicts that update can
-// report but the others cannot.
+// install and remove's operation fields and adds the pin conflicts that update
+// can report but the others cannot.
 func (w *Writer) Update(res *engine.Result) error {
 	if !w.asJSON {
 		return nil
 	}
-	actions := make([]ActionResult, 0, len(res.Applied))
-	for _, a := range res.Applied {
-		actions = append(actions, actionResult(a))
+	fields := w.operationFields("update", res.DryRun, []*engine.Result{res})
+	conflicts := res.PinConflicts
+	if conflicts == nil {
+		conflicts = []model.PinConflict{}
 	}
-	return w.respond(map[string]any{
-		"operation":      "update",
-		"dry_run":        res.DryRun,
-		"config_changed": res.ConfigChanged && !res.DryRun,
-		"config_path":    res.ConfigPath,
-		"actions":        actions,
-		"warnings":       res.Warnings,
-		"pin_conflicts":  res.PinConflicts,
-	})
+	fields["pin_conflicts"] = conflicts
+	return w.respond(fields)
 }
 
 // Prune renders `starpoint prune`.
 //
 // A dry run is only useful if it says what would go, so both the human and the
-// machine forms list the candidates. Reporting an empty result was how a user
-// could be told "nothing to do" and still have the next real run delete things.
+// machine forms list the candidates, with every file that would go with them.
+// Reporting an empty result was how a user could be told "nothing to do" and
+// still have the next real run delete things.
 func (w *Writer) Prune(res *engine.Result, dryRun bool) error {
-	actions := make([]ActionResult, 0, len(res.Applied))
-	for _, a := range res.Applied {
-		actions = append(actions, actionResult(a))
-	}
 	if w.asJSON {
-		return w.respond(map[string]any{
-			"operation": "prune",
-			"dry_run":   dryRun,
-			"actions":   actions,
-			"warnings":  res.Warnings,
-		})
+		return w.respond(w.operationFields("prune", dryRun, []*engine.Result{res}))
 	}
-	for _, warn := range res.Warnings {
-		fmt.Fprintf(w.out, "  %s\n", warn.Message)
+	w.writeContextWarnings()
+	actions, warnings := buildActions(dryRun, res.Warnings, res.Applied)
+	for _, warn := range warnings {
+		if warn.Package == "" {
+			fmt.Fprintf(w.out, "  %s\n", warn.Message)
+		}
 	}
 	if len(actions) == 0 {
-		if len(res.Warnings) == 0 {
+		if len(warnings) == 0 {
 			fmt.Fprintln(w.out, "No orphaned software found.")
 		}
 		return nil
 	}
-	verb := "Removed"
-	if dryRun {
-		verb = "Would remove"
-	}
 	for _, a := range actions {
+		verb := "Removed"
+		switch {
+		case dryRun:
+			verb = "Would remove"
+		case a.Result == string(model.OutcomeFailed):
+			verb = "Failed to remove"
+		}
 		pkg := a.Package
 		if a.Provider != "" {
 			pkg += " via " + a.Provider
 		}
-		fmt.Fprintf(w.out, "%s %s\n", verb, pkg)
+		line := fmt.Sprintf("%s %s", verb, pkg)
+		if a.Error != "" {
+			line += " (" + a.Error + ")"
+		}
+		fmt.Fprintln(w.out, line)
+		WriteEffects(w.out, a.Effects, dryRun, dryRun || w.verbose, "")
+		w.writeActionWarnings(a.Warnings, "  ")
 	}
 	return nil
 }

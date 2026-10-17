@@ -95,6 +95,13 @@ func renderers() map[string]func(w *Writer) error {
 		"prune": func(w *Writer) error {
 			return w.Prune(&engine.Result{Applied: []model.PlannedAction{sampleAction()}}, true)
 		},
+		"operation": func(w *Writer) error {
+			return w.Operation("install", false, []*engine.Result{{Applied: []model.PlannedAction{sampleAction()}}},
+				map[string]any{"lookup": []engine.Survey{}})
+		},
+		"transition-applied": func(w *Writer) error {
+			return w.TransitionsApplied("transition", []model.Transition{sampleTransition()}, nil, false)
+		},
 		"init": func(w *Writer) error {
 			return w.Init("/home/u/.starpoint.toml", true, false)
 		},
@@ -172,7 +179,7 @@ func TestNoRendererReintroducesAVersion1Wrapper(t *testing.T) {
 // Every action list is the documented ActionResult shape, not the engine's
 // internal planned action. The documented type is the contract.
 func TestActionListsUseTheDocumentedActionResult(t *testing.T) {
-	for _, name := range []string{"install", "remove", "update", "prune", "sync"} {
+	for _, name := range []string{"install", "remove", "update", "prune", "sync", "operation", "transition-applied"} {
 		t.Run(name, func(t *testing.T) {
 			var buf bytes.Buffer
 			if err := renderers()[name](New(&buf, true)); err != nil {
@@ -210,5 +217,107 @@ func TestEmptyCollectionsAreArraysNotNull(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), `"actions": []`) {
 		t.Errorf("an empty action list should be an empty array:\n%s", buf.String())
+	}
+}
+
+// actionKeys is the version 5 ActionResult: the version 4 fields plus what the
+// action did. A key missing here is a field a consumer can no longer rely on.
+var actionKeys = []string{"action", "package", "result", "dry_run", "destructive",
+	"transitions", "config_changes", "effects", "warnings"}
+
+// operationKeys are the top-level fields every command that changes anything
+// carries.
+var operationKeys = []string{"operation", "dry_run", "actions", "warnings", "summary"}
+
+func TestEveryChangingCommandCarriesTheOperationFieldsAndFullActions(t *testing.T) {
+	for _, name := range []string{"install", "remove", "update", "prune", "operation", "transition-applied", "sync"} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := renderers()[name](New(&buf, true)); err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range operationKeys {
+				if name == "sync" && key == "operation" {
+					continue
+				}
+				if _, ok := payload[key]; !ok {
+					t.Errorf("missing top-level %q:\n%s", key, buf.String())
+				}
+			}
+			actions, _ := payload["actions"].([]any)
+			for _, raw := range actions {
+				a := raw.(map[string]any)
+				for _, key := range actionKeys {
+					v, ok := a[key]
+					if !ok {
+						t.Errorf("action is missing %q: %v", key, a)
+						continue
+					}
+					if v == nil {
+						t.Errorf("action %q is null, not an empty collection: %v", key, a)
+					}
+				}
+			}
+			summary, _ := payload["summary"].(map[string]any)
+			for _, key := range []string{"actions", "destructive", "destructive_packages", "warnings", "effects"} {
+				if _, ok := summary[key]; !ok {
+					t.Errorf("summary is missing %q: %v", key, summary)
+				}
+			}
+		})
+	}
+}
+
+// The top-level warnings aggregate every action's warnings, and an action's
+// warnings include the top-level ones about its package, so the two never
+// disagree.
+func TestActionWarningsAndTopLevelWarningsAgree(t *testing.T) {
+	a := sampleAction()
+	a.Warnings = []model.Warning{{Severity: model.SeverityWarn, Code: model.WarnNotOnPath, Package: "ripgrep", Message: "not on PATH"}}
+	res := &engine.Result{
+		Applied: []model.PlannedAction{a},
+		Warnings: []model.Warning{
+			{Severity: model.SeverityError, Code: model.WarnVerificationFailed, Package: "ripgrep", Message: "broken"},
+			{Severity: model.SeverityInfo, Code: model.WarnProviderUnavailable, Provider: "apt", Message: "not available"},
+		},
+	}
+	var buf bytes.Buffer
+	if err := New(&buf, true).Result("install", res); err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Actions []struct {
+			Warnings []model.Warning `json:"warnings"`
+		} `json:"actions"`
+		Warnings []model.Warning `json:"warnings"`
+		Summary  Summary         `json:"summary"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Warnings) != 3 {
+		t.Errorf("top level holds every warning once: %+v", payload.Warnings)
+	}
+	if len(payload.Actions[0].Warnings) != 2 {
+		t.Errorf("the action holds its own warning and the one naming its package: %+v", payload.Actions[0].Warnings)
+	}
+	if payload.Summary.Warnings["error"] != 1 || payload.Summary.Warnings["info"] != 1 {
+		t.Errorf("summary counts by severity: %+v", payload.Summary.Warnings)
+	}
+}
+
+func TestContextWarningsReachEveryOperation(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, true)
+	w.SetContextWarnings(model.Warning{Severity: model.SeverityWarn, Code: model.WarnElevated, Message: "root"})
+	if err := w.Prune(&engine.Result{}, true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `"running-elevated"`) {
+		t.Errorf("an elevated run is reported on every operation:\n%s", buf.String())
 	}
 }

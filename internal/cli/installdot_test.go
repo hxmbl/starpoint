@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/hxmbl/starpoint/internal/model"
 	"github.com/hxmbl/starpoint/internal/testsupport"
 )
 
@@ -128,5 +131,46 @@ func TestInstallDotReportsAFailedDependencyInstall(t *testing.T) {
 	code, _, errOut := h.run("install", ".", "--no-confirm")
 	if code == 0 || !strings.Contains(errOut, "npm") {
 		t.Errorf("a dependency install that cannot run must fail and say why, got %d %q", code, errOut)
+	}
+}
+
+func TestInstallDotReportsWhatTheDependencyInstallerChanged(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	dir := nodeProject(t, h)
+	h.env.RunInDir = func(_ context.Context, d string, _, _ io.Writer, name string, args ...string) error {
+		if err := os.MkdirAll(filepath.Join(d, "node_modules"), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(d, "package-lock.json"), []byte(`{"lockfileVersion":3}`), 0o644)
+	}
+	out := h.mustRun("install", ".", "--no-confirm", "--json")
+	var payload struct {
+		Dependencies struct {
+			Effects []model.Effect `json:"effects"`
+		} `json:"dependencies"`
+		Summary map[string]any `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	var created, rewritten bool
+	for _, e := range payload.Dependencies.Effects {
+		if e.Path == filepath.Join(dir, "node_modules") && e.Op == model.EffectCreate && e.Kind == model.EffectDirectory {
+			created = true
+		}
+		if e.Path == filepath.Join(dir, "package-lock.json") && e.Destructive {
+			rewritten = true
+		}
+	}
+	if !created || !rewritten {
+		t.Errorf("the installer's effects on the project are reported: %+v", payload.Dependencies.Effects)
+	}
+	if payload.Summary == nil {
+		t.Error("install . carries the operation summary")
+	}
+
+	dry := h.mustRun("install", ".", "--dry-run")
+	if !strings.Contains(dry, "would modify directory "+dir) {
+		t.Errorf("the dry run says where the installer will write:\n%s", dry)
 	}
 }

@@ -420,3 +420,41 @@ func TestDoctorSummarisesThePATHInventoryByDefault(t *testing.T) {
 		t.Error("JSON keeps the full inventory and the summary")
 	}
 }
+
+func TestEffectLinesReadAsSentences(t *testing.T) {
+	cases := []struct {
+		e       model.Effect
+		planned bool
+		want    string
+	}{
+		{model.Effect{Op: model.EffectDelete, Kind: model.EffectSymlink, Path: "/x/bin/ruff", From: "/x/uv/ruff"}, false, "deleted symlink /x/bin/ruff → /x/uv/ruff"},
+		{model.Effect{Op: model.EffectDelete, Kind: model.EffectPackage, Name: "ruff", From: "0.5.0", Provider: "uv"}, true, "would uninstall ruff 0.5.0 (uv)"},
+		{model.Effect{Op: model.EffectModify, Kind: model.EffectPackage, Name: "ruff", From: "0.5.0", To: "0.6.0", Provider: "uv"}, false, "changed ruff 0.5.0 → 0.6.0 (uv)"},
+		{model.Effect{Op: model.EffectDelete, Kind: model.EffectCommand, Name: "ruff", From: "/x/bin/ruff"}, false, "ruff no longer resolves on PATH (was /x/bin/ruff)"},
+		{model.Effect{Op: model.EffectReplace, Kind: model.EffectFile, Path: "/x/bin/cowsay"}, true, "would replace file /x/bin/cowsay"},
+		{model.Effect{Op: model.EffectModify, Kind: model.EffectShellProfile, Path: "/x/.bashrc"}, false, "modified shell profile /x/.bashrc"},
+		{model.Effect{Op: model.EffectCreate, Kind: model.EffectFile, Path: "/y/z", Evidence: model.EvidenceReported}, false, "created file /y/z (reported by the provider)"},
+	}
+	for _, tc := range cases {
+		if got := EffectLine(tc.e, tc.planned); got != tc.want {
+			t.Errorf("EffectLine(%+v) = %q, want %q", tc.e, got, tc.want)
+		}
+	}
+}
+
+func TestWriteEffectsAlwaysShowsDestructiveAndCountsTheRest(t *testing.T) {
+	effects := []model.Effect{
+		{Op: model.EffectCreate, Kind: model.EffectFile, Path: "/a"},
+		{Op: model.EffectDelete, Kind: model.EffectFile, Path: "/b", Destructive: true},
+	}
+	var quiet, all strings.Builder
+	WriteEffects(&quiet, effects, false, false, "")
+	WriteEffects(&all, effects, false, true, "")
+	if !strings.Contains(quiet.String(), "! deleted file /b") || strings.Contains(quiet.String(), "/a") ||
+		!strings.Contains(quiet.String(), "1 other change(s)") {
+		t.Errorf("default output shows destructive effects and counts the rest:\n%s", quiet.String())
+	}
+	if !strings.Contains(all.String(), "created file /a") {
+		t.Errorf("full output lists everything:\n%s", all.String())
+	}
+}

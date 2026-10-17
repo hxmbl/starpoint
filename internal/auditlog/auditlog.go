@@ -27,6 +27,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hxmbl/starpoint/internal/model"
 )
 
 // Event names. They are stable strings so a consumer can filter without parsing
@@ -74,6 +76,14 @@ type Entry struct {
 	Exit int `json:"exit,omitempty"`
 	// Detail is a human-readable explanation, never machine-parsed.
 	Detail string `json:"detail,omitempty"`
+	// Destructive marks an action that removed or overwrote something.
+	Destructive bool `json:"destructive,omitempty"`
+	// Effects are what an action changed on the machine: every path created,
+	// modified, replaced or deleted, as observed when it ran.
+	Effects []model.Effect `json:"effects,omitempty"`
+	// Elevated records that the command ran as root or as an elevated
+	// administrator, so its effects landed in that account's environment.
+	Elevated bool `json:"elevated,omitempty"`
 }
 
 // fileLayout is the rotation scheme: one file per UTC day.

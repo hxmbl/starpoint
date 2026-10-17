@@ -14,6 +14,7 @@ import (
 
 	"github.com/hxmbl/starpoint/internal/auditlog"
 	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/elevation"
 	"github.com/hxmbl/starpoint/internal/engine"
 	"github.com/hxmbl/starpoint/internal/locator"
 	"github.com/hxmbl/starpoint/internal/model"
@@ -53,6 +54,8 @@ type harness struct {
 	choices []string
 	// ran records commands run by `install .`, as "dir: command".
 	ran []string
+	// home is the harness's home directory for shell-profile watching.
+	home string
 }
 
 // ask makes the harness answer every confirmation with the given answer.
@@ -111,7 +114,9 @@ func newHarness(t *testing.T, configBody string) *harness {
 
 	out := &bytes.Buffer{}
 	errBuf := &bytes.Buffer{}
-	h := &harness{t: t, stdout: out, stderr: errBuf}
+	// A home of its own, so the shell profiles an action is watched against
+	// are never the developer's.
+	h := &harness{t: t, stdout: out, stderr: errBuf, home: t.TempDir()}
 	env := &Env{
 		Stdout:       out,
 		Stderr:       errBuf,
@@ -140,6 +145,9 @@ func newHarness(t *testing.T, configBody string) *harness {
 			h.choices = append(h.choices, question)
 			return options[0], nil
 		},
+		// Whoever runs the suite, the harness runs as an ordinary user unless
+		// a test says otherwise.
+		Elevation: func() elevation.Status { return elevation.Status{} },
 		// Dependency installs are recorded, never run.
 		RunInDir: func(_ context.Context, dir string, _, _ io.Writer, name string, args ...string) error {
 			h.ran = append(h.ran, dir+": "+strings.TrimSpace(name+" "+strings.Join(args, " ")))
@@ -151,7 +159,7 @@ func newHarness(t *testing.T, configBody string) *harness {
 	// The state directory is the harness's own, so a test run never writes
 	// transition history or run records into the developer's real ~/.starpoint.
 	env.newEngineFn = func() *engine.Engine {
-		eng := engine.New(env.registry(), env.loc(), engine.WithStateDir(env.stateDir()))
+		eng := engine.New(env.registry(), env.loc(), engine.WithStateDir(env.stateDir()), engine.WithHome(h.home))
 		eng.SetTracker(tracker)
 		return eng
 	}
