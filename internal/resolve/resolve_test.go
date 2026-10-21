@@ -8,6 +8,7 @@ import (
 	"github.com/hxmbl/starpoint/internal/provider"
 	"github.com/hxmbl/starpoint/internal/providers/brew"
 	"github.com/hxmbl/starpoint/internal/providers/cargo"
+	"github.com/hxmbl/starpoint/internal/providers/flatpak"
 	"github.com/hxmbl/starpoint/internal/providers/npm"
 	"github.com/hxmbl/starpoint/internal/providers/rustup"
 	"github.com/hxmbl/starpoint/internal/providers/system"
@@ -543,5 +544,95 @@ func TestAKnownEcosystemIsStillNotAmbiguous(t *testing.T) {
 	got := New(reg).Resolve(Input{Package: model.Package{Name: "ruff"}, Available: health})
 	if got.Ambiguous || got.Provider != uv.Name {
 		t.Errorf("a name that identifies its ecosystem is decided, got %+v", got)
+	}
+}
+
+// A Flatpak application ID is the one name shape that identifies its own
+// ecosystem. Without this rule, an app ID on a machine with apt or brew is
+// resolved to that manager, which cannot install it and never offers Flatpak.
+func TestReverseDNSNameResolvesToFlatpak(t *testing.T) {
+	reg, health := buildRegistry(t,
+		spec{name: "apt", kind: provider.KindApt, caps: fullCaps(model.ScopeGlobal), available: true},
+		spec{name: flatpak.Name, kind: provider.KindFlatpak, caps: fullCaps(model.ScopeGlobal), available: true},
+	)
+	expl := New(reg).Explain(Input{Package: model.Package{Name: "org.gimp.GIMP"}, Available: health})
+	if expl.Final.Provider != flatpak.Name {
+		t.Fatalf("an application ID belongs to Flatpak, got %+v", expl.Final)
+	}
+	if expl.Final.Ambiguous {
+		t.Error("the name identifies the ecosystem; there is nothing to ask about")
+	}
+	applied := false
+	for _, step := range expl.Steps {
+		if step.Rule == "application ID" && step.Applied {
+			applied = true
+		}
+	}
+	if !applied {
+		t.Errorf("the decision must be traceable to the application-ID rule: %+v", expl.Steps)
+	}
+}
+
+func TestReverseDNSNameFallsThroughWhenFlatpakIsMissing(t *testing.T) {
+	reg, health := buildRegistry(t,
+		spec{name: brew.Name, kind: provider.KindBrew, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: flatpak.Name, kind: provider.KindFlatpak, caps: fullCaps(model.ScopeGlobal), available: false},
+	)
+	got := New(reg).Resolve(Input{Package: model.Package{Name: "org.gimp.GIMP"}, Available: health})
+	if got.Provider != brew.Name {
+		t.Errorf("an unavailable Flatpak must not be chosen, got %+v", got)
+	}
+}
+
+func TestReverseDNSNameRespectsTheAllowedSet(t *testing.T) {
+	reg, health := buildRegistry(t,
+		spec{name: brew.Name, kind: provider.KindBrew, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: flatpak.Name, kind: provider.KindFlatpak, caps: fullCaps(model.ScopeGlobal), available: true},
+	)
+	got := New(reg).Resolve(Input{
+		Package:   model.Package{Name: "org.gimp.GIMP"},
+		Available: health,
+		Allowed:   []string{brew.Name},
+	})
+	if got.Provider != brew.Name {
+		t.Errorf("an explicit restriction outranks the name-shape hint, got %+v", got)
+	}
+}
+
+func TestOrdinaryNamesAreNotApplicationIDs(t *testing.T) {
+	reg, health := buildRegistry(t,
+		spec{name: brew.Name, kind: provider.KindBrew, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: flatpak.Name, kind: provider.KindFlatpak, caps: fullCaps(model.ScopeGlobal), available: true},
+	)
+	got := New(reg).Resolve(Input{Package: model.Package{Name: "firefox"}, Available: health})
+	if got.Provider != brew.Name {
+		t.Errorf("an ordinary package name must not be routed to Flatpak, got %+v", got)
+	}
+}
+
+func TestIsAppID(t *testing.T) {
+	valid := []string{
+		"org.gimp.GIMP",
+		"com.spotify.Client",
+		"io.github.foo_bar",
+		"md.obsidian.Obsidian",
+	}
+	for _, name := range valid {
+		if !isAppID(name) {
+			t.Errorf("%q has the shape of an application ID", name)
+		}
+	}
+	invalid := []string{
+		"firefox",
+		"lodash.merge",       // two elements is an npm name, not a D-Bus name
+		"org..GIMP",          // an empty element is invalid
+		"1org.gimp.GIMP",     // an element may not start with a digit
+		"org.gimp.GIMP/x",    // a path, not an ID
+		"org.gimp.GIMP beta", // whitespace is not allowed
+	}
+	for _, name := range invalid {
+		if isAppID(name) {
+			t.Errorf("%q is not an application ID", name)
+		}
 	}
 }

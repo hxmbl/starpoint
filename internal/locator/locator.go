@@ -21,8 +21,11 @@ import (
 	"github.com/hxmbl/starpoint/internal/provider"
 	"github.com/hxmbl/starpoint/internal/providers/brew"
 	"github.com/hxmbl/starpoint/internal/providers/cargo"
+	"github.com/hxmbl/starpoint/internal/providers/flatpak"
 	"github.com/hxmbl/starpoint/internal/providers/golang"
+	"github.com/hxmbl/starpoint/internal/providers/nix"
 	"github.com/hxmbl/starpoint/internal/providers/npm"
+	"github.com/hxmbl/starpoint/internal/providers/snap"
 	"github.com/hxmbl/starpoint/internal/providers/system"
 	"github.com/hxmbl/starpoint/internal/providers/uv"
 )
@@ -305,8 +308,16 @@ var attributionRules = []prefix{
 	{path: "Ruby/Gems", owner: "gem", scope: model.ScopeGlobal},
 	{path: ".gem/ruby", owner: "gem", scope: model.ScopeUser},
 
+	{path: ".nix-profile/bin", owner: nix.Name, scope: model.ScopeUser},
+
 	{path: ".cargo/bin", owner: cargo.Name, scope: model.ScopeUser},
 	{path: "go/bin", owner: golang.Name, scope: model.ScopeUser},
+
+	// System application installations. A flatpak app's exported command is
+	// named after its application ID, and snap's links are named after the apps
+	// they wrap.
+	{path: "/var/lib/flatpak/exports/bin", owner: flatpak.Name, scope: model.ScopeGlobal},
+	{path: "/snap/bin", owner: snap.Name, scope: model.ScopeGlobal},
 
 	{path: ".npm-global/bin", owner: npm.Name, scope: model.ScopeUser},
 	{path: ".nvm/versions/node", owner: npm.Name, scope: model.ScopeUser},

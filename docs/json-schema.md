@@ -192,10 +192,10 @@ for an action that runs no provider.
 
 | Provider | `privilege` under sudo or doas |
 | --- | --- |
-| `uv`, `pip`, `cargo`, `go`, `rustup` | `user` |
+| `uv`, `pip`, `cargo`, `go`, `rustup`, `nix` | `user` |
 | `npm`, `pnpm`, `yarn`, `gem` | `user` when the global prefix or directory (asked as the user) is in their home or owned by them, `root` otherwise |
 | `brew` | `user` when the Homebrew prefix belongs to them, `root` otherwise (Homebrew then refuses root itself) |
-| `apt`, `dnf`, `pacman`, `system` | `root` |
+| `apt`, `dnf`, `pacman`, `system`, `flatpak`, `snap` | `root` |
 
 ### ActionTransition
 

@@ -179,6 +179,9 @@ func TestHostProviderLocationsAreAttributed(t *testing.T) {
 		"/Users/u/.config/yarn/global/node_modules/tsc":                "yarn",
 		"/Library/Ruby/Gems/2.6.0/gems/minitest-5.11.3":                "gem",
 		"/Users/u/.gem/ruby/3.2.0/gems/rake-13.0.6":                    "gem",
+		"/Users/u/.nix-profile/bin/rg":                                 "nix",
+		"/snap/bin/lxc":                                                "snap",
+		"/var/lib/flatpak/exports/bin/org.gimp.GIMP":                   "flatpak",
 	}
 	for path, want := range cases {
 		loc := pathLocator(map[string]string{"tool": path})

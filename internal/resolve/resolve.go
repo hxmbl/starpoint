@@ -11,7 +11,9 @@
 //     this project exists to avoid.
 //  3. Otherwise, prefer the ecosystem-native provider over a general-purpose
 //     system package manager. `ruff` is a Python tool; brew has a copy of it,
-//     but uv is the right home.
+//     but uv is the right home. A name that identifies its own ecosystem by
+//     shape (a Flatpak reverse-DNS application ID) and the ecosystem of the
+//     project Starpoint runs in are the same kind of signal.
 //
 // When those rules do not produce a clear winner the resolver reports ambiguity
 // rather than guessing, so the CLI can ask a useful question.
@@ -25,6 +27,7 @@ import (
 	"github.com/hxmbl/starpoint/internal/locator"
 	"github.com/hxmbl/starpoint/internal/model"
 	"github.com/hxmbl/starpoint/internal/provider"
+	"github.com/hxmbl/starpoint/internal/providers/flatpak"
 	"github.com/hxmbl/starpoint/internal/providers/rustup"
 	"github.com/hxmbl/starpoint/internal/providers/system"
 )
@@ -70,7 +73,13 @@ var ecosystems = map[provider.Kind]ecosystem{
 // ecosystem-specific provider claims the software. Only providers Starpoint
 // actually implements belong here: naming one it does not have would produce a
 // resolution it cannot carry out.
-var systemManagers = []string{"brew", "apt", "dnf", "pacman"}
+//
+// Flatpak and Snap are deliberately absent. They are application ecosystems, not
+// general-purpose package managers: making every unrecognised name a three-way
+// choice between apt, flatpak and snap would turn a decision Starpoint can make
+// into a question it asks on almost every install. They remain reachable by
+// naming them explicitly.
+var systemManagers = []string{"brew", "apt", "dnf", "pacman", "nix"}
 
 // nameHints map well-known software names to the ecosystem that should own them.
 // This is intentionally small: it covers cases where the name itself implies a
@@ -313,6 +322,27 @@ func (r *Resolver) Explain(in Input) Explanation {
 	}
 	record("available providers", "found", "", fmt.Sprintf("%d candidate(s): %s", len(candidates), strings.Join(candidates, ", ")), false)
 
+	// Flatpak names applications with a reverse-DNS ID such as org.gimp.GIMP,
+	// and nothing else Starpoint installs uses that shape. Without this rule an
+	// app ID on a machine with a system package manager resolves to that
+	// manager, which cannot install it and never offers Flatpak at all.
+	if isAppID(in.Package.Name) {
+		if allowed(flatpak.Name) && available(flatpak.Name, in.Available) {
+			reason := "the name is a reverse-DNS application ID, which is how Flatpak names apps"
+			final = model.Resolution{
+				Provider:     flatpak.Name,
+				Reason:       reason,
+				Confidence:   model.ConfidenceHigh,
+				Alternatives: r.others(candidates, flatpak.Name),
+			}
+			record("application ID", "selected", flatpak.Name, reason, true)
+			return Explanation{Package: in.Package, Final: final, Steps: steps}
+		}
+		record("application ID", "skipped", "", "the name looks like an application ID, but flatpak is not available", false)
+	} else {
+		record("application ID", "skipped", "", "the package name is not a reverse-DNS application ID", false)
+	}
+
 	kind := hintKind(in.Package.Name)
 	if kind != "" {
 		if eco, ok := ecosystems[kind]; ok {
@@ -512,6 +542,42 @@ func (r *Resolver) others(candidates []string, exclude string) []string {
 // hintKind returns the ecosystem a name implies, if any.
 func hintKind(name string) provider.Kind {
 	return nameHints[strings.ToLower(name)]
+}
+
+// isAppID reports whether a name has the shape Flatpak requires for an
+// application ID: at least three dot-separated elements, each made of letters,
+// digits, underscores or hyphens, as in org.gimp.GIMP.
+//
+// The shape is a reliable signal rather than a guess: language packages use
+// dashes (or a slash for a scope), and no system package manager names anything
+// this way. Flatpak itself enforces the same form, so a name that matches it is
+// going to Flatpak or nowhere.
+func isAppID(name string) bool {
+	parts := strings.Split(name, ".")
+	if len(parts) < 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for i := 0; i < len(part); i++ {
+			c := part[i]
+			switch {
+			case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c == '_':
+				// Valid anywhere in an element.
+			case c == '-' || (c >= '0' && c <= '9'):
+				// Valid after the first byte: an element may not start
+				// with a digit or a hyphen.
+				if i == 0 {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // kindName renders a kind for humans.

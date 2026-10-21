@@ -249,10 +249,10 @@ where root is the point.
 
 | Provider | Under sudo/doas it runs as |
 |---|---|
-| `uv`, `pip` (always `--user`), `cargo`, `go`, `rustup` | the invoking user |
+| `uv`, `pip` (always `--user`), `cargo`, `go`, `rustup`, `nix` | the invoking user |
 | `npm`, `pnpm`, `yarn`, `gem` | the user when their global prefix / directory (asked as the user) is in the user's home or owned by them; root when it is a system location such as `/usr` |
 | `brew` | the user when the Homebrew prefix belongs to them (Homebrew runs as the owner of its prefix and refuses root); otherwise root, which Homebrew itself then refuses |
-| `apt`, `dnf`, `pacman`, `system` | root |
+| `apt`, `dnf`, `pacman`, `system`, `flatpak`, `snap` | root |
 | `install .` (a project's own installer) | the user when the project directory is theirs |
 
 A provider is classified once per run, so its inventory, install and
@@ -372,6 +372,9 @@ Implemented in this release:
 | `apt` | global | dpkg inventory, `pkg=version` pins, archive channel. |
 | `dnf` | global | RPM inventory and versioned package installation. |
 | `pacman` | global | Pacman inventory and repository installation. Arch repositories serve current versions only, so it cannot honour a version pin and says so rather than building a command that cannot work. |
+| `nix` | user | Profile packages through `nix profile`, installed as `nixpkgs#name`. Uses the unified CLI with experimental features enabled for its own invocations, so a Nix that has not enabled flakes still works. A Nix older than 2.4, or one still driven through `nix-env`, is reported unsupported rather than half-managed. |
+| `flatpak` | global | The system installation: application IDs, runtimes excluded, a branch (`stable`, `beta`) as the channel. Per-user installations are not enumerated or modified. |
+| `snap` | global | snapd's inventory and channels. Never grants classic confinement on its own: that is a decision about unrestricted access, and the failure says so. |
 | `uv` | user | Python tools and interpreters, `==` pins. |
 | `pip` | user | Python packages, installed with `--user` so pip never needs root. Locations come from `pip show -f`: the console script when there is one, otherwise the package directory. |
 | `rustup` | user | Rust toolchains: `rustc`, `cargo`, `rustfmt` and friends, plus the toolchains themselves. |
@@ -387,10 +390,10 @@ asks what a provider can do rather than branching on provider names, so adding
 an ecosystem does not mean touching the engine.
 
 **The compatibility target is the machine.** Every package manager installed on
-this project's development host is implemented. Docker and Podman manage
-containers rather than software on the machine. Bun, Deno, Nix, and version
-managers remain deferred until Starpoint can report their ownership and
-placement reliably.
+this project's development host is implemented, plus the non-Windows package
+managers the model needed next: Nix profiles, Flatpak's system installation and
+Snap. Docker and Podman manage containers rather than software on the machine.
+Bun, Deno, winget, Chocolatey and version managers remain deferred.
 
 ### Operations and completion
 
@@ -581,9 +584,9 @@ suite substitutes a scripted command runner and in-memory providers.
 - HTTP API. The internal model is already machine-readable and `--json` exposes
   it. A server can be added later without reshaping anything.
 - GUI.
-- Additional ecosystems such as Bun, Deno, Nix, mise/asdf, winget, Chocolatey,
-  Composer, Maven/Gradle, NuGet, SwiftPM, CocoaPods, vcpkg, Conda, Flatpak and
-  Snap remain candidates.
+- Additional ecosystems such as Bun, Deno, mise/asdf, winget, Chocolatey,
+  Composer, Maven/Gradle, NuGet, SwiftPM, CocoaPods, vcpkg and Conda remain
+  candidates.
 - A universal project dependency system. `starpoint install .` delegates to each
   ecosystem's own installer, chosen by a narrow, documented rule set, rather
   than pretending one command can understand every ecosystem.
@@ -603,6 +606,10 @@ suite substitutes a scripted command runner and in-memory providers.
 - `gem list --local` does not say which installation home a gem is in, so `gem`
   reports the placement that applies by default. `gem list -d <name>` is the way to
   tell two homes apart.
+- Flatpak is managed as the system installation. An app installed with
+  `flatpak install --user` is not enumerated and installing the same ID through
+  Starpoint creates a separate system copy; Flatpak treats the two installations
+  as independent, and Starpoint follows it rather than moving apps between them.
 - The yarn classic command surface is implemented from its documented behaviour;
   only Yarn Berry could be verified on the host, which correctly reports that it
   cannot manage globals. A real yarn 1.x install has not been exercised.

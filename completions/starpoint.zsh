@@ -8,7 +8,7 @@ _starpoint() {
   local cmd word
   commands=(init sync list ls info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover logging logs help)
   globals=(--json --provider --force --context --verbose --color --allow-destructive --allow-root --version --help)
-  providers=(apt brew cargo dnf gem go npm pacman pip pnpm rustup system uv yarn)
+  providers=(apt brew cargo dnf flatpak gem go nix npm pacman pip pnpm rustup snap system uv yarn)
 
   if [[ ${words[CURRENT-1]} == --provider || ${words[CURRENT-1]} == -p ]]; then
     compadd -- $providers

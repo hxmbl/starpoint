@@ -3,9 +3,10 @@
 //
 // Under `sudo starpoint install ruff` Starpoint runs as root on behalf of the
 // user who typed sudo. Package managers that install into that user's home
-// (uv, pip --user, Cargo, Go, rustup, and npm, pnpm, yarn, gem or Homebrew
-// when their prefix belongs to the user) have no use for root, and running
-// them as root is what leaves root-owned files behind in the user's home.
+// (uv, pip --user, Cargo, Go, rustup, Nix profiles, and npm, pnpm, yarn, gem
+// or Homebrew when their prefix belongs to the user) have no use for root, and
+// running them as root is what leaves root-owned files behind in the user's
+// home.
 // For those providers Starpoint starts the command as the user: their uid,
 // primary gid and supplementary groups, and an environment built for them
 // rather than inherited from root.

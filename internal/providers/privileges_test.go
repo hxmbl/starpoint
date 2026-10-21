@@ -19,15 +19,18 @@ import (
 // documents under "Running as root"; a provider added without a line here fails
 // TestEveryBuiltInProviderIsClassified.
 var wantPrivilege = map[string]provider.Privilege{
-	"uv":     provider.PrivilegeUser,
-	"pip":    provider.PrivilegeUser,
-	"cargo":  provider.PrivilegeUser,
-	"go":     provider.PrivilegeUser,
-	"rustup": provider.PrivilegeUser,
-	"apt":    provider.PrivilegeRoot,
-	"dnf":    provider.PrivilegeRoot,
-	"pacman": provider.PrivilegeRoot,
-	"system": provider.PrivilegeRoot,
+	"uv":      provider.PrivilegeUser,
+	"pip":     provider.PrivilegeUser,
+	"cargo":   provider.PrivilegeUser,
+	"go":      provider.PrivilegeUser,
+	"rustup":  provider.PrivilegeUser,
+	"nix":     provider.PrivilegeUser,
+	"apt":     provider.PrivilegeRoot,
+	"dnf":     provider.PrivilegeRoot,
+	"pacman":  provider.PrivilegeRoot,
+	"system":  provider.PrivilegeRoot,
+	"flatpak": provider.PrivilegeRoot,
+	"snap":    provider.PrivilegeRoot,
 }
 
 // byLocation are the providers classified by where they install, and the

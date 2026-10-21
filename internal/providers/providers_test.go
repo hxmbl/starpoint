@@ -19,12 +19,13 @@ func TestDefaultRegistryCoversEveryPackageManagerOnTheHost(t *testing.T) {
 	// of these would mean the resolver can no longer see software it used to see.
 	want := []string{
 		"system", "brew", "apt",
-		"dnf", "pacman",
+		"dnf", "pacman", "nix",
 		"uv", "pip",
 		"rustup", "cargo",
 		"npm", "pnpm", "yarn",
 		"gem",
 		"go",
+		"flatpak", "snap",
 	}
 	for _, name := range want {
 		if _, ok := reg.Get(name); !ok {

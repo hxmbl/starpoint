@@ -4,7 +4,7 @@
 #
 # Keep in sync with internal/cli/help.go (commandFlags); a test checks it.
 set -l commands init sync list ls info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover logging logs help
-set -l providers apt brew cargo dnf gem go npm pacman pip pnpm rustup system uv yarn
+set -l providers apt brew cargo dnf flatpak gem go nix npm pacman pip pnpm rustup snap system uv yarn
 
 complete -c starpoint -f
 complete -c starpoint -n "not __fish_seen_subcommand_from $commands" -a "$commands"

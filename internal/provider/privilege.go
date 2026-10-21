@@ -18,8 +18,8 @@ const (
 	// nothing but root-owned files in the user's home.
 	PrivilegeUser Privilege = "user"
 	// PrivilegeRoot providers install into system locations, where root is
-	// the point: apt, dnf, pacman, and npm, pnpm, yarn, gem or Homebrew when
-	// their prefix is a system directory.
+	// the point: apt, dnf, pacman, flatpak, snap, and npm, pnpm, yarn, gem or
+	// Homebrew when their prefix is a system directory.
 	PrivilegeRoot Privilege = "root"
 )
 

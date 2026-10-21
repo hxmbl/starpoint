@@ -11,13 +11,16 @@ import (
 	"github.com/hxmbl/starpoint/internal/providers/brew"
 	"github.com/hxmbl/starpoint/internal/providers/cargo"
 	"github.com/hxmbl/starpoint/internal/providers/dnf"
+	"github.com/hxmbl/starpoint/internal/providers/flatpak"
 	"github.com/hxmbl/starpoint/internal/providers/gem"
 	"github.com/hxmbl/starpoint/internal/providers/golang"
+	"github.com/hxmbl/starpoint/internal/providers/nix"
 	"github.com/hxmbl/starpoint/internal/providers/npm"
 	"github.com/hxmbl/starpoint/internal/providers/pacman"
 	"github.com/hxmbl/starpoint/internal/providers/pip"
 	"github.com/hxmbl/starpoint/internal/providers/pnpm"
 	"github.com/hxmbl/starpoint/internal/providers/rustup"
+	"github.com/hxmbl/starpoint/internal/providers/snap"
 	"github.com/hxmbl/starpoint/internal/providers/system"
 	"github.com/hxmbl/starpoint/internal/providers/uv"
 	"github.com/hxmbl/starpoint/internal/providers/yarn"
@@ -55,6 +58,7 @@ func New(pv *Privileges) *provider.Registry {
 		aptP    *apt.Provider
 		dnfP    *dnf.Provider
 		pacmanP *pacman.Provider
+		nixP    *nix.Provider
 		uvP     *uv.Provider
 		pipP    *pip.Provider
 		rustupP *rustup.Provider
@@ -64,6 +68,8 @@ func New(pv *Privileges) *provider.Registry {
 		yarnP   *yarn.Provider
 		gemP    *gem.Provider
 		goP     *golang.Provider
+		fpP     *flatpak.Provider
+		snapP   *snap.Provider
 	)
 	// Each runner asks for its provider lazily, because the provider is
 	// built with the runner.
@@ -72,6 +78,7 @@ func New(pv *Privileges) *provider.Registry {
 	aptP = apt.New(pv.Runner(func() provider.Provider { return aptP }))
 	dnfP = dnf.New(pv.Runner(func() provider.Provider { return dnfP }))
 	pacmanP = pacman.New(pv.Runner(func() provider.Provider { return pacmanP }))
+	nixP = nix.New(pv.Runner(func() provider.Provider { return nixP }), home)
 	uvP = uv.New(pv.Runner(func() provider.Provider { return uvP }), home)
 	pipP = pip.New(pv.Runner(func() provider.Provider { return pipP }))
 	rustupP = rustup.New(pv.Runner(func() provider.Provider { return rustupP }), home)
@@ -81,7 +88,9 @@ func New(pv *Privileges) *provider.Registry {
 	yarnP = yarn.New(pv.Runner(func() provider.Provider { return yarnP }))
 	gemP = gem.New(pv.Runner(func() provider.Provider { return gemP }))
 	goP = golang.New(pv.Runner(func() provider.Provider { return goP }), home)
-	for _, p := range []provider.Provider{sysP, brewP, aptP, dnfP, pacmanP, uvP, pipP, rustupP, cargoP, npmP, pnpmP, yarnP, gemP, goP} {
+	fpP = flatpak.New(pv.Runner(func() provider.Provider { return fpP }))
+	snapP = snap.New(pv.Runner(func() provider.Provider { return snapP }))
+	for _, p := range []provider.Provider{sysP, brewP, aptP, dnfP, pacmanP, nixP, uvP, pipP, rustupP, cargoP, npmP, pnpmP, yarnP, gemP, goP, fpP, snapP} {
 		reg.Register(p)
 	}
 	return reg
