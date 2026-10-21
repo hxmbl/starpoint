@@ -38,7 +38,7 @@ import (
 // Two tools are deliberately absent. Docker and Podman manage containers,
 // not software on this machine, and Bun and Deno cannot enumerate what they have
 // installed — a provider that cannot answer "what do you own?" would make
-// Starpoint's central promise false. Both are recorded in docs/next-tasks.md.
+// Starpoint's central promise false.
 func DefaultRegistry() *provider.Registry { return New(nil) }
 
 // New builds the built-in registry for a run whose privileges pv describes.

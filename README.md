@@ -390,7 +390,7 @@ an ecosystem does not mean touching the engine.
 this project's development host is implemented. Docker and Podman manage
 containers rather than software on the machine. Bun, Deno, Nix, and version
 managers remain deferred until Starpoint can report their ownership and
-placement reliably; see `docs/next-tasks.md`.
+placement reliably.
 
 ### Operations and completion
 
@@ -583,7 +583,7 @@ suite substitutes a scripted command runner and in-memory providers.
 - GUI.
 - Additional ecosystems such as Bun, Deno, Nix, mise/asdf, winget, Chocolatey,
   Composer, Maven/Gradle, NuGet, SwiftPM, CocoaPods, vcpkg, Conda, Flatpak and
-  Snap remain candidates. See `docs/next-tasks.md`.
+  Snap remain candidates.
 - A universal project dependency system. `starpoint install .` delegates to each
   ecosystem's own installer, chosen by a narrow, documented rule set, rather
   than pretending one command can understand every ecosystem.

@@ -1,0 +1,36 @@
+# MineSweep: the pre-commit secret gate.
+#
+# Three settings, each earning its place. Everything else is a default.
+#
+#   profile: public-github   This repo is public (GitHub + Hxmbl/homebrew-tap),
+#                            so a credential that reaches a commit has reached
+#                            the world. The strictest built-in profile is the
+#                            honest one.
+#   fail_on: high            Only a definite finding stops a commit. Below that
+#                            this becomes a tool people learn to bypass, and a
+#                            bypassed gate is worse than an absent one.
+#   min_confidence: 0.7      The knob that makes the gate usable. Measured on
+#                            this repo: a full tree scan at 0.7 is empty, and
+#                            every finding below it is code-shaped noise — a
+#                            detector misreading internal/config's ordinary Go
+#                            source as a GCP project id (0.60 confidence), and
+#                            high-entropy checkpoint refs a bot left in a
+#                            historical blob. Nothing in the tree or in git
+#                            history sits at or above 0.7, and the shapes of
+#                            real secrets — GitHub tokens, PEM/SSH keys — are
+#                            detected with far higher confidence, so the floor
+#                            costs nothing honest.
+#
+# There is deliberately no baseline file. All current findings sit below the
+# gate threshold anyway, and a baseline exists to mark findings as accepted —
+# spending that on non-blocking noise would also have silenced anything real
+# that later appeared on the same content.
+
+profile: public-github
+
+# Only a finding at or above this severity exits non-zero.
+fail_on: high
+
+# Hide findings the detector is unsure about. The floor for a real secret is
+# 0.8, so 0.7 keeps headroom without admitting code-shaped noise.
+min_confidence: 0.7

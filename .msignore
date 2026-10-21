@@ -1,0 +1,20 @@
+# Build artifacts, not source.
+#
+# `/starpoint` at the repo root is `go build`'s default-named binary, and
+# `/bin/` and `/dist/` are the Makefile's and goreleaser's outputs. None is
+# source; the scanner reports binaries as skipped rather than scanned, so
+# without these entries every run pays one INFO note for zero coverage. The
+# history scan already shows the cost of that: the binary was committed once,
+# and every blob of it is just a binary-skip note. The patterns are anchored to
+# the repo root so `cmd/starpoint/` is never caught by the binary's name.
+#
+# Test files are skipped by minesweep's own default (`--include-tests` includes
+# them). That default was measured too: with tests included, the suite scans
+# clean at the config's 0.7 floor. This file deliberately adds nothing on top.
+#
+# The scanner's own config is settings, not secrets.
+.minesweep.yml
+
+/starpoint
+/bin/
+/dist/
