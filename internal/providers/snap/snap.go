@@ -134,7 +134,10 @@ func (p *Provider) Installed(ctx context.Context, pkg model.Package) (*model.Ins
 		return nil, shell.Failure(p.Name(), "installed", "could not query snap", err)
 	}
 	if res.Failed() {
-		return nil, nil
+		if strings.Contains(strings.ToLower(res.Field()), "no matching snaps installed") {
+			return nil, nil
+		}
+		return nil, shell.Failure(p.Name(), "installed", shell.Diagnostic(res.Field()), nil)
 	}
 	for _, line := range strings.Split(res.Stdout, "\n") {
 		fields := shell.Fields(line)

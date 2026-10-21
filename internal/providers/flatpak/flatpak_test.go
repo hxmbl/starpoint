@@ -86,6 +86,10 @@ func TestInstalled(t *testing.T) {
 	if err != nil || absent != nil {
 		t.Errorf("an absent application must not count as installed, got (%+v, %v)", absent, err)
 	}
+	r.SetFail(1, "error: Permission denied", "flatpak", "list", "--system", "--app", "--columns=application,version")
+	if _, err := p.Installed(context.Background(), model.Package{Name: "org.gimp.GIMP"}); err == nil {
+		t.Error("a Flatpak inventory failure must be returned, not treated as an absent application")
+	}
 }
 
 func TestInstallUsesBranchForChannel(t *testing.T) {

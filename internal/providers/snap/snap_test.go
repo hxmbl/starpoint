@@ -101,6 +101,10 @@ func TestInstalled(t *testing.T) {
 	if err != nil || absent != nil {
 		t.Errorf("an absent snap must not count as installed, got (%+v, %v)", absent, err)
 	}
+	r.SetFail(1, "error: cannot communicate with server: connection refused", "snap", "list", "firefox")
+	if _, err := p.Installed(context.Background(), model.Package{Name: "firefox"}); err == nil {
+		t.Error("a snapd query failure must be returned, not treated as an absent snap")
+	}
 }
 
 func TestInstallPassesTheChannel(t *testing.T) {

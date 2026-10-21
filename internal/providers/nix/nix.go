@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/hxmbl/starpoint/internal/exec"
@@ -116,12 +117,48 @@ func (p *Provider) run(ctx context.Context, args ...string) (exec.Result, error)
 
 // profileOutput is the subset of `nix profile list --json` Starpoint reads.
 type profileOutput struct {
-	Elements map[string]struct {
-		Active     bool     `json:"active"`
-		AttrPath   string   `json:"attrPath"`
-		StorePaths []string `json:"storePaths"`
-		URL        string   `json:"url"`
-	} `json:"elements"`
+	Elements json.RawMessage `json:"elements"`
+}
+
+type profileElement struct {
+	Active     bool     `json:"active"`
+	AttrPath   string   `json:"attrPath"`
+	StorePaths []string `json:"storePaths"`
+	URL        string   `json:"url"`
+}
+
+type namedProfileElement struct {
+	Name     string
+	Selector string
+	Element  profileElement
+}
+
+// profileElements handles both manifest formats emitted by nix profile:
+// versions 2.4–2.19 use an array, while later versions use a name-keyed object.
+func profileElements(data []byte) ([]namedProfileElement, error) {
+	var out profileOutput
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	var object map[string]profileElement
+	if err := json.Unmarshal(out.Elements, &object); err == nil && object != nil {
+		items := make([]namedProfileElement, 0, len(object))
+		for name, element := range object {
+			items = append(items, namedProfileElement{Name: name, Selector: name, Element: element})
+		}
+		return items, nil
+	}
+	var array []profileElement
+	if err := json.Unmarshal(out.Elements, &array); err != nil {
+		return nil, err
+	}
+	items := make([]namedProfileElement, 0, len(array))
+	for i, element := range array {
+		name := packageName(element.AttrPath)
+		// The older CLI selects profile elements by their zero-based position.
+		items = append(items, namedProfileElement{Name: name, Selector: strconv.Itoa(i), Element: element})
+	}
+	return items, nil
 }
 
 // Discover lists the packages in the user's profile.
@@ -133,19 +170,22 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 	if res.Failed() {
 		return nil, shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 	}
-	var out profileOutput
-	if err := json.Unmarshal([]byte(res.Stdout), &out); err != nil {
+	items, err := profileElements([]byte(res.Stdout))
+	if err != nil {
 		return nil, shell.Failure(p.Name(), "list", "could not parse `nix profile list --json`: "+err.Error(), nil)
 	}
-	insts := make([]model.Installation, 0, len(out.Elements))
-	for name, element := range out.Elements {
+	insts := make([]model.Installation, 0, len(items))
+	for _, item := range items {
+		if !item.Element.Active {
+			continue
+		}
 		inst := model.Installation{
-			Name:     name,
+			Name:     item.Name,
 			Provider: p.Name(),
 			Scope:    model.ScopeUser,
 		}
-		if len(element.StorePaths) > 0 {
-			inst.Version = versionFromStorePath(element.StorePaths[0], packageName(name))
+		if len(item.Element.StorePaths) > 0 {
+			inst.Version = versionFromStorePath(item.Element.StorePaths[0], packageName(item.Name))
 		}
 		insts = append(insts, inst)
 	}
@@ -189,7 +229,11 @@ func (p *Provider) Install(ctx context.Context, req provider.Request) (*model.In
 
 // Remove deletes a package from the profile.
 func (p *Provider) Remove(ctx context.Context, pkg model.Package) error {
-	res, err := p.run(ctx, "profile", "remove", pkg.Name)
+	selector, err := p.selector(ctx, pkg.Name)
+	if err != nil {
+		return err
+	}
+	res, err := p.run(ctx, "profile", "remove", selector)
 	if err != nil {
 		return shell.Failure(p.Name(), "remove", "could not run nix profile remove", err)
 	}
@@ -201,7 +245,11 @@ func (p *Provider) Remove(ctx context.Context, pkg model.Package) error {
 
 // Update upgrades a profile element from the flake it was installed from.
 func (p *Provider) Update(ctx context.Context, pkg model.Package) (*model.Installation, error) {
-	res, err := p.run(ctx, "profile", "upgrade", pkg.Name)
+	selector, err := p.selector(ctx, pkg.Name)
+	if err != nil {
+		return nil, err
+	}
+	res, err := p.run(ctx, "profile", "upgrade", selector)
 	if err != nil {
 		return nil, shell.Failure(p.Name(), "upgrade", "could not run nix profile upgrade", err)
 	}
@@ -209,6 +257,28 @@ func (p *Provider) Update(ctx context.Context, pkg model.Package) (*model.Instal
 		return nil, classify("upgrade", res)
 	}
 	return p.Installed(ctx, pkg)
+}
+
+// selector returns the command-line selector for a package in this Nix version.
+// Old array manifests and old profile commands identify elements by index.
+func (p *Provider) selector(ctx context.Context, name string) (string, error) {
+	res, err := p.run(ctx, "profile", "list", "--json")
+	if err != nil {
+		return "", shell.Failure(p.Name(), "list", "could not list the Nix profile", err)
+	}
+	if res.Failed() {
+		return "", shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
+	}
+	items, err := profileElements([]byte(res.Stdout))
+	if err != nil {
+		return "", shell.Failure(p.Name(), "list", "could not parse `nix profile list --json`: "+err.Error(), nil)
+	}
+	for _, item := range items {
+		if item.Name == name && item.Element.Active {
+			return item.Selector, nil
+		}
+	}
+	return name, nil
 }
 
 // ExecutableDir reports where the user's profile exposes commands.
@@ -224,6 +294,9 @@ func (p *Provider) ExecutableDir(context.Context) string {
 // flake prefix in the element name ("nixpkgs#ripgrep").
 func packageName(element string) string {
 	if i := strings.LastIndex(element, "#"); i >= 0 {
+		element = element[i+1:]
+	}
+	if i := strings.LastIndex(element, "."); i >= 0 {
 		return element[i+1:]
 	}
 	return element

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hxmbl/starpoint/internal/exec"
 	"github.com/hxmbl/starpoint/internal/model"
 	"github.com/hxmbl/starpoint/internal/provider"
 	"github.com/hxmbl/starpoint/internal/testsupport"
@@ -30,6 +31,11 @@ const profileJSON = `{
     }
   }
 }`
+
+const profileJSONV2 = `{"version":2,"elements":[
+  {"active":true,"attrPath":"legacyPackages.x86_64-linux.ripgrep","storePaths":["/nix/store/abc-ripgrep-14.1.0"]},
+  {"active":false,"attrPath":"legacyPackages.x86_64-linux.jq","storePaths":["/nix/store/abc-jq-1.7.1"]}
+]}`
 
 func profileKey(args ...string) []string {
 	return append([]string{"--extra-experimental-features", "nix-command flakes"}, args...)
@@ -109,6 +115,18 @@ func TestDiscoverReadsProfilesAndVersions(t *testing.T) {
 	}
 }
 
+func TestDiscoverReadsLegacyArrayAndSkipsInactiveElements(t *testing.T) {
+	p, r := newProvider(t)
+	r.Set(profileJSONV2, "nix", profileKey("profile", "list", "--json")...)
+	insts, err := p.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(insts) != 1 || insts[0].Name != "ripgrep" || insts[0].Version != "14.1.0" {
+		t.Fatalf("expected only active legacy profile elements, got %+v", insts)
+	}
+}
+
 func TestDiscoverRejectsUnparsableOutput(t *testing.T) {
 	p, r := newProvider(t)
 	r.Set("not json", "nix", profileKey("profile", "list", "--json")...)
@@ -177,6 +195,36 @@ func TestRemoveAndUpdate(t *testing.T) {
 	}
 	if !r.Ran("nix", profileKey("profile", "upgrade", "ripgrep")...) {
 		t.Errorf("update must upgrade the profile element, calls: %v", r.Calls)
+	}
+}
+
+func TestLegacyRemoveAndUpdateSelectByIndex(t *testing.T) {
+	p, r := newProvider(t)
+	listKey := testsupport.Key("nix", profileKey("profile", "list", "--json")...)
+	delete(r.Responses, listKey)
+	listCalls := 0
+	r.Fallback = func(name string, args ...string) (exec.Result, error) {
+		if name == "nix" && len(args) >= 2 && args[len(args)-2] == "list" {
+			listCalls++
+			if listCalls <= 2 {
+				return exec.Result{Stdout: profileJSONV2}, nil
+			}
+			return exec.Result{Stdout: profileJSON}, nil
+		}
+		return exec.Result{ExitCode: 1, Stderr: "unexpected command"}, nil
+	}
+	r.Set("", "nix", profileKey("profile", "remove", "0")...)
+	r.Set("", "nix", profileKey("profile", "upgrade", "0")...)
+	ctx := context.Background()
+	pkg := model.Package{Name: "ripgrep"}
+	if err := p.Remove(ctx, pkg); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, err := p.Update(ctx, pkg); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !r.Ran("nix", profileKey("profile", "remove", "0")...) || !r.Ran("nix", profileKey("profile", "upgrade", "0")...) {
+		t.Errorf("legacy profile operations must use the element index, calls: %v", r.Calls)
 	}
 }
 
