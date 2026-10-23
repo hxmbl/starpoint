@@ -164,3 +164,156 @@ func TestInventoryBoundsTheRequestedQuery(t *testing.T) {
 		t.Errorf("a requested-unknown warning says the query timed out: %+v", inv.Warnings)
 	}
 }
+
+// slowHealthProvider hangs in its health check. With honour set it returns
+// once its context ends (as a provider whose `--version` subprocess the
+// runner kills does) and reports itself unavailable, the way dnf, pacman,
+// flatpak, nix and snap do when that command fails; without it, it ignores
+// cancellation until the test releases it. hangs counts down: after that
+// many hung checks it answers at once, so a later probe can succeed.
+type slowHealthProvider struct {
+	*testsupport.FakeProvider
+	honour  bool
+	release chan struct{}
+	hangs   int
+	calls   int
+}
+
+func (s *slowHealthProvider) Health(ctx context.Context) provider.Health {
+	s.calls++
+	h := s.FakeProvider.Health(ctx)
+	if s.hangs == 0 {
+		return h
+	}
+	s.hangs--
+	if s.honour {
+		select {
+		case <-ctx.Done():
+			h.Available = false
+			h.Reason = ctx.Err().Error()
+			return h
+		case <-s.release:
+			return h
+		}
+	}
+	<-s.release
+	return h
+}
+
+// A provider whose health check hangs costs its own bound, not the others':
+// every other provider, including ones registered after it, is still
+// probed, listed and counted, and the hung one is a failed provider with a
+// discover-failed warning rather than a silently unavailable one.
+func TestInventoryBoundsAHangingHealthCheckAndListsTheRest(t *testing.T) {
+	for _, honour := range []bool{true, false} {
+		name := "ignores-cancellation"
+		if honour {
+			name = "honours-cancellation"
+		}
+		t.Run(name, func(t *testing.T) {
+			reg := provider.NewRegistry()
+			// Registered first, so a shared sequential deadline would have
+			// been spent on it before the others were probed.
+			stuck := &slowHealthProvider{FakeProvider: testsupport.NewFakeProvider("stuck", provider.KindSystem), honour: honour, release: make(chan struct{}), hangs: 1}
+			stuck.Caps = provider.Capabilities{Discover: true}
+			stuck.With(model.Installation{Name: "stuck-tool", Version: "1.0"})
+			t.Cleanup(func() { close(stuck.release) })
+			reg.Register(stuck)
+			for _, n := range []string{"fast-a", "fast-b"} {
+				p := testsupport.NewFakeProvider(n, provider.KindPython)
+				p.Caps = provider.Capabilities{Discover: true}
+				p.With(model.Installation{Name: n + "-tool", Version: "1.0"})
+				reg.Register(p)
+			}
+			eng := New(reg, nil, WithStateDir(t.TempDir()), WithHome(t.TempDir()))
+			const bound = 150 * time.Millisecond
+			eng.SetDiscoverTimeout(bound)
+
+			start := time.Now()
+			done := make(chan Inventory, 1)
+			go func() { done <- eng.Inventory(context.Background(), nil, nil) }()
+			var inv Inventory
+			select {
+			case inv = <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("inventory hung on a provider whose health check never answers")
+			}
+			// Health bound plus grace, then the listing round.
+			if took := time.Since(start); took > 3*bound+2*time.Second {
+				t.Errorf("inventory took %s; the bound is %s", took, bound)
+			}
+
+			rows := map[string]InventoryProvider{}
+			for _, r := range inv.Providers {
+				rows[r.Name] = r
+			}
+			if r := rows["stuck"]; r.Listed || r.Available || !strings.Contains(r.Error, "timed out") {
+				t.Errorf("the hung provider is a failed provider saying it timed out: %+v", r)
+			}
+			for _, n := range []string{"fast-a", "fast-b"} {
+				if r := rows[n]; !r.Available || !r.Listed || r.Count != 1 || r.Error != "" {
+					t.Errorf("%s is still probed and listed: %+v", n, r)
+				}
+			}
+			if len(inv.Items) != 2 {
+				t.Errorf("only the other providers' packages are listed: %+v", inv.Items)
+			}
+			var warned bool
+			for _, w := range inv.Warnings {
+				if w.Code == model.WarnDiscoverFailed && w.Provider == "stuck" && strings.Contains(w.Message, "timed out") {
+					warned = true
+				}
+			}
+			if !warned {
+				t.Errorf("a discover-failed warning names the hung provider and says it timed out: %+v", inv.Warnings)
+			}
+		})
+	}
+}
+
+// A health check cut short by its deadline is not a verdict: the next
+// question asks again and gets the real answer, instead of the provider
+// staying "unavailable" for the rest of the process.
+func TestTimedOutHealthCheckIsNotRemembered(t *testing.T) {
+	reg := provider.NewRegistry()
+	slow := &slowHealthProvider{FakeProvider: testsupport.NewFakeProvider("slow", provider.KindSystem), honour: true, release: make(chan struct{}), hangs: 1}
+	slow.Caps = provider.Capabilities{Discover: true}
+	slow.With(model.Installation{Name: "slow-tool", Version: "1.0"})
+	defer close(slow.release)
+	reg.Register(slow)
+	eng := New(reg, nil, WithStateDir(t.TempDir()), WithHome(t.TempDir()))
+	eng.SetDiscoverTimeout(100 * time.Millisecond)
+
+	first := eng.Inventory(context.Background(), nil, nil)
+	if len(first.Providers) != 1 || first.Providers[0].Error == "" {
+		t.Fatalf("the first, hung health check fails the provider: %+v", first.Providers)
+	}
+	if got := eng.health(context.Background())["slow"]; !got.Available {
+		t.Errorf("a later health check asks again and finds it available: %+v", got)
+	}
+	second := eng.Inventory(context.Background(), nil, nil)
+	if r := second.Providers[0]; !r.Listed || r.Count != 1 || r.Error != "" {
+		t.Errorf("a later inventory lists it: %+v", r)
+	}
+	if slow.calls != 2 {
+		t.Errorf("health was probed %d times; want 2 (the timed-out one, then once more, memoised)", slow.calls)
+	}
+}
+
+// A cancelled command is not remembered as unavailable either.
+func TestCancelledHealthIsNotRemembered(t *testing.T) {
+	reg := provider.NewRegistry()
+	slow := &slowHealthProvider{FakeProvider: testsupport.NewFakeProvider("slow", provider.KindSystem), honour: true, release: make(chan struct{}), hangs: 1}
+	defer close(slow.release)
+	reg.Register(slow)
+	eng := New(reg, nil, WithStateDir(t.TempDir()), WithHome(t.TempDir()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := eng.health(ctx)["slow"]; got.Available {
+		t.Fatalf("a cancelled check reports unavailable: %+v", got)
+	}
+	if got := eng.health(context.Background())["slow"]; !got.Available {
+		t.Errorf("the next check asks again: %+v", got)
+	}
+}

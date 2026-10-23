@@ -218,15 +218,18 @@ user, an unknown directory is root, as it always was
   provider first, then any managing provider — the read-only `system` provider
   matches almost every command on a Unix machine, so it is asked last — then
   path attribution (see `findExisting`)
-- Provider health is probed once per Engine via `sync.Once`: probing is a
-  subprocess per provider, a single `install` asks for it several times over,
-  and every step of a command must reason about the same machine rather than
-  three slightly different samples of it
+- Provider health is memoised per Engine: probing is a subprocess per
+  provider, a single `install` asks for it several times over, and every step
+  of a command must reason about the same machine rather than three slightly
+  different samples of it. Only a probe that finished on its own is kept; one
+  cut short by a deadline or cancellation is asked again next time
 - Also `Duplicates`, `Shadowed`, `Explain`, `Discovery` and `Prune` (installs
   no longer in the configuration)
 
 **`internal/engine/inventory.go`** - `starpoint inventory`
-- Health and Discover only, concurrently per provider: what each provider
+- Health and Discover only, concurrently per provider, each under its own
+  bound (a health check that times out is a failed provider with a
+  `discover-failed` warning): what each provider
   reports, marked managed when the configuration has that (provider, name).
   No resolver, no per-package lookups, no writes; a failing provider is a
   `discover-failed` warning, not a stop
