@@ -410,14 +410,16 @@ func sharedPip(t *testing.T, h *harness, bin string) *testsupport.FakeProvider {
 	return pip
 }
 
-func TestSyncUvToPipInTheSharedBinReportsTheReplacement(t *testing.T) {
+// The move itself is transition's (sync never moves software); its plan and
+// its run report the shared-bin replacement.
+func TestTransitionUvToPipInTheSharedBinReportsTheReplacement(t *testing.T) {
 	h, bin := binHarness(t, "schema = 1\n\n[[package]]\nname = \"cowsay\"\nprovider = \"pip\"\n\n[[package]]\nname = \"jq\"\n")
 	sharedPip(t, h, bin)
 	exe := filepath.Join(bin, "cowsay")
 	testsupport.WriteFile(t, exe, "#!/bin/sh\n# uv\n")
 	h.uv.With(model.Installation{Name: "cowsay", Version: "6.0", Path: exe})
 
-	op := decodeOperation(t, h.mustRun("sync", "--dry-run", "--json"))
+	op := decodeOperation(t, h.mustRun("transition", "cowsay", "--dry-run", "--json"))
 	var a *actionJSON
 	for i := range op.Actions {
 		if op.Actions[i].Package == "cowsay" {
@@ -448,7 +450,7 @@ func TestSyncUvToPipInTheSharedBinReportsTheReplacement(t *testing.T) {
 		t.Errorf("the plan must say the uv copy is uninstalled: %+v", a.Effects)
 	}
 
-	op = decodeOperation(t, h.mustRun("sync", "--no-confirm", "--allow-destructive", "--json"))
+	op = decodeOperation(t, h.mustRun("transition", "cowsay", "--no-confirm", "--allow-destructive", "--json"))
 	for i := range op.Actions {
 		if op.Actions[i].Package == "cowsay" {
 			a = &op.Actions[i]

@@ -216,20 +216,22 @@ func TestTransitionJSONReportsTheFinalPhase(t *testing.T) {
 	}
 }
 
-func TestSyncReportsTransitions(t *testing.T) {
+// A move half done is still drift to sync: it names both providers and the
+// command that finishes the move, and leaves the move to transition.
+func TestSyncPointsAtTransitionsInsteadOfMoving(t *testing.T) {
 	h := newHarness(t, stagedConfig)
 	h.stagedMove("/uv/bin/ruff")
 
 	out := h.mustRun("sync", "--dry-run")
-	if !strings.Contains(out, "Transitions") {
-		t.Errorf("sync should show transitions as first-class:\n%s", out)
+	if !strings.Contains(out, "starpoint transition ruff") {
+		t.Errorf("sync should point at transition:\n%s", out)
 	}
 	if !strings.Contains(out, "brew") || !strings.Contains(out, "uv") {
 		t.Errorf("both providers should be named:\n%s", out)
 	}
 }
 
-func TestSyncJSONCarriesTransitions(t *testing.T) {
+func TestSyncJSONCarriesNoTransitions(t *testing.T) {
 	h := newHarness(t, stagedConfig)
 	h.stagedMove("/uv/bin/ruff")
 
@@ -265,11 +267,8 @@ func TestSyncJSONCarriesTransitions(t *testing.T) {
 	if len(payload.Transitions) == 0 {
 		payload.Transitions = payload.Data.Transitions
 	}
-	if len(payload.Transitions) != 1 {
-		t.Fatalf("sync JSON should carry the transition, got %+v", payload)
-	}
-	if payload.Transitions[0].Phase == "" {
-		t.Error("the phase should be present")
+	if len(payload.Transitions) != 0 {
+		t.Fatalf("sync plans no transitions; transition does: %+v", payload)
 	}
 }
 

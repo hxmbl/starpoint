@@ -316,3 +316,9 @@ var _ provider.Privileged = (*Provider)(nil)
 func (p *Provider) Privilege(context.Context, exec.Runner, provider.PrivilegeTarget) provider.PrivilegeDecision {
 	return shell.UserPrivilege("uv installs tools into the user's home (~/.local/share/uv/tools, ~/.local/bin)")
 }
+
+var _ provider.RequestedByConstruction = (*Provider)(nil)
+
+// DiscoverListsOnlyRequested reports that Discover lists only what the user
+// installed on purpose: no dependencies appear in it.
+func (p *Provider) DiscoverListsOnlyRequested() bool { return true }

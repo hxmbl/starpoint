@@ -12,6 +12,8 @@ var aliases = map[string]string{
 	"sync":       "sync",
 	"list":       "list",
 	"ls":         "list",
+	"inventory":  "inventory",
+	"adopt":      "adopt",
 	"info":       "info",
 	"show":       "info",
 	"explain":    "explain",
@@ -46,10 +48,12 @@ var commandFlags = map[string][]string{
 	"init":       {"--force"},
 	"sync":       {"--dry-run", "--no-confirm"},
 	"list":       {"--managed", "--provider"},
+	"inventory":  {"--provider"},
+	"adopt":      {"--all", "--provider", "--dry-run", "--no-confirm"},
 	"info":       {},
 	"explain":    {"--provider"},
 	"doctor":     {"--all"},
-	"install":    {"--version", "--channel", "--project", "--provider", "--dry-run", "--no-confirm"},
+	"install":    {"--version", "--channel", "--project", "--provider", "--allow-duplicate", "--dry-run", "--no-confirm"},
 	"remove":     {"--provider", "--dry-run", "--no-confirm", "--allow-empty"},
 	"transition": {"--all", "--reverse", "--dry-run", "--no-confirm"},
 	"update":     {"--self", "--dry-run", "--no-confirm"},
@@ -96,8 +100,18 @@ Options:
 `,
 	"sync": `Usage: starpoint sync [--dry-run] [--no-confirm]
 
-Make the installed state match the configuration: install what is missing,
-move software between providers, and reconcile pinned versions.
+Make the installed state match the configuration: install what is missing
+and reconcile pinned versions. The plan is shown and confirmed first.
+
+An unattended sync (--yes, no_confirm, or no terminal) that would have to
+guess a provider for a package nothing decides is refused with
+provider-ambiguous (exit 5), naming the candidates.
+
+sync never removes or moves software. When the configuration gives a package
+to one provider and another provider has it, that is reported as drift
+(provider-drift) with the two commands that settle it: 'starpoint transition
+<package>' moves it, 'starpoint adopt <package> <owner>' records the owner
+that really has it.
 
 Options:
   --dry-run, -n       Show what would change; change nothing
@@ -108,6 +122,57 @@ Options:
   --provider <name>   Restrict automatic provider choice (repeatable)
   --json              Machine-readable output
   --verbose, -v       List every effect, not only what is removed or overwritten
+`,
+	"inventory": `Usage: starpoint inventory [--provider <name>]...
+
+List every package each available provider reports as installed: provider,
+the provider's own name for it, version, scope, path, and whether the
+configuration manages it. Managed means the configuration has an entry with
+that name and that provider.
+
+Inventory only observes. Providers are probed for health and asked for their
+package lists; nothing is resolved, installed, recorded in the configuration
+or written to Starpoint's own logs, and even an elevated run gives no file
+to another owner. It works with no configuration at all. A provider whose
+health check or listing fails, or does not answer within 20 seconds, is
+reported (discover-failed) and the others are still shown.
+
+Options:
+  --provider <name>   Only this provider (repeatable)
+  --json              Machine-readable output
+`,
+	"adopt": `Usage: starpoint adopt <package>... [provider]
+       starpoint adopt --all [--provider <name>]
+
+Record who owns software that is already installed. Adopting never
+installs, uninstalls or moves anything: the provider keeps managing the
+software, and the configuration says it is that provider's.
+
+With a package name, the owner is the provider that has it. Name the
+provider (after or before the package, or with --provider) when more than
+one has it; at a terminal Starpoint asks, and without one it refuses with
+owner-ambiguous (exit 5). Software only the operating system provides is
+not managed, and a package no provider has is never recorded.
+
+With --all, every package a provider reports as installed on request and no
+configuration entry accounts for is recorded: apt's manual marks, dnf's
+user-installed packages, pacman's explicit installs, Homebrew's
+installed-on-request formulae and casks, and everything uv, cargo, npm, pnpm,
+go, rustup, nix and flatpak list (they list nothing else). Dependencies,
+packages a provider cannot classify (pip, gem, yarn, snap), and the system
+provider stay unmanaged and are counted. A name the configuration records
+with another provider is left alone with the command that would settle it.
+
+The changes are shown and confirmed first, like every other change.
+
+Options:
+  --all, -a           Adopt everything installed on request
+  --provider <name>   The owner, or with --all only this provider (repeatable)
+  --dry-run, -n       Show what would be recorded; change nothing
+  --no-confirm, -y, --yes
+                      Do not ask first
+  --allow-root        Let it run as root or elevated
+  --json              Machine-readable output
 `,
 	"list": `Usage: starpoint list [--managed] [--provider <name>]
 
@@ -169,6 +234,13 @@ virtualenv (no active VIRTUAL_ENV, no project .venv) can upgrade or downgrade
 packages other software uses, so like npm ci over node_modules it needs
 --allow-destructive when unattended.
 
+Starpoint never makes a second copy silently. When another provider already
+has the software (or, when Starpoint picks the provider, only the operating
+system has it), the confirmation says so first; an unattended run is refused
+with duplicate-install (exit 5) unless --allow-duplicate is given. Naming the
+provider is enough to ask for a managed copy beside the system's. To record
+the copy that is already there instead, use 'starpoint adopt'.
+
 Aliases: add, i
 
 Options:
@@ -176,6 +248,7 @@ Options:
   --channel <name>     Release channel, for providers that have them
   --project            Record the package in the project's configuration
   --provider <name>    Use this provider
+  --allow-duplicate    Let an unattended install add a second copy
   --dry-run, -n        Show what would happen; change nothing
   --no-confirm, -y     Do not ask first
   --allow-destructive  Let an unattended run delete or replace things
