@@ -441,4 +441,10 @@ const (
 	WarnPermissionFixFailed  = "permission-fix-failed"
 	WarnRootOwnedAfterDrop   = "root-owned-after-drop"
 	WarnPrivilegeDropFailed  = "privilege-drop-failed"
+	// WarnPruneSkipped names a prune candidate that was left alone: it lives
+	// outside the home directory, or it is a package manager.
+	WarnPruneSkipped = "prune-skipped"
+	// WarnPipOutsideVirtualenv is a pip dependency install that runs outside
+	// any virtualenv.
+	WarnPipOutsideVirtualenv = "pip-outside-virtualenv"
 )

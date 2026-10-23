@@ -93,3 +93,22 @@ func TestRealRunnerFindsRepoRelativeBinary(t *testing.T) {
 		t.Skip("not running inside the module")
 	}
 }
+
+// Env replaces the environment a command inherits, and Getenv reads the
+// same environment, so a provider predicts paths from what its commands see.
+func TestRealRunnerEnvReplacesTheInheritedEnvironment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh")
+	}
+	r := RealRunner{Env: []string{"PATH=/usr/bin:/bin", "HOME=/nonexistent-root-home"}}
+	res, err := r.Run(context.Background(), "sh", "-c", "printf %s \"$HOME\"")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Stdout != "/nonexistent-root-home" {
+		t.Errorf("the command saw HOME=%q", res.Stdout)
+	}
+	if got := r.Getenv("HOME"); got != "/nonexistent-root-home" {
+		t.Errorf("Getenv reads the command's environment, got %q", got)
+	}
+}

@@ -323,3 +323,43 @@ func TestChangingCommandClassification(t *testing.T) {
 		}
 	}
 }
+
+// Under sudo the run acts on the user's environment, but commands that stay
+// root are given root's own home, never the user's.
+func TestElevatedRunGivesRootCommandsRootsHome(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	home := t.TempDir()
+	h.elevated(viaSudo(home))
+	h.env.Environ = func() []string { return []string{"PATH=/usr/bin:/bin", "HOME=" + home, "LANG=C"} }
+	h.env.RootHome = func() string { return "/root" }
+
+	h.mustRun("list")
+	env := h.env.privileges.RootEnv
+	if got := (&exec.Identity{Env: env}).Getenv("HOME"); got != "/root" {
+		t.Errorf("root commands get root's home, got HOME=%q in %v", got, env)
+	}
+	if got := (&exec.Identity{Env: env}).Getenv("LANG"); got != "C" {
+		t.Errorf("the rest of the environment is kept: %v", env)
+	}
+	for _, kv := range env {
+		if kv == "HOME="+home {
+			t.Errorf("the user's home must not reach a root command: %v", env)
+		}
+	}
+}
+
+// When the user database cannot tell root's home from the user's (sudo kept
+// HOME), the home Starpoint started with is used; when neither differs, root
+// commands keep Starpoint's environment rather than get an invented home.
+func TestRootHomeIsNeverTheUsersHome(t *testing.T) {
+	e := &Env{RootHome: func() string { return "/home/alice" }}
+	if got := e.rootHome("/root", "/home/alice"); got != "/root" {
+		t.Errorf("rootHome = %q, want /root", got)
+	}
+	if got := e.rootHome("/home/alice/", "/home/alice"); got != "" {
+		t.Errorf("rootHome = %q, want empty when nothing differs from the user's home", got)
+	}
+	if env := rootEnvironment([]string{"HOME=/home/alice"}, ""); env != nil {
+		t.Errorf("no root home means no replacement environment, got %v", env)
+	}
+}

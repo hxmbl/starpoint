@@ -108,7 +108,10 @@ func buildActions(dryRun bool, global []model.Warning, actions []model.PlannedAc
 		}
 		ws := mergeWarnings([]model.Warning{}, a.Warnings...)
 		for _, w := range all {
-			if w.Package != "" && w.Package == a.State.Package.Name {
+			if w.Package != "" && w.Package == a.State.Package.Name &&
+				// A package prune left alone is not the same-named
+				// candidate another provider removes.
+				(w.Code != model.WarnPruneSkipped || w.Provider == a.State.Res.Provider) {
 				ws = mergeWarnings(ws, w)
 			}
 		}
@@ -376,6 +379,14 @@ func EffectLine(e model.Effect, planned bool) string {
 			line = verb("installed", "install") + " " + subject
 		case model.EffectDelete:
 			line = verb("uninstalled", "uninstall") + " " + subject
+		case model.EffectReplace:
+			if e.From == "" && e.To == "" {
+				// Versions not known in advance (pip resolving a
+				// requirements file outside a virtualenv).
+				line = verb("installed, upgraded or downgraded", "install, upgrade or downgrade") + " " + subject
+				break
+			}
+			line = verb("changed", "change") + " " + subject + " " + dash(e.From) + " → " + dash(e.To)
 		default:
 			line = verb("changed", "change") + " " + subject + " " + dash(e.From) + " → " + dash(e.To)
 		}

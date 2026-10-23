@@ -1251,3 +1251,51 @@ func TestInstallDotWithContextRecordsProjectContext(t *testing.T) {
 	h.mustRun("install", ".")
 	// Execution tracking is now handled by the tracking package in the engine
 }
+
+// syncJSON is the part of `sync --json` a caller decides on.
+type syncJSON struct {
+	Converged bool `json:"converged"`
+	States    []struct {
+		Status string `json:"status"`
+	} `json:"states"`
+}
+
+// A real sync reports the machine as it left it. It used to report the
+// states it planned from, so a sync that installed everything still said
+// converged: false, and an agent reading it would run it again.
+func TestSyncJSONReportsTheMachineAfterTheRun(t *testing.T) {
+	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"ripgrep\"\n")
+	dry := decodeSync(t, h.mustRun("sync", "--dry-run", "--json"))
+	if dry.Converged {
+		t.Fatalf("before the run ripgrep is missing: %+v", dry)
+	}
+
+	got := decodeSync(t, h.mustRun("sync", "--no-confirm", "--json"))
+	if !got.Converged {
+		t.Errorf("after installing everything the sync converged: %+v", got)
+	}
+	for _, st := range got.States {
+		if st.Status != string(model.StatusCorrect) {
+			t.Errorf("states describe the machine after the run: %+v", got.States)
+		}
+	}
+}
+
+// A sync whose install failed has not converged, and says so.
+func TestSyncJSONIsNotConvergedAfterAFailure(t *testing.T) {
+	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"ripgrep\"\n")
+	h.brew.InstallError = &provider.Error{Provider: brew.Name, Kind: provider.ErrNetwork, Message: "index unreachable"}
+	_, out, _ := h.run("sync", "--no-confirm", "--json")
+	if got := decodeSync(t, out); got.Converged {
+		t.Errorf("a failed install is not converged: %s", out)
+	}
+}
+
+func decodeSync(t *testing.T, out string) syncJSON {
+	t.Helper()
+	var s syncJSON
+	if err := json.Unmarshal([]byte(out), &s); err != nil {
+		t.Fatalf("stdout must be one JSON document: %v\n%s", err, out)
+	}
+	return s
+}

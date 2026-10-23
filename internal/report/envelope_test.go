@@ -346,8 +346,8 @@ func TestActionsCarryRunAs(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.SchemaVersion != 7 {
-		t.Errorf("run_as is schema version 7, got %d", payload.SchemaVersion)
+	if payload.SchemaVersion < 7 {
+		t.Errorf("run_as is schema version 7 and later, got %d", payload.SchemaVersion)
 	}
 	if len(payload.Actions) != 1 || len(payload.Actions[0].RunAs) != 1 {
 		t.Fatalf("one identity per provider: %s", buf.String())

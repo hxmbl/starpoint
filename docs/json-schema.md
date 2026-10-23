@@ -4,9 +4,11 @@ This document describes Starpoint's machine-readable output envelope and payload
 
 ## Schema Version
 
-Current schema version: `7`
+Current schema version: `8`
 
-All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 7, ...command fields }`; errors are `{ "schema_version": 7, "error": "..." }` on stderr, and a refusal adds `code`, `exit_code` and, when the command had a plan, `refused` (see "Errors and refusals").
+All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 8, ...command fields }`; errors are `{ "schema_version": 8, "error": "..." }` on stderr, and a refusal adds `code`, `exit_code` and, when the command had a plan, `refused` (see "Errors and refusals").
+
+Version 8 says what `prune` left alone and when a pip install is destructive. `prune` reports every orphan it does not remove, because it lives outside the home directory or is a package manager, as a `prune-skipped` warning (severity `info`) naming the package, its provider and the reason; version 7 dropped them silently. `install .` reports a `requirements.txt` install with pip as a planned effect either way: inside a virtualenv (the active `VIRTUAL_ENV` whose pip is on PATH, or the project's `.venv`) a `modify` of that environment, named by the new `dependencies.command.virtualenv`; outside one a destructive `replace` of the Python packages it names, with the new warning `pip-outside-virtualenv`, which an unattended run refuses (exit 3) without `--allow-destructive`. Every field a version 7 consumer read keeps its meaning. See "Migrating from schema 7 to 8".
 
 Version 7 says who each action ran as. Every `ActionResult` (and every applied or planned `Transition`) gains `run_as`: one `RunAs` per provider the action runs, with the account (`user`, `uid`, `gid`), whether Starpoint was `elevated`, whether it `dropped` privileges to run the provider as the invoking user, and, for an elevated run on behalf of an invoking user, the provider's `privilege` (`user` or `root`) and the `reason`. `Effect` gains `unexpected`, set on an ownership fix made after a provider ran as the invoking user, which also raises the new warning `root-owned-after-drop`. The warning `privilege-drop-failed` and the refusal codes `invoking-user-unresolved` and `privilege-drop-failed` are new. Every field a version 6 consumer read keeps its meaning. See "Migrating from schema 6 to 7".
 
@@ -106,6 +108,8 @@ consumer should act on the code and show the message. Codes in use:
 | `pin-conflict` | A newer version exists than the pin; the pin was kept. |
 | `pin-kept`, `already-current`, `update-unsupported`, `not-installed` | Why `update` left a package alone (severity `info`). |
 | `discover-failed` | A provider could not list its packages, so `prune` considered none of them. |
+| `prune-skipped` | An orphan (installed, declared nowhere) that `prune` left alone, with its `package` and `provider`; the message gives the reason: it lives outside the invoking user's home directory (a system npm prefix, the interpreter's own site-packages), or it is a package manager (any registered provider, `corepack`, `starpoint`). Severity `info`; reported by dry runs and real runs alike. |
+| `pip-outside-virtualenv` | `install .` runs `pip install -r requirements.txt` outside any virtualenv, so it installs into the user's site-packages (as root, the system's) and may upgrade or downgrade packages other software depends on. Its effect is destructive; creating a virtualenv (`python3 -m venv .venv`) makes Starpoint install there instead. |
 | `toolchain-missing` | `install .` found the project's toolchain absent. |
 | `duplicate-declaration`, `provider-unknown`, `provider-unavailable`, `project-scope-undeclared`, `owner-unavailable` | Configuration and availability problems found while planning. |
 | `duplicate-copy`, `shadowed`, `missing`, `version-unsatisfiable` | `doctor` problems. |
@@ -331,13 +335,66 @@ raised by the action and every top-level warning that names its package. Every
 action warning also appears at the top level. Warnings about the run itself,
 such as `running-elevated`, name no package and appear only at the top level.
 
+### Sync
+
+`sync` reports the operation fields above (without `operation`) plus:
+
+```json
+{
+  "converged": "boolean",
+  "transitions": ["Transition"],
+  "states": ["State"],
+  "problems": ["string"],
+  "project": "ProjectInfo | null"
+}
+```
+
+In a dry run, `states` and `converged` describe the machine as it is. After
+a real run that changed something they describe the machine as the run left
+it: `converged` is true only when every action applied and every package is
+now satisfied.
+
+### Install .
+
+`install .` reports the operation fields above plus `dependencies`, the
+project's own dependency installer:
+
+```json
+{
+  "command": {
+    "tool": "string",
+    "args": ["string"],
+    "dir": "string",
+    "reason": "string",
+    "virtualenv": "string | null"
+  },
+  "skipped": "string | null",
+  "ran": "boolean",
+  "dry_run": "boolean",
+  "effects": ["Effect"]
+}
+```
+
+`command` is absent when nothing says how to install the dependencies, and
+`skipped` says why (or `declined`). `virtualenv` (version 8) is set only for a
+pip install that goes into a virtualenv: the active `VIRTUAL_ENV` when the pip
+on PATH is its own, otherwise the project's `.venv`, whose own pip is then
+the `tool`. A pip install outside any virtualenv carries a destructive planned
+effect, `{ "op": "replace", "kind": "package", "name": "the Python packages
+requirements.txt names", "destructive": true, "evidence": "planned" }`, in
+both a dry run and a real run, because what pip changes in site-packages is
+not observed; inside a virtualenv the planned effect is a non-destructive
+`modify` of the environment's directory. `npm ci` over an existing
+`node_modules` and `uv sync` over an existing `.venv` are destructive planned
+`replace` effects too.
+
 ### Example: a destructive removal
 
 `starpoint remove ruff --yes --allow-destructive --json`, where uv had linked ruff into `~/.local/bin`:
 
 ```json
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "operation": "remove",
   "dry_run": false,
   "config_changed": true,
@@ -399,7 +456,7 @@ such as `running-elevated`, name no package and appear only at the top level.
 Every error is one JSON document on stderr:
 
 ```json
-{ "schema_version": 7, "error": "string" }
+{ "schema_version": 8, "error": "string" }
 ```
 
 A refusal is an error that a flag would have allowed. Nothing was changed. It
@@ -408,7 +465,7 @@ planned its work, `refused`:
 
 ```json
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "error": "string",
   "code": "destructive-unattended | elevated-refused | invoking-user-unresolved | privilege-drop-failed",
   "exit_code": 3,
@@ -440,7 +497,7 @@ and `4` the refusals above.
 
 ```json
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "error": "refusing to remove unattended: it would delete or replace something (ruff) and --yes (or --no-confirm) was given. Nothing was changed. Review the planned changes, then rerun with --allow-destructive to allow it",
   "code": "destructive-unattended",
   "exit_code": 3,
@@ -687,6 +744,26 @@ Version 7 adds; nothing a version 6 consumer read is removed or renamed.
    now run as that user, so their effects on an elevated run no longer
    include `chown` fixes, and what they create outside the user's home is no
    longer `chmod`-widened.
+
+## Migrating from schema 7 to 8
+
+Version 8 adds; nothing a version 7 consumer read is removed or renamed.
+
+1. The version number moved from 7 to 8.
+2. `Warning.code` gains `prune-skipped` (severity `info`): `prune`, dry run
+   or not, names each orphan it left alone, with its `package`, `provider`
+   and the reason in `message` (outside the home directory, or a package
+   manager). Version 7 skipped them without a word.
+3. `Warning.code` gains `pip-outside-virtualenv`.
+4. `dependencies.command` gains `virtualenv`, set when a pip install goes
+   into a virtualenv. When the project has a `.venv` with its own pip and no
+   other virtualenv is active, that pip is now the `tool` (an absolute path);
+   version 7 always ran `pip3` or `pip` from PATH.
+5. Behaviour: a pip install outside any virtualenv is a destructive planned
+   effect, so an unattended `install .` that would run one is refused with
+   exit 3 and `destructive-unattended` unless `--allow-destructive`; an
+   interactive run lists it with `!` before asking. A virtualenv is never
+   required.
 
 ## Versioning Policy
 

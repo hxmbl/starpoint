@@ -67,15 +67,28 @@ the packages it declares.
 | Node with pnpm-lock.yaml / yarn.lock / package-lock.json | `pnpm install` / `yarn install` / `npm ci` |
 | Node without a lockfile | `npm install` |
 | Python with uv.lock, or `[tool.uv]` in pyproject.toml | `uv sync` |
-| Python with requirements.txt | `pip3 install -r requirements.txt` (or `pip`) |
+| Python with requirements.txt | `pip3 install -r requirements.txt` (or `pip`); the project's `.venv/bin/pip` when it has one and no other virtualenv is active |
 | Rust (Cargo.toml) | `cargo fetch` |
 | Go (go.mod) | `go mod download` |
 | Ruby (Gemfile) | `bundle install` |
 
 The command is shown and confirmed before anything changes (declining changes
 nothing at all), `--dry-run` prints it without running it, and `--no-confirm`
-runs it unattended. A Python project with neither uv configuration nor
-requirements.txt is reported rather than guessed at.
+runs it unattended. Two installers are exact and delete what is already there:
+`npm ci` replaces an existing `node_modules`, and `uv sync` removes packages the
+lockfile does not list from an existing `.venv`. Those are listed as destructive
+(`!`) effects, so an unattended run needs `--allow-destructive` for them.
+
+A `requirements.txt` install depends on where pip installs. Inside a virtualenv
+(an active `VIRTUAL_ENV` whose pip is the one on PATH, or the project's own
+`.venv`, whose pip is then used) it only changes that environment and is an
+ordinary effect. Outside one, pip installs into your user site-packages (as
+root, the system's) and may upgrade or downgrade packages other software depends
+on, so it is a destructive (`!`) planned effect with a `pip-outside-virtualenv`
+warning suggesting `python3 -m venv .venv`: an unattended run needs
+`--allow-destructive`, and as root the usual `--allow-root` rule applies too. A
+virtualenv is suggested, never required. A Python project with neither uv
+configuration nor requirements.txt is reported rather than guessed at.
 
 ### What Starpoint writes
 
@@ -95,8 +108,10 @@ version than a pin allows, it explains the conflict and asks:
 Update anyway? [y/N]
 ```
 
-Yes updates the package and rewrites the pin to the version now installed; no
-(or `--no-confirm`, or no terminal) keeps the pin; `--dry-run` reports the
+Yes lists the update, with the pin rewrite marked `!`, and asks once more
+before it updates the package and rewrites the pin to the version now
+installed; no (or `--no-confirm`, or no terminal, which includes a `yes` piped
+into stdin) keeps the pin; `--dry-run` reports the
 conflict. `--json` lists them under `pin_conflicts`. Newer versions are known for
 pip, npm, pnpm, Homebrew, Cargo, RubyGems and APT; for other providers a pin is
 simply reported as left unchanged.
@@ -171,7 +186,7 @@ is printed for you to run.
 | `starpoint install .` | Install the current project's declared packages and dependencies; record its toolchain in the project config |
 | `starpoint remove <package> [provider]` | Uninstall and delete from config (aliases: `uninstall`, `rm`); `--dry-run`, `--no-confirm`, `--allow-empty` |
 | `starpoint update [--self] [--dry-run] [--no-confirm]` | Update managed software; asks before moving past a pin (alias: `upgrade`) |
-| `starpoint prune [--dry-run] [--no-confirm]` | Preview and remove orphaned user-scoped installations; refuses when the configuration declares no packages |
+| `starpoint prune [--dry-run] [--no-confirm]` | Preview and remove orphaned user-scoped installations inside your home directory; never a package manager itself, and every orphan left alone is listed with the reason; refuses when the configuration declares no packages |
 | `starpoint recover [--discard] [--no-confirm]` | Inspect and clear files left by an interrupted run |
 | `starpoint runs [--package <name>] [--directory <dir>]` | Show where Starpoint has been run (alias: `history`) |
 | `starpoint logging [prune\|config]` | Show, age out, or configure Starpoint's own logging (alias: `logs`) |
@@ -222,6 +237,15 @@ Planned changes (none were made; ! removes or overwrites something):
       ! ruff would stop resolving to ~/.local/bin/ruff
 ```
 
+**What prune never touches.** `starpoint prune` only removes software inside the
+home directory of the user it acts for (under `sudo`, the invoking user's; in a
+plain root shell, root's own), and never a package manager: no registered
+provider (npm, pip, uv, pnpm, yarn, cargo, ...), `corepack` or `starpoint`
+itself, wherever it lives. A system npm prefix such as `/usr/lib/node_modules`
+or the interpreter's own site-packages belongs to the machine, whoever runs
+Starpoint. Each orphan it leaves alone for either reason is still listed, with
+the reason, as a `prune-skipped` warning in human output and in `--json`.
+
 **Running as root.** A command that changes anything is refused when Starpoint
 runs as root (effective uid 0) or with an elevated Windows token, unless
 `--allow-root` is given. Under `sudo` or `doas` at a terminal, answering yes to
@@ -245,7 +269,9 @@ the user's home run *as the user*: Starpoint starts their commands with the
 user's uid, primary gid and supplementary groups (set by the kernel between
 fork and exec, so the provider never runs as root) and an environment built
 for the user rather than inherited from root. System providers run as root,
-where root is the point.
+where root is the point, with root's own `HOME`: npm, gem and pip write caches
+and logs under `$HOME`, and as root they would otherwise leave root-owned files
+in the user's home.
 
 | Provider | Under sudo/doas it runs as |
 |---|---|
@@ -376,7 +402,7 @@ Implemented in this release:
 | `flatpak` | global | The system installation: application IDs, runtimes excluded, a branch (`stable`, `beta`) as the channel. Per-user installations are not enumerated or modified. |
 | `snap` | global | snapd's inventory and channels. Never grants classic confinement on its own: that is a decision about unrestricted access, and the failure says so. |
 | `uv` | user | Python tools and interpreters, `==` pins. |
-| `pip` | user | Python packages, installed with `--user` so pip never needs root. Locations come from `pip show -f`: the console script when there is one, otherwise the package directory. |
+| `pip` | user | Python packages, installed with `--user` so pip never needs root. Locations come from `pip show -f`: the console script when there is one, otherwise the package directory. Only what `pip list --user` names is user scope; the interpreter's own site-packages are reported as global. |
 | `rustup` | user | Rust toolchains: `rustc`, `cargo`, `rustfmt` and friends, plus the toolchains themselves. |
 | `cargo` | user | Crates from `cargo install`, `--version` pins. |
 | `npm` | user | Global packages, `name@version` and dist-tags. |

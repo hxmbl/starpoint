@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -103,5 +104,87 @@ func TestUpdateWithASatisfiedPinAndNothingNewerIsQuiet(t *testing.T) {
 	}
 	if !strings.Contains(out, "pinned to 0.5.0; left unchanged") {
 		t.Errorf("the pin should be acknowledged:\n%s", out)
+	}
+}
+
+// Without a terminal nobody has read the pin question, so nothing may answer
+// it: a `yes` piped into stdin used to move the pin and replace the installed
+// copy, with no --allow-destructive and no listing of what it replaced.
+func TestUpdateWithoutATerminalKeepsEveryPin(t *testing.T) {
+	h := pinnedHarness(t)
+	h.ask(true) // a piped `yes`: it answers every question
+	h.env.Interactive = func() bool { return false }
+
+	h.mustRun("update")
+	for _, q := range h.questions {
+		if q == "Update anyway?" {
+			t.Errorf("a run without a terminal must not be asked to move a pin: %v", h.questions)
+		}
+	}
+	if len(h.uv.UpdateCalls) != 0 {
+		t.Errorf("the pinned package must be left alone, got %+v", h.uv.UpdateCalls)
+	}
+	if !strings.Contains(h.configBody(), `version = "0.5.0"`) {
+		t.Errorf("the pin must be kept:\n%s", h.configBody())
+	}
+}
+
+// An empty, non-terminal stdin has no answer to give. The README promises
+// that no terminal keeps the pin; it used to fail the whole update instead.
+func TestUpdateWithEmptyStdinKeepsThePinAndSucceeds(t *testing.T) {
+	h := pinnedHarness(t)
+	h.env.Interactive = func() bool { return false }
+	h.env.Confirm = func(string) (bool, error) {
+		return false, errors.New("this operation needs confirmation and stdin provided no answer; pass --no-confirm")
+	}
+
+	if code, out, errOut := h.run("update"); code != 0 {
+		t.Fatalf("update with nothing to do but a kept pin should succeed (exit %d)\n%s\n%s", code, out, errOut)
+	}
+	if len(h.uv.UpdateCalls) != 0 {
+		t.Errorf("the pinned package must be left alone, got %+v", h.uv.UpdateCalls)
+	}
+}
+
+// Agreeing to move a pin turns it into an update that replaces the installed
+// copy and rewrites the configuration. That update must be listed, with its
+// destructive effects, before the final confirmation, like any other.
+func TestUpdateListsAnAgreedPinMoveBeforeProceeding(t *testing.T) {
+	h := pinnedHarness(t)
+	h.ask(true)
+
+	out := h.mustRun("update")
+	sawPin, sawProceed := false, false
+	for _, q := range h.questions {
+		switch q {
+		case "Update anyway?":
+			sawPin = true
+		case "Proceed?":
+			sawProceed = sawPin
+		}
+	}
+	if !sawProceed {
+		t.Errorf("the agreed update must be confirmed after the pin question, got %v", h.questions)
+	}
+	if !strings.Contains(out, "Update ruff") || !strings.Contains(out, "! would edit") {
+		t.Errorf("the update and its destructive config edit must be listed before proceeding:\n%s", out)
+	}
+}
+
+// Saying yes to moving the pin and then no to the listed changes changes
+// nothing: the pin question alone is not the go-ahead.
+func TestUpdateDecliningAfterAgreeingToMoveAPinChangesNothing(t *testing.T) {
+	h := pinnedHarness(t)
+	h.env.Confirm = func(q string) (bool, error) {
+		h.questions = append(h.questions, q)
+		return q == "Update anyway?", nil
+	}
+
+	h.mustRun("update")
+	if len(h.uv.UpdateCalls) != 0 {
+		t.Errorf("declining the listed update must leave ruff alone, got %+v", h.uv.UpdateCalls)
+	}
+	if !strings.Contains(h.configBody(), `version = "0.5.0"`) {
+		t.Errorf("declining must keep the pin:\n%s", h.configBody())
 	}
 }

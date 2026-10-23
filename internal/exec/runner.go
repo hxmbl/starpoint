@@ -34,9 +34,17 @@ type Runner interface {
 // RealRunner runs commands on the host.
 //
 // With As set, every command runs as that identity, with its environment and
-// its PATH; see Identity. Without it, commands run as Starpoint does.
+// its PATH; see Identity. Without it, commands run as Starpoint does, with
+// Env as their complete environment when it is set and Starpoint's own
+// otherwise.
 type RealRunner struct {
 	As *Identity
+	// Env, when As is nil, replaces the environment commands inherit. An
+	// elevated run acting for its invoking user points Starpoint's own HOME at
+	// that user, so commands that stay root get root's HOME back through
+	// this: a root npm or gem must keep its caches and logs in root's home,
+	// not leave root-owned files in the user's.
+	Env []string
 }
 
 var _ Runner = RealRunner{}
@@ -61,6 +69,9 @@ func (r RealRunner) Run(ctx context.Context, name string, args ...string) (Resul
 			return Result{ExitCode: -1}, err
 		}
 		return Result{ExitCode: -1}, fmt.Errorf("running %s: %w", name, err)
+	}
+	if r.As == nil && r.Env != nil {
+		cmd.Env = append([]string(nil), r.Env...)
 	}
 	// Give the command its own process group and cancel the whole group, so that
 	// package managers which shell out to git, curl or a build backend take their
@@ -130,6 +141,9 @@ func (r RealRunner) LookPath(name string) (string, error) {
 func (r RealRunner) Getenv(key string) string {
 	if r.As != nil {
 		return r.As.Getenv(key)
+	}
+	if r.Env != nil {
+		return (&Identity{Env: r.Env}).Getenv(key)
 	}
 	return os.Getenv(key)
 }

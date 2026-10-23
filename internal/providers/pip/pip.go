@@ -124,6 +124,14 @@ func (p *Provider) interpreterFrom(out string) string {
 }
 
 // Discover parses `pip list --format=freeze`, whose lines are `name==version`.
+//
+// That list is every distribution the interpreter can import: the user site
+// and the interpreter's own site-packages alike. Only what `pip list --user`
+// also names is in the user site; everything else belongs to the interpreter
+// (a system or image-wide Python, a package manager's python3-* packages, pip
+// itself) and is reported as global scope, so prune never treats it as the
+// user's orphan. When the user listing cannot be read, nothing is claimed for
+// the user: the conservative answer is "global".
 func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 	if _, _, err := p.locate(); err != nil {
 		return nil, nil
@@ -135,7 +143,19 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 	if res.Failed() {
 		return nil, shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 	}
-	return p.parseFreeze(res.Stdout), nil
+	all := p.parseFreeze(res.Stdout)
+	user := map[string]bool{}
+	if ures, uerr := p.runner.Run(ctx, p.binary, "list", "--user", "--format=freeze"); uerr == nil && !ures.Failed() {
+		for _, inst := range p.parseFreeze(ures.Stdout) {
+			user[normalize(inst.Name)] = true
+		}
+	}
+	for i := range all {
+		if !user[normalize(all[i].Name)] {
+			all[i].Scope = model.ScopeGlobal
+		}
+	}
+	return all, nil
 }
 
 // parseFreeze reads `name==version` lines.

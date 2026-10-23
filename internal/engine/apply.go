@@ -745,6 +745,12 @@ func (e *Engine) Update(ctx context.Context, doc *config.Document, opts Options)
 				failures = append(failures, fmt.Sprintf("%s: %s", pkg.Name, err.Error()))
 			case conflict == nil:
 				skip(model.WarnPinKept, pkg, resolution.Provider, note)
+			case conflict.Resolution == "pending" && opts.UpdatePinned[pkg.Name]:
+				// A preview of a pin the user agreed to move: list the update
+				// it turns into, with the configuration edit, so the caller
+				// confirms (and guards) what will actually run.
+				res.PinConflicts = append(res.PinConflicts, *conflict)
+				res.Applied = append(res.Applied, e.plannedPinMove(doc, state, inst, pkg, conflict))
 			default:
 				res.PinConflicts = append(res.PinConflicts, *conflict)
 				if conflict.Resolution == "updated" {
@@ -1051,4 +1057,33 @@ func (e *Engine) UpdatePreview(ctx context.Context, doc *config.Document, opts O
 	preview.DryRun = true
 	res, _ := e.Update(ctx, doc, preview)
 	return res, nil
+}
+
+// plannedPinMove is the update a pin the user agreed to move becomes, as a
+// planned action: the package moving past the pin and the pin rewritten in the
+// file that declares it.
+func (e *Engine) plannedPinMove(doc *config.Document, state model.State, inst *model.Installation,
+	pkg model.Package, conflict *model.PinConflict) model.PlannedAction {
+	state.Current = e.withPath(inst)
+	path := ""
+	if f, ok := doc.Find(pkg.Name); ok {
+		path = f.Path
+	}
+	action := model.PlannedAction{
+		Action:  model.ActionUpdate,
+		State:   state,
+		Outcome: model.OutcomePlanned,
+		Note:    fmt.Sprintf("%s -> %s; pin would be rewritten in %s", pkg.Version, conflict.Available, shortOr(path, "the configuration")),
+		Changes: []model.ActionTransition{{Kind: model.ChangeVersion, From: pkg.Version, To: conflict.Available}},
+		Effects: []model.Effect{packageEffect(model.EffectModify, conflict.Provider, pkg.Name,
+			state.Current, pkg.Version, conflict.Available, model.EvidencePlanned)},
+	}
+	after := pkg
+	after.Version = conflict.Available
+	if cc := model.DiffEntry(path, &pkg, &after); cc != nil {
+		action.ConfigChanges = append(action.ConfigChanges, *cc)
+		action.Effects = append(action.Effects, configEffect(*cc, model.EvidencePlanned))
+	}
+	model.SortEffects(action.Effects)
+	return action
 }

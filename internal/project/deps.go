@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -23,6 +24,26 @@ type DependencyInstall struct {
 	Dir string `json:"dir"`
 	// Reason names the file that chose the command.
 	Reason string `json:"reason"`
+	// Virtualenv is the Python virtual environment a pip install goes into:
+	// the active one (VIRTUAL_ENV, when the pip that runs is its own) or the
+	// project's .venv. Empty for a pip install outside any virtualenv, which
+	// writes to the user's (or, as root, the system's) site-packages, and for
+	// every other installer.
+	Virtualenv string `json:"virtualenv,omitempty"`
+}
+
+// Pip reports whether the command is a pip install.
+func (d DependencyInstall) Pip() bool {
+	base := strings.TrimSuffix(filepath.Base(d.Tool), ".exe")
+	return base == "pip" || base == "pip3"
+}
+
+// OutsideVirtualenv reports whether the command is a pip install that runs
+// outside any virtualenv. Such an install changes the Python environment
+// everything else on the account (or, as root, the machine) shares: it can
+// upgrade or downgrade packages other software depends on.
+func (d DependencyInstall) OutsideVirtualenv() bool {
+	return d.Pip() && d.Virtualenv == ""
 }
 
 // String renders the command line.
@@ -83,13 +104,7 @@ func (i Info) Dependencies(lookPath func(string) (string, error)) (*DependencyIn
 		case has("pyproject.toml") && fileContains(filepath.Join(i.Root, "pyproject.toml"), "[tool.uv"):
 			return cmd("pyproject.toml configures uv", "uv", "sync")
 		case has("requirements.txt"):
-			pip := "pip"
-			if lookPath != nil {
-				if _, err := lookPath("pip3"); err == nil {
-					pip = "pip3"
-				}
-			}
-			return cmd("requirements.txt", pip, "install", "-r", "requirements.txt")
+			return i.pipInstall(lookPath)
 		default:
 			return nil, "no uv.lock, uv-managed pyproject.toml or requirements.txt; nothing says how to install dependencies"
 		}
@@ -104,6 +119,69 @@ func (i Info) Dependencies(lookPath func(string) (string, error)) (*DependencyIn
 		return cmd("Gemfile", "bundle", "install")
 	}
 	return nil, "no dependency installer for " + string(i.Kind) + " projects"
+}
+
+// pipInstall chooses the pip that installs requirements.txt, and the
+// virtualenv it installs into:
+//
+//  1. An active virtualenv (VIRTUAL_ENV) whose own pip is the one on PATH:
+//     the user has said where Python packages go.
+//  2. Otherwise the project's own .venv, through that environment's pip, so
+//     a project that has a virtualenv gets its dependencies there.
+//  3. Otherwise pip3 (or pip) from PATH, outside any virtualenv.
+//
+// lookPath may be nil, in which case PATH is not consulted and pip3 is not
+// preferred.
+func (i Info) pipInstall(lookPath func(string) (string, error)) (*DependencyInstall, string) {
+	args := []string{"install", "-r", "requirements.txt"}
+	pip, resolved := "pip", ""
+	if lookPath != nil {
+		if p, err := lookPath("pip3"); err == nil {
+			pip, resolved = "pip3", p
+		} else if p, err := lookPath("pip"); err == nil {
+			resolved = p
+		}
+	}
+	if venv := os.Getenv("VIRTUAL_ENV"); venv != "" && resolved != "" && within(resolved, venv) {
+		return &DependencyInstall{Tool: pip, Args: args, Dir: i.Root, Virtualenv: venv,
+			Reason: "requirements.txt, in the active virtualenv " + venv}, ""
+	}
+	venv := filepath.Join(i.Root, ".venv")
+	for _, rel := range venvPips() {
+		if p := filepath.Join(venv, rel); isFile(p) {
+			return &DependencyInstall{Tool: p, Args: args, Dir: i.Root, Virtualenv: venv,
+				Reason: "requirements.txt, in the project's .venv"}, ""
+		}
+	}
+	return &DependencyInstall{Tool: pip, Args: args, Dir: i.Root, Reason: "requirements.txt"}, ""
+}
+
+// venvPips are where a virtualenv keeps its pip, relative to its root.
+func venvPips() []string {
+	if runtime.GOOS == "windows" {
+		return []string{filepath.Join("Scripts", "pip3.exe"), filepath.Join("Scripts", "pip.exe")}
+	}
+	return []string{filepath.Join("bin", "pip3"), filepath.Join("bin", "pip")}
+}
+
+func isFile(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && !st.IsDir()
+}
+
+// within reports whether path is dir or below it, as written or with
+// symlinks resolved.
+func within(path, dir string) bool {
+	in := func(p, d string) bool {
+		rel, err := filepath.Rel(d, p)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+	}
+	if in(filepath.Clean(path), filepath.Clean(dir)) {
+		return true
+	}
+	rp, err1 := filepath.EvalSymlinks(path)
+	rd, err2 := filepath.EvalSymlinks(dir)
+	return err1 == nil && err2 == nil && in(rp, rd)
 }
 
 // packageManagerField reads package.json's "packageManager" (Corepack) field.
@@ -124,4 +202,46 @@ func packageManagerField(path string) string {
 func fileContains(path, needle string) bool {
 	data, err := os.ReadFile(path)
 	return err == nil && strings.Contains(string(data), needle)
+}
+
+// Replaced is something in the project that a dependency install deletes or
+// rewrites wholesale, which makes running the install a destructive change.
+type Replaced struct {
+	// Path is what is replaced.
+	Path string `json:"path"`
+	// Detail says what the installer does to it.
+	Detail string `json:"detail"`
+}
+
+// Replaces reports what running d would delete or rewrite wholesale, among
+// the things that are there now. Most installers only add (cargo fetch, go
+// mod download, bundle install); two are exact by design:
+//
+//   - `npm ci` deletes node_modules and installs it again from the lockfile.
+//   - `uv sync` removes every package the lockfile does not list from the
+//     project's .venv.
+func (d DependencyInstall) Replaces() []Replaced {
+	var out []Replaced
+	present := func(name string) (string, bool) {
+		p := filepath.Join(d.Dir, name)
+		_, err := os.Lstat(p)
+		return p, err == nil
+	}
+	sub := ""
+	if len(d.Args) > 0 {
+		sub = d.Args[0]
+	}
+	switch {
+	case d.Tool == "npm" && sub == "ci":
+		if p, ok := present("node_modules"); ok {
+			out = append(out, Replaced{Path: p,
+				Detail: "npm ci deletes node_modules and installs it again from the lockfile; anything changed or added there by hand is lost"})
+		}
+	case d.Tool == "uv" && sub == "sync":
+		if p, ok := present(".venv"); ok {
+			out = append(out, Replaced{Path: p,
+				Detail: "uv sync removes every package the lockfile does not list from .venv"})
+		}
+	}
+	return out
 }

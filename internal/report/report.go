@@ -250,7 +250,18 @@ func (w *Writer) JSON() bool { return w.asJSON }
 // the invoking user; it raises the `root-owned-after-drop` warning. Refusals
 // gain the codes `invoking-user-unresolved` and `privilege-drop-failed`.
 // Every existing field keeps its meaning.
-const SchemaVersion = 7
+//
+// Version 8 says what prune left alone and when a pip install is
+// destructive. Prune reports every orphan it does not remove (one outside
+// the home directory, or a package manager) as a `prune-skipped` warning
+// naming the package, its provider and the reason, where version 7 dropped
+// them silently. `install .` reports a requirements.txt install with pip as a
+// planned effect: inside a virtualenv a `modify` of that environment, which
+// the dependency command names as `virtualenv`; outside one a destructive
+// `replace` of Python packages with a `pip-outside-virtualenv` warning, which
+// an unattended run refuses without --allow-destructive. Every existing field
+// keeps its meaning.
+const SchemaVersion = 8
 
 // respond emits one flat JSON object: schema_version plus the given fields.
 //
@@ -464,21 +475,36 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 		warnings = []model.Warning{}
 	}
 	transitions := append(append([]model.Transition{}, plan.Transitions...), res.Transitions...)
+	// A dry run describes the machine as it is. A real run that changed
+	// something describes it as the run left it: the caller re-plans and puts
+	// the fresh states in res.States, and any action that did not apply
+	// means the machine has not converged whatever the states say.
+	states := plan.States
+	converged := plan.Empty()
+	if !res.DryRun && len(res.Applied) > 0 && res.States != nil {
+		states = res.States
+		converged = true
+		for _, a := range actions {
+			if a.Result != string(model.OutcomeApplied) {
+				converged = false
+			}
+		}
+	}
 	out := SyncResult{
 		DryRun:        res.DryRun,
 		ConfigChanged: res.ConfigChanged,
 		ConfigPath:    res.ConfigPath,
 		Actions:       actions,
 		Transitions:   dedupeTransitions(transitions),
-		States:        plan.States,
+		States:        states,
 		Warnings:      warnings,
 		Project:       proj,
 		Summary:       summarize(actions, warnings),
 	}
 	// Converged means every desired package is actually satisfied, which is
 	// stricter than having produced no actions.
-	out.Converged = plan.Empty()
-	for _, st := range plan.States {
+	out.Converged = converged
+	for _, st := range states {
 		if !st.Status.Healthy() {
 			out.Converged = false
 		}
@@ -1014,13 +1040,27 @@ func (w *Writer) Prune(res *engine.Result, dryRun bool) error {
 	}
 	w.writeContextWarnings()
 	actions, warnings := buildActions(dryRun, res.Warnings, res.Applied, w.runAs)
+	var skipped []model.Warning
+	others := 0
 	for _, warn := range warnings {
+		if warn.Code == model.WarnPruneSkipped {
+			skipped = append(skipped, warn)
+			continue
+		}
+		others++
 		if warn.Package == "" {
 			fmt.Fprintf(w.out, "  %s\n", w.colored(warn.Severity, warn.Message))
 		}
 	}
+	// What prune left alone is always listed, so a candidate outside the
+	// home or a package manager is never skipped without a word.
+	defer func() {
+		for _, warn := range skipped {
+			fmt.Fprintf(w.out, "%s [%s]: %s\n", w.severity(warn.Severity), warn.Code, warn.Message)
+		}
+	}()
 	if len(actions) == 0 {
-		if len(warnings) == 0 {
+		if others == 0 {
 			fmt.Fprintln(w.out, w.p.Green("No orphaned software found."))
 		}
 		return nil
@@ -1044,7 +1084,15 @@ func (w *Writer) Prune(res *engine.Result, dryRun bool) error {
 		fmt.Fprintln(w.out, line)
 		WriteEffects(w.out, w.p, a.Effects, dryRun, dryRun || w.verbose, "")
 		w.writeRunAs(a.RunAs, "  ")
-		w.writeActionWarnings(a.Warnings, "  ")
+		var ws []model.Warning
+		for _, warn := range a.Warnings {
+			// A skipped candidate of the same name from another provider
+			// is listed with the others, not under this action.
+			if warn.Code != model.WarnPruneSkipped {
+				ws = append(ws, warn)
+			}
+		}
+		w.writeActionWarnings(ws, "  ")
 	}
 	return nil
 }

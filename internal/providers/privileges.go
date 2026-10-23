@@ -35,6 +35,11 @@ type Privileges struct {
 	// Identity (it could not be resolved, or dropping privileges failed). It
 	// is reported in run_as.
 	Unavailable string
+	// RootEnv is the environment for commands that run as root in an
+	// elevated run acting for an invoking user: Starpoint's own environment
+	// with HOME pointed back at root's home. Nil means Starpoint's own
+	// environment unchanged (an ordinary run, or a plain root shell).
+	RootEnv []string
 
 	mu        sync.Mutex
 	decisions map[string]provider.PrivilegeDecision
@@ -91,11 +96,15 @@ func (pv *Privileges) Decide(ctx context.Context, p provider.Provider) provider.
 
 // Runner is the runner for the provider get returns.
 func (pv *Privileges) Runner(get func() provider.Provider) exec.Runner {
+	var rootEnv []string
+	if pv != nil {
+		rootEnv = pv.RootEnv
+	}
 	if !pv.dropping() {
-		return exec.RealRunner{}
+		return exec.RealRunner{Env: rootEnv}
 	}
 	asUser := exec.RealRunner{As: pv.Identity}
-	asRoot := exec.RealRunner{}
+	asRoot := exec.RealRunner{Env: rootEnv}
 	return exec.Chooser{Choose: func(ctx context.Context) exec.Runner {
 		if pv.Decide(ctx, get()).Privilege == provider.PrivilegeUser {
 			return asUser
