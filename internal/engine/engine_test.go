@@ -240,7 +240,7 @@ func TestExistingOwnershipIsAdoptedRatherThanDuplicated(t *testing.T) {
 	f.brew.With(model.Installation{Name: "ripgrep", Version: "14.1.0", Path: "/opt/homebrew/bin/rg"})
 
 	plan := f.plan(Options{})
-	if !plan.Empty() {
+	if !onlyRecords(plan) {
 		t.Fatalf("software that is already installed must not be reinstalled, got %+v", plan.Actions)
 	}
 	st := f.state(plan, "ripgrep")
@@ -789,7 +789,7 @@ func TestManagingProviderBeatsReadOnlySystemProvider(t *testing.T) {
 	if st.Desired == nil || st.Desired.Provider != brew.Name {
 		t.Fatalf("the package manager that owns git should win, got %+v", st.Desired)
 	}
-	if !plan.Empty() {
+	if !onlyRecords(plan) {
 		t.Errorf("an already-installed package needs no action: %+v", plan.Actions)
 	}
 }
@@ -850,7 +850,7 @@ func TestRustToolchainBinaryIsOwnedByRustup(t *testing.T) {
 	if st.Res.Provider != rustup.Name {
 		t.Errorf("rustc belongs to rustup, got %q (%s)", st.Res.Provider, st.Res.Reason)
 	}
-	if !plan.Empty() {
+	if !onlyRecords(plan) {
 		t.Errorf("an already-installed toolchain needs no action: %+v", plan.Actions)
 	}
 }
@@ -891,7 +891,7 @@ func TestRustupNeverClaimsACrate(t *testing.T) {
 	if st.Res.Provider != cargo.Name {
 		t.Errorf("an installed crate keeps Cargo as its owner, got %q (%s)", st.Res.Provider, st.Res.Reason)
 	}
-	if !plan.Empty() {
+	if !onlyRecords(plan) {
 		t.Errorf("nothing to do for a crate already installed: %+v", plan.Actions)
 	}
 }
@@ -1167,5 +1167,62 @@ func TestAddToolchainPinInstallsThatToolchain(t *testing.T) {
 	}
 	if got := f.rustup.InstallCalls[0].Package.Version; got != "1.50.0" {
 		t.Errorf("the concrete toolchain should be requested, got %q", got)
+	}
+}
+
+// onlyRecords reports whether a plan changes nothing on the machine: every
+// action, if any, records an owner in the configuration and nothing else.
+// An installed package with no provider recorded gets exactly that.
+func onlyRecords(plan model.Plan) bool {
+	for _, a := range plan.Actions {
+		if a.Action != model.ActionRecord || a.ConfigChange == nil {
+			return false
+		}
+		for _, e := range a.Effects {
+			if e.Kind != model.EffectConfig {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// A system-only copy of an entry with no provider is planned as a move the
+// caller must not make on its own; InstallBesideSystem turns it into an
+// install of a managed copy that records its owner and removes nothing. A
+// configured provider is not that case.
+func TestInstallBesideSystemIsAnInstallThatRemovesNothing(t *testing.T) {
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"zsh\"\n")
+	f.sys.With(model.Installation{Name: "zsh", Path: "/usr/bin/zsh", Provider: system.Name, Scope: model.ScopeGlobal})
+	f.uv.IsAvailable = false
+	f.cargo.IsAvailable = false
+	f.npm.IsAvailable = false
+
+	plan := f.plan(Options{})
+	if len(plan.Actions) != 1 || !OnlySystemHas(plan.Actions[0]) {
+		t.Fatalf("only the system has zsh and nothing names a provider: %+v", plan.Actions)
+	}
+	a, ok := f.eng.InstallBesideSystem(context.Background(), f.doc, plan.Actions[0])
+	if !ok || a.Action != model.ActionInstall || a.State.Res.Provider != brew.Name {
+		t.Fatalf("expected an install through brew, got %v %+v", ok, a)
+	}
+	if a.ConfigChange == nil || a.ConfigChange.Upsert == nil || a.ConfigChange.Upsert.Provider != brew.Name {
+		t.Errorf("the managed copy's owner is recorded: %+v", a.ConfigChange)
+	}
+	for _, e := range a.Effects {
+		if e.Op == model.EffectDelete || e.Op == model.EffectReplace {
+			t.Errorf("a copy beside the system's deletes and replaces nothing: %+v", e)
+		}
+	}
+
+	named := newFixture(t, "schema = 1\n\n[[package]]\nname = \"zsh\"\nprovider = \"brew\"\n")
+	named.sys.With(model.Installation{Name: "zsh", Path: "/usr/bin/zsh", Provider: system.Name, Scope: model.ScopeGlobal})
+	for _, act := range named.plan(Options{}).Actions {
+		if OnlySystemHas(act) {
+			t.Errorf("a configured provider is a decision, not this case: %+v", act)
+		}
+		if _, ok := named.eng.InstallBesideSystem(context.Background(), named.doc, act); ok {
+			t.Error("InstallBesideSystem must refuse a configured provider")
+		}
 	}
 }

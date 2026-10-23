@@ -36,15 +36,22 @@ type Engine struct {
 	tracker  *tracking.Tracker
 	history  *history.History
 
-	// healthOnce and healthCache make provider probing happen once per Engine.
+	// healthCache makes provider probing happen once per Engine.
 	//
 	// Probing is the dominant cost of every command: it runs a subprocess per
 	// provider, and a single `starpoint install` reaches for the answer several
 	// times over. Memoising it turns three full sweeps into one and, more
 	// importantly, makes every step of a command reason about the same machine
 	// state rather than three slightly different samples of it.
-	healthOnce  sync.Once
+	//
+	// Only a probe that finished on its own is remembered. One whose context
+	// was cancelled or ran out (Inventory bounds every probe) says nothing
+	// about the provider, so it is asked again the next time; healthBusy
+	// holds the providers whose abandoned probe is still running, so a
+	// provider is never probed twice at once.
+	healthMu    sync.Mutex
 	healthCache map[string]provider.Health
+	healthBusy  map[string]chan struct{}
 
 	// historyErr records a failure to load the transition history database.
 	//
@@ -67,6 +74,10 @@ type Engine struct {
 	// runAs reports the account a provider's commands run as in this run,
 	// when the caller knows. Nil means Starpoint's own account throughout.
 	runAs func(ctx context.Context, p provider.Provider) model.RunAs
+
+	// discoverTimeout bounds each provider's answer to Inventory. Zero means
+	// SurveyTimeout.
+	discoverTimeout time.Duration
 }
 
 // HistoryError reports why transition history is unavailable, or nil if it
@@ -256,18 +267,144 @@ func (e *Engine) Plan(ctx context.Context, doc *config.Document, opts Options) (
 
 // health probes every registered provider, tolerating individual failures.
 //
-// The result is memoised for the lifetime of the Engine. A caller that needs a
-// fresh look — a long-running process, or a test that changes the machine
-// mid-command — can build a new Engine.
+// A finished probe is memoised for the lifetime of the Engine. A caller that
+// needs a fresh look — a long-running process, or a test that changes the
+// machine mid-command — can build a new Engine. A probe cut short by ctx is
+// not memoised: a cancelled deadline is not a verdict on the provider.
 func (e *Engine) health(ctx context.Context) map[string]provider.Health {
-	e.healthOnce.Do(func() {
-		out := map[string]provider.Health{}
-		for _, p := range e.reg.All() {
-			out[p.Name()] = p.Health(ctx)
+	out := map[string]provider.Health{}
+	for _, p := range e.reg.All() {
+		if h, ok := e.cachedHealth(p); ok {
+			out[p.Name()] = h
+			continue
 		}
-		e.healthCache = out
-	})
-	return e.healthCache
+		h := p.Health(ctx)
+		if ctx.Err() == nil {
+			e.rememberHealth(p.Name(), h)
+		}
+		out[p.Name()] = h
+	}
+	return out
+}
+
+// cachedHealth returns the memoised probe of p. A provider whose earlier,
+// abandoned probe is still running is reported unavailable for now rather
+// than probed a second time alongside it.
+func (e *Engine) cachedHealth(p provider.Provider) (provider.Health, bool) {
+	e.healthMu.Lock()
+	defer e.healthMu.Unlock()
+	if h, ok := e.healthCache[p.Name()]; ok {
+		return h, true
+	}
+	if _, busy := e.healthBusy[p.Name()]; busy {
+		return provider.Health{
+			Name: p.Name(), Description: p.Description(), Kind: p.Kind(), Capabilities: p.Capabilities(),
+			Reason: "an earlier health check of " + p.Name() + " has not finished",
+		}, true
+	}
+	return provider.Health{}, false
+}
+
+func (e *Engine) rememberHealth(name string, h provider.Health) {
+	e.healthMu.Lock()
+	defer e.healthMu.Unlock()
+	if e.healthCache == nil {
+		e.healthCache = map[string]provider.Health{}
+	}
+	e.healthCache[name] = h
+}
+
+// healthWithin probes the given providers concurrently, each under its own
+// timeout, so one slow provider cannot spend another's time.
+//
+// It returns every provider's health and, for each probe that did not finish
+// on its own (it timed out, ctx was cancelled, or it ignored cancellation and
+// was still running after the grace), why. Those providers are reported
+// unavailable here and are not memoised; the caller reports them as failed.
+func (e *Engine) healthWithin(ctx context.Context, providers []provider.Provider, timeout time.Duration) (map[string]provider.Health, map[string]string) {
+	out := map[string]provider.Health{}
+	failed := map[string]string{}
+	type result struct {
+		name   string
+		h      provider.Health
+		cutOff error
+	}
+	results := make(chan result, len(providers))
+	waiting := map[string]provider.Provider{}
+	for _, p := range providers {
+		if h, ok := e.cachedHealth(p); ok {
+			out[p.Name()] = h
+			continue
+		}
+		waiting[p.Name()] = p
+		// Marked busy before the probe starts and cleared when it returns,
+		// so a probe abandoned below is never started a second time while
+		// it is still running.
+		running := make(chan struct{})
+		e.healthMu.Lock()
+		if e.healthBusy == nil {
+			e.healthBusy = map[string]chan struct{}{}
+		}
+		e.healthBusy[p.Name()] = running
+		e.healthMu.Unlock()
+		go func(p provider.Provider) {
+			pctx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			h := p.Health(pctx)
+			cutOff := pctx.Err()
+			// No longer busy before the answer is sent, so whoever reads it
+			// can probe again straight away.
+			e.healthMu.Lock()
+			if e.healthBusy[p.Name()] == running {
+				delete(e.healthBusy, p.Name())
+			}
+			e.healthMu.Unlock()
+			close(running)
+			results <- result{name: p.Name(), h: h, cutOff: cutOff}
+		}(p)
+	}
+	timedOut := fmt.Sprintf("health check timed out after %s", timeout)
+	cutOffReason := func(err error) string {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return timedOut
+		}
+		return "health check was cancelled: " + err.Error()
+	}
+	wait := time.NewTimer(timeout + min(timeout, discoverGrace))
+	defer wait.Stop()
+collect:
+	for len(waiting) > 0 {
+		select {
+		case r := <-results:
+			delete(waiting, r.name)
+			if r.cutOff != nil {
+				h := r.h
+				h.Available = false
+				h.Reason = cutOffReason(r.cutOff)
+				out[r.name] = h
+				failed[r.name] = h.Reason
+				continue
+			}
+			e.rememberHealth(r.name, r.h)
+			out[r.name] = r.h
+		case <-wait.C:
+			break collect
+		}
+	}
+	// What is still waiting ignored its deadline and is abandoned; it stays
+	// busy until it returns, so nothing probes it again alongside.
+	for name, p := range waiting {
+		reason := timedOut
+		if ctx.Err() != nil {
+			reason = cutOffReason(ctx.Err())
+		}
+		out[name] = provider.Health{
+			Name: name, Description: p.Description(), Kind: p.Kind(), Capabilities: p.Capabilities(),
+			Reason: reason,
+		}
+		failed[name] = reason
+	}
+	return out, failed
 }
 
 // evaluate builds the State for one desired package.
@@ -441,29 +578,33 @@ func (e *Engine) actionFor(st model.State, available map[string]provider.Health)
 	}
 
 	switch st.Status {
+	case model.StatusCorrect:
+		// Installed, by the provider resolution settled on, with no owner
+		// recorded yet. Nothing on the machine changes; recording the owner
+		// is a configuration change, shown and confirmed like any other, so
+		// the next run reads a decision instead of re-deriving one. The
+		// operating system's copy is never recorded: Starpoint does not
+		// manage it.
+		if st.Package.Provider != "" || st.Desired == nil || st.Res.Provider == system.Name || st.Res.Ambiguous {
+			return model.PlannedAction{}, false
+		}
+		pkg := st.Package
+		pkg.Provider = st.Res.Provider
+		if pkg.Reason == "" {
+			pkg.Reason = "already installed through " + st.Res.Provider
+		}
+		return model.PlannedAction{
+			Action:       model.ActionRecord,
+			State:        st,
+			ConfigChange: &model.ConfigEdit{File: st.Package.Origin.Path, Upsert: &pkg},
+			Note:         "already installed through " + st.Res.Provider + "; records it as the owner",
+		}, true
+
 	case model.StatusMissing:
 		if !prov.Capabilities().Install {
 			return model.PlannedAction{}, false
 		}
-		// The provider decision has not been recorded yet. Recording it is a
-		// configuration change, and it is the durable part of the operation.
-		edit := &model.ConfigEdit{File: st.Package.Origin.Path}
-		pkg := st.Package
-		pkg.Provider = st.Res.Provider
-		if pkg.Reason == "" {
-			pkg.Reason = st.Res.Reason
-		}
-		edit.Upsert = &pkg
-		note := ""
-		if st.Res.Ambiguous {
-			note = "provider choice was ambiguous; the configuration will record " + st.Res.Provider
-		}
-		return model.PlannedAction{
-			Action:       model.ActionInstall,
-			State:        st,
-			ConfigChange: edit,
-			Note:         note,
-		}, true
+		return installAction(st), true
 
 	case model.StatusVersionDiffers:
 		edit := &model.ConfigEdit{File: st.Package.Origin.Path}
@@ -501,6 +642,58 @@ func (e *Engine) actionFor(st model.State, available map[string]provider.Health)
 		}, true
 	}
 	return model.PlannedAction{}, false
+}
+
+// installAction installs st's package through the provider resolution
+// settled on. The provider decision has not been recorded yet. Recording it
+// is a configuration change, and it is the durable part of the operation.
+func installAction(st model.State) model.PlannedAction {
+	edit := &model.ConfigEdit{File: st.Package.Origin.Path}
+	pkg := st.Package
+	pkg.Provider = st.Res.Provider
+	if pkg.Reason == "" {
+		pkg.Reason = st.Res.Reason
+	}
+	edit.Upsert = &pkg
+	note := ""
+	if st.Res.Ambiguous {
+		note = "provider choice was ambiguous; the configuration will record " + st.Res.Provider
+	}
+	return model.PlannedAction{
+		Action:       model.ActionInstall,
+		State:        st,
+		ConfigChange: edit,
+		Note:         note,
+	}
+}
+
+// OnlySystemHas reports whether a planned move is the case where the
+// configuration names no provider and the only copy on the machine is the
+// operating system's. Converging it means adding a managed copy beside the
+// system's, which is a decision for the user, not for Starpoint: the
+// caller asks, or refuses when nobody can be asked.
+func OnlySystemHas(a model.PlannedAction) bool {
+	st := a.State
+	return a.Action == model.ActionRelocate && st.Package.Provider == "" &&
+		st.Current != nil && st.Current.Provider == system.Name && st.Res.Provider != system.Name
+}
+
+// InstallBesideSystem turns such a move into what it really is, an install
+// of a managed copy through the resolved provider that leaves the system's
+// copy alone, described like any planned install. It reports false when
+// that provider cannot install.
+func (e *Engine) InstallBesideSystem(ctx context.Context, doc *config.Document, a model.PlannedAction) (model.PlannedAction, bool) {
+	if !OnlySystemHas(a) {
+		return model.PlannedAction{}, false
+	}
+	prov, ok := e.reg.Get(a.State.Res.Provider)
+	if !ok || !prov.Capabilities().Install {
+		return model.PlannedAction{}, false
+	}
+	install := installAction(a.State)
+	install = e.describePlanned(ctx, doc, install)
+	install.Outcome = model.OutcomePlanned
+	return install, true
 }
 
 func shortVersion(i *model.Installation) string {
@@ -813,10 +1006,7 @@ func (e *Engine) Prune(ctx context.Context, doc *config.Document, opts Options) 
 	//     CARGO_HOME under /usr/local belong to the machine, whoever runs
 	//     Starpoint. A plain root shell therefore only ever prunes root's own
 	//     home.
-	protected := map[string]bool{"corepack": true, "starpoint": true}
-	for _, q := range e.reg.All() {
-		protected[q.Name()] = true
-	}
+	protected := e.packageManagerNames()
 	home := e.profileHome()
 
 	var failures []string
