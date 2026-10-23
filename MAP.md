@@ -457,7 +457,7 @@ That is the whole direct set, on purpose; each addition needs a reason.
   already-failing paths, and everything in `_test.go`. Locally `check` does
   not run golangci-lint, but CI does, so a change that would fail `lint`
   fails the PR instead
-- **`.goreleaser.yaml`** - linux/darwin/windows × amd64/arm64,
+- **`.goreleaser.yaml`** - linux/darwin × amd64/arm64 (no Windows builds),
   CGO_ENABLED=0, archives carrying the completions, Homebrew formula rendered
   with `skip_upload: true`
 - **`.github/workflows/ci.yml`** - reusable (`workflow_call`): lint job; `make
