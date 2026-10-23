@@ -247,7 +247,9 @@ the user's home run *as the user*: Starpoint starts their commands with the
 user's uid, primary gid and supplementary groups (set by the kernel between
 fork and exec, so the provider never runs as root) and an environment built
 for the user rather than inherited from root. System providers run as root,
-where root is the point.
+where root is the point, with root's own `HOME`: npm, gem and pip write caches
+and logs under `$HOME`, and as root they would otherwise leave root-owned files
+in the user's home.
 
 | Provider | Under sudo/doas it runs as |
 |---|---|

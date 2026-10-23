@@ -124,6 +124,10 @@ type Env struct {
 	// their subprocesses and the default configuration path all read. Tests
 	// replace it so the test binary's own HOME is never changed.
 	SetHome func(home string) error
+	// RootHome reports root's own home directory, for the commands that stay
+	// root in an elevated run acting for its invoking user. Nil means the
+	// user database's entry for the effective user. Tests replace it.
+	RootHome func() string
 	// target is the invoking user's environment an elevated run acts on, if
 	// any.
 	target *elevation.Target
@@ -1868,6 +1872,11 @@ func (e *Env) runInDir(ctx context.Context, dir string, stdout, stderr io.Writer
 			return err
 		}
 		return fmt.Errorf("%s is not on PATH; install it (for example 'starpoint install %s') and run this again", name, name)
+	}
+	if id == nil && e.privileges != nil && e.privileges.RootEnv != nil {
+		// The installer stays root (the project is not the invoking user's),
+		// so it keeps its caches in root's home, not the user's.
+		cmd.Env = append([]string(nil), e.privileges.RootEnv...)
 	}
 	cmd.Dir = dir
 	cmd.Stdout = stdout

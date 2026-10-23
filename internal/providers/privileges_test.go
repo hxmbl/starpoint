@@ -217,3 +217,13 @@ func TestUnclassifiedProvidersRunAsRoot(t *testing.T) {
 
 // plain hides the fake's classification.
 type plain struct{ provider.Provider }
+
+// Commands that run as root in an elevated run acting for a user get the
+// root environment, with root's home, not Starpoint's retargeted one.
+func TestRootRunnerUsesTheRootEnvironment(t *testing.T) {
+	pv := &Privileges{Elevated: true, RootEnv: []string{"PATH=/usr/bin:/bin", "HOME=/root"}}
+	r := pv.Runner(func() provider.Provider { return nil })
+	if got := exec.Getenv(r, "HOME"); got != "/root" {
+		t.Errorf("a root command's HOME is %q, want /root", got)
+	}
+}

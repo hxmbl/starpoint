@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hxmbl/starpoint/internal/align"
@@ -93,6 +96,12 @@ func (e *Env) retarget(ctx context.Context) {
 	if e.Environ != nil {
 		environ = e.Environ
 	}
+	// Commands that stay root (system providers, a provider whose prefix is
+	// a system location, or every provider when the drop below fails) must
+	// not inherit the HOME that now names the user: npm, gem and pip write
+	// caches and logs under $HOME, and as root they would leave root-owned
+	// files in the user's home. They get root's own home back.
+	e.privileges.RootEnv = rootEnvironment(environ(), e.rootHome(status.Home, t.Home))
 	id := privdrop.Identity(t, status.Home, environ())
 	probe := e.DropProbe
 	if probe == nil {
@@ -312,4 +321,39 @@ func (e *Env) alignOwnFiles() {
 	e.audit(auditlog.Entry{Event: auditlog.EventAction, Command: "align", Action: "chown",
 		Result: "applied", Elevated: true, Effects: effects,
 		Detail: "Starpoint's own files given to " + e.target.User})
+}
+
+// rootHome is the home directory commands that stay root should see: root's
+// own from the user database, or the HOME Starpoint started with, but never
+// the invoking user's. Empty means it cannot be told apart from theirs.
+func (e *Env) rootHome(started, userHome string) string {
+	candidates := []string{}
+	if e.RootHome != nil {
+		candidates = append(candidates, e.RootHome())
+	} else if u, err := user.LookupId(strconv.Itoa(os.Geteuid())); err == nil {
+		candidates = append(candidates, u.HomeDir)
+	}
+	candidates = append(candidates, started)
+	for _, c := range candidates {
+		if c != "" && filepath.Clean(c) != filepath.Clean(userHome) {
+			return c
+		}
+	}
+	return ""
+}
+
+// rootEnvironment is environ with HOME set to home. With no home to give,
+// it is nil: commands keep Starpoint's own environment.
+func rootEnvironment(environ []string, home string) []string {
+	if home == "" {
+		return nil
+	}
+	out := make([]string, 0, len(environ)+1)
+	for _, kv := range environ {
+		if strings.HasPrefix(kv, "HOME=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "HOME="+home)
 }

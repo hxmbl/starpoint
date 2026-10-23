@@ -14,6 +14,7 @@ import (
 	"github.com/hxmbl/starpoint/internal/model"
 	"github.com/hxmbl/starpoint/internal/provider"
 	"github.com/hxmbl/starpoint/internal/providers"
+	"github.com/hxmbl/starpoint/internal/providers/npm"
 	"github.com/hxmbl/starpoint/internal/providers/uv"
 	"github.com/hxmbl/starpoint/internal/testsupport"
 )
@@ -204,4 +205,88 @@ func requireRoot(t *testing.T) {
 		t.Fatal("STARPOINT_ROOT_TESTS=1 but the test is not running as root")
 	}
 	t.Skip("needs root (CI runs these with sudo and STARPOINT_ROOT_TESTS=1)")
+}
+
+// fakeNPM is a stand-in for npm with a system prefix: like npm, every
+// invocation writes a log under $HOME/.npm, and it records who ran it.
+const fakeNPM = `#!/bin/sh
+mkdir -p "$HOME/.npm/_logs" && id -u > "$HOME/.npm/_logs/ran-by"
+case "$1 $2 $3" in
+"--version  ") echo "10.9.0" ;;
+"config get prefix") echo "/usr" ;;
+"config get cache") echo "$HOME/.npm" ;;
+"ls -g --json") echo '{"dependencies":{}}' ;;
+*) echo '{"dependencies":{}}' ;;
+esac
+`
+
+// TestAsRootRootProvidersKeepTheirFilesOutOfTheUsersHome: under sudo,
+// Starpoint points its own HOME at the invoking user, but a provider that
+// stays root (npm with a system prefix) used to inherit that HOME and leave
+// root-owned logs and caches in ~/.npm. Even a read-only `list` did it, and
+// root-owned npm caches make the user's own npm fail with EACCES. Root
+// commands now get root's home back.
+func TestAsRootRootProvidersKeepTheirFilesOutOfTheUsersHome(t *testing.T) {
+	requireRoot(t)
+	h := newHarness(t, "schema = 1\n")
+	top := t.TempDir()
+	for dir := top; dir != os.TempDir() && dir != "/" && dir != "."; dir = filepath.Dir(dir) {
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	home := filepath.Join(top, "home")
+	rootHome := filepath.Join(top, "root")
+	tools := filepath.Join(top, "fakebin")
+	for _, dir := range []string{home, rootHome, tools} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chown(home, 65534, 65534); err != nil {
+		t.Fatal(err)
+	}
+	testsupport.WriteExecutable(t, filepath.Join(tools, "npm"), fakeNPM)
+
+	h.env.GlobalConfig = filepath.Join(home, ".starpoint.toml")
+	testsupport.WriteFile(t, h.env.GlobalConfig, "schema = 1\n")
+	h.env.Registry = nil
+	h.env.NewRegistry = func(pv *providers.Privileges) *provider.Registry {
+		reg := provider.NewRegistry()
+		var npmP *npm.Provider
+		npmP = npm.New(pv.Runner(func() provider.Provider { return npmP }))
+		reg.Register(npmP)
+		return reg
+	}
+	// Starpoint's own PATH finds the fake npm, and its HOME really is pointed
+	// at the user, as it is under sudo: that is what root commands inherited.
+	t.Setenv("PATH", tools+":/usr/bin:/bin")
+	h.env.Environ = os.Environ
+	h.env.RootHome = func() string { return rootHome }
+	h.env.Elevation = func() elevation.Status {
+		return elevation.Status{Elevated: true, Mechanism: "effective user id 0, root", Home: rootHome,
+			InvokingUser: "nobody", Via: "sudo", InvokingUID: 65534, InvokingGID: 65534, InvokingHome: home,
+			InvokingGroups: []int{65534}}
+	}
+	h.env.SetHome = func(dir string) error { t.Setenv("HOME", dir); return nil }
+	h.env.DropProbe = nil // the real probe
+
+	h.mustRun("list", "--json")
+
+	err := filepath.Walk(home, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if st := info.Sys().(*syscall.Stat_t); st.Uid == 0 {
+			t.Errorf("%s is owned by root; a read-only run must leave nothing of root's in the user's home", p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	by, err := os.ReadFile(filepath.Join(rootHome, ".npm", "_logs", "ran-by"))
+	if err != nil || strings.TrimSpace(string(by)) != "0" {
+		t.Errorf("npm with a system prefix runs as root with root's home: ran-by %q, %v", by, err)
+	}
 }
