@@ -236,6 +236,9 @@ func TestInstallDotListsAndObservesTheNodeModulesReplacement(t *testing.T) {
 		t.Errorf("the confirmation lists the deletion with !:\n%s", out)
 	}
 
+	// The confirmed run above already replaced node_modules, so put the
+	// local change back for the observed run to lose.
+	testsupport.WriteFile(t, filepath.Join(modules, "patched.js"), "// a local change\n")
 	op := h.mustRun("install", ".", "--yes", "--allow-destructive", "--json")
 	var payload struct {
 		Dependencies struct {
