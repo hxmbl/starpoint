@@ -134,8 +134,8 @@ Inventory only observes. Providers are probed for health and asked for their
 package lists; nothing is resolved, installed, recorded in the configuration
 or written to Starpoint's own logs, and even an elevated run gives no file
 to another owner. It works with no configuration at all. A provider whose
-listing fails, or that does not answer within 20 seconds, is reported
-(discover-failed) and the others are still shown.
+health check or listing fails, or does not answer within 20 seconds, is
+reported (discover-failed) and the others are still shown.
 
 Options:
   --provider <name>   Only this provider (repeatable)
