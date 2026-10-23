@@ -133,6 +133,10 @@ type Env struct {
 	target *elevation.Target
 	// alignment is the ownership and permission policy of an elevated run.
 	alignment *align.Policy
+	// AdjustAlignment, when set, sees the ownership and permission policy of
+	// an elevated run before it is used. Tests that cannot change owners use
+	// it to reassign from their own uid and record the chowns instead.
+	AdjustAlignment func(p *align.Policy)
 	// started is when this Run began; an elevated run only reassigns what
 	// changed after it.
 	started time.Time
@@ -477,7 +481,9 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		err = env.dispatch(ctx, w, cmd, cmdArgs, force, providers)
 	}
 	if err == errHelpShown {
-		env.alignOwnFiles()
+		if !writesNothing(canonicalCommand(cmd)) {
+			env.alignOwnFiles()
+		}
 		return 0
 	}
 	if err == errUnknownCommand {
@@ -595,8 +601,13 @@ func (e *Env) begin(command string, args []string) {
 // finish records how a command ended and returns its exit code.
 func (e *Env) finish(command string, args []string, code int, err error) int {
 	// Starpoint's own records go back to the user an elevated run acts for
-	// before the last entry is appended; appending keeps the owner.
-	e.alignOwnFiles()
+	// before the last entry is appended; appending keeps the owner. A command
+	// that writes nothing has nothing of its own to give back, and must not
+	// chown what earlier runs left either: "writes nothing" includes
+	// ownership.
+	if !writesNothing(command) {
+		e.alignOwnFiles()
+	}
 	if command != "" && !writesNothing(command) {
 		result := "ok"
 		if err != nil {

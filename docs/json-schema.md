@@ -109,7 +109,7 @@ consumer should act on the code and show the message. Codes in use:
 | `transition-left-behind` | Ownership moved but the previous provider's copy is still present. |
 | `pin-conflict` | A newer version exists than the pin; the pin was kept. |
 | `pin-kept`, `already-current`, `update-unsupported`, `not-installed` | Why `update` left a package alone (severity `info`). |
-| `discover-failed` | A provider could not list its packages, so `prune` considered none of them, or `inventory` shows none of them. |
+| `discover-failed` | A provider could not list its packages, so `prune` considered none of them, or `inventory` shows none of them (including a provider that did not answer within the 20-second bound). |
 | `prune-skipped` | An orphan (installed, declared nowhere) that `prune` left alone, with its `package` and `provider`; the message gives the reason: it lives outside the invoking user's home directory (a system npm prefix, the interpreter's own site-packages), or it is a package manager (any registered provider, `corepack`, `starpoint`). Severity `info`; reported by dry runs and real runs alike. |
 | `pip-outside-virtualenv` | `install .` runs `pip install -r requirements.txt` outside any virtualenv, so it installs into the user's site-packages (as root, the system's) and may upgrade or downgrade packages other software depends on. Its effect is destructive; creating a virtualenv (`python3 -m venv .venv`) makes Starpoint install there instead. |
 | `toolchain-missing` | `install .` found the project's toolchain absent. |
@@ -396,7 +396,10 @@ registration order. `listed` is true when the provider was asked and
 answered; it is false for an unavailable provider, one that cannot enumerate
 (`reason` says so), and one whose listing failed (`error`, plus a
 `discover-failed` warning naming the `provider`; the other providers are still
-listed). `packages` are sorted by provider in registration order, then name.
+listed). Each provider has 20 seconds to answer (the same bound as the
+per-package survey); one that has not answered by then is reported the same
+way, with an `error` and warning message saying it timed out, so a hung
+package manager never stalls the command. `packages` are sorted by provider in registration order, then name.
 `name` is the provider's own name. `path` is what the provider reported or,
 failing that, the PATH entry attributed to the same provider; absent when
 neither says. `managed` is true only when the configuration has an entry with
@@ -822,7 +825,7 @@ Version 9 adds; nothing a version 8 consumer read is removed or renamed.
 2. New command `inventory`, with its own payload (see "Inventory"):
    `providers`, `packages`, `warnings` and `summary`.
 3. `discover-failed` is also raised by `inventory`, once per provider whose
-   listing failed.
+   listing failed or did not answer within the 20-second bound.
 
 ## Versioning Policy
 
