@@ -10,6 +10,7 @@ import (
 func TestRequestedReadsInstalledOnRequest(t *testing.T) {
 	p, r := newProvider(t)
 	r.Set("firefox\n", "brew", "list", "--cask", "-1")
+	r.Set(caskroomWith(t, map[string]string{"firefox": `{"installed_on_request": true}`})+"\n", "brew", "--caskroom")
 	r.Set("jq\nripgrep\n", "brew", "list", "--formula", "--installed-on-request", "-1")
 	got, err := p.Requested(context.Background(), []model.Installation{{Name: "jq"}, {Name: "ripgrep"}, {Name: "oniguruma"}, {Name: "firefox"}})
 	if err != nil {

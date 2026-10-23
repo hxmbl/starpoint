@@ -389,16 +389,19 @@ func (p *Provider) Privilege(ctx context.Context, q exec.Runner, t provider.Priv
 var _ provider.RequestedReporter = (*Provider)(nil)
 
 // Requested reads which formulae were installed on request
-// (`brew list --formula --installed-on-request`); a cask is always installed
-// on request. When that flag is missing (an older Homebrew),
+// (`brew list --formula --installed-on-request`). A cask's reason comes from
+// its install receipt (see caskReasons): casks can depend on other casks, so
+// a cask with no recorded reason is a dependency only when another installed
+// cask depends on it, and otherwise unknown. When that flag is missing (an
+// older Homebrew),
 // `brew leaves --installed-on-request` names some of them, and the formulae
 // it leaves out stay unknown rather than being called dependencies: a
 // requested formula that another formula depends on is not a leaf.
 //
-// Only a formula can be a dependency. When the cask list cannot be read,
-// a name missing from the on-request list may be a cask, so it is called a
-// dependency only if `brew list --formula` names it as a formula; failing
-// that too, it stays unknown.
+// A name missing from the on-request list is a formula dependency only when
+// it is a formula. When the cask list cannot be read, it may be a cask, so it
+// is called a dependency only if `brew list --formula` names it as a
+// formula; failing that too, it stays unknown.
 func (p *Provider) Requested(ctx context.Context, installed []model.Installation) (map[string]bool, error) {
 	casks, casksOK := p.names(ctx, "list", "--cask", "-1")
 	res, err := p.runner.Run(ctx, "brew", "list", "--formula", "--installed-on-request", "-1")
@@ -407,6 +410,7 @@ func (p *Provider) Requested(ctx context.Context, installed []model.Installation
 		for _, name := range strings.Fields(res.Stdout) {
 			onRequest[name] = true
 		}
+		caskReason := p.caskReasons(ctx, casks)
 		// Which names are formulae: everything that is not a cask when the
 		// cask list was read, otherwise only what brew lists as a formula.
 		isFormula := func(name string) bool { return !casks[name] }
@@ -417,8 +421,12 @@ func (p *Provider) Requested(ctx context.Context, installed []model.Installation
 		out := make(map[string]bool, len(installed))
 		for _, inst := range installed {
 			switch {
-			case onRequest[inst.Name], casks[inst.Name]:
+			case onRequest[inst.Name]:
 				out[inst.Name] = true
+			case casks[inst.Name]:
+				if v, ok := caskReason[inst.Name]; ok {
+					out[inst.Name] = v
+				}
 			case isFormula(inst.Name):
 				out[inst.Name] = false
 			}
@@ -436,8 +444,10 @@ func (p *Provider) Requested(ctx context.Context, installed []model.Installation
 	for _, name := range strings.Fields(leaves.Stdout) {
 		out[name] = true
 	}
-	for name := range casks {
-		out[name] = true
+	for name, v := range p.caskReasons(ctx, casks) {
+		if _, known := out[name]; !known {
+			out[name] = v
+		}
 	}
 	return out, nil
 }
