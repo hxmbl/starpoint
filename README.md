@@ -181,6 +181,8 @@ is printed for you to run.
 | `starpoint transition [pkg...] [--all] [--dry-run] [--no-confirm]` | Show or perform provider transitions (alias: `move`) |
 | `starpoint transition --reverse <package>` | Reverse the most recent transition when safe |
 | `starpoint doctor [--all]` | Inspect Starpoint, config, providers, ownership, inconsistencies, PATH |
+| `starpoint inventory [--provider <name>]` | List every package each provider reports, managed or not, matched by provider and name; observes only (Health and Discover), works with no configuration, writes nothing — not even the audit log, and an elevated run chowns nothing; each provider gets 20 s to answer; says per package whether it was installed on request, as a dependency, or unknown |
+| `starpoint adopt <package> [provider]`, `starpoint adopt --all` | Record the owner of software that is already installed; never installs, removes or moves anything. `--all` takes everything a provider says was installed on request; dependencies, unclassifiable packages and system software stay unmanaged. `--dry-run`, `--no-confirm` |
 | `starpoint list [--managed] [--provider <name>]` | Show managed software, its location, scope and provider (alias: `ls`) |
 | `starpoint info <package>` | Show one package's state in detail (alias: `show`) |
 | `starpoint explain <package>` | Explain how Starpoint resolves ownership |
@@ -345,7 +347,9 @@ same account with more rights and carries no invoking user, so providers run
 elevated and no ownership is reassigned; the `--allow-root` guard applies.
 
 Exit status: `0` success, `1` failure, `2` usage error, `3` refused unattended
-destructive run, `4` refused elevated run. A refusal changes nothing.
+destructive run, `4` refused elevated run, `5` refused because a decision only
+you can make was needed with nobody to ask (the refusal names the
+candidates). A refusal changes nothing.
 
 Global options work anywhere on the line: `--json`, `--provider <name>`
 (repeatable, restricts automatic resolution), `--force`, `--verbose` (`-v`),

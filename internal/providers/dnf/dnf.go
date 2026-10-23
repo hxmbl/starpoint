@@ -324,3 +324,103 @@ var _ provider.Privileged = (*Provider)(nil)
 func (p *Provider) Privilege(context.Context, exec.Runner, provider.PrivilegeTarget) provider.PrivilegeDecision {
 	return shell.RootPrivilege("dnf installs system packages, which needs root")
 }
+
+var _ provider.RequestedReporter = (*Provider)(nil)
+
+// requestedQueryFormat asks for each installed package's name and install
+// reason, one per line. Both DNF 4 and DNF 5 expand the literal "\n"; DNF 4
+// also ends each entry with a newline of its own, so blank lines are
+// skipped.
+const requestedQueryFormat = `%{name} %{reason}\n`
+
+// Requested reads the reason DNF recorded for each installed package
+// (`dnf repoquery --installed --queryformat "%{name} %{reason}\n"`).
+//
+// `--userinstalled` is not enough: as the DNF 5 documentation says, it also
+// returns packages pulled in by a comps group or module profile and packages
+// whose reason is unknown, so it cannot tell requested software from the
+// rest. The reason itself can:
+//
+//   - "user" (DNF 4) or "User" (DNF 5): requested.
+//   - "dependency", "weak-dependency" (DNF 4) or "Dependency", "Weak
+//     Dependency" (DNF 5): a dependency.
+//   - anything else ("group"/"Group", "unknown"/"None", "clean"/"Clean",
+//     DNF 5's "External User" for a package installed outside DNF, or a
+//     reason this version does not know): unknown, never guessed.
+//
+// A package installed for several architectures is requested when any of
+// them was, and a dependency only when every one of them was.
+func (p *Provider) Requested(ctx context.Context, installed []model.Installation) (map[string]bool, error) {
+	res, err := p.runner.Run(ctx, "dnf", "repoquery", "--installed", "--queryformat", requestedQueryFormat)
+	if err != nil {
+		return nil, shell.Failure(p.Name(), "requested", "could not run dnf repoquery to read install reasons", err)
+	}
+	if res.Failed() {
+		return nil, shell.Failure(p.Name(), "requested", shell.Diagnostic(res.Field()), nil)
+	}
+	return requestedFromReasons(res.Stdout, installed), nil
+}
+
+// installReason is what one DNF reason says about a package.
+type installReason int
+
+const (
+	reasonUnknown installReason = iota
+	reasonDependency
+	reasonUser
+)
+
+// parseReason maps DNF 4's and DNF 5's spellings of a reason.
+func parseReason(s string) installReason {
+	norm := strings.ToLower(strings.Join(strings.FieldsFunc(s, func(r rune) bool {
+		return r == ' ' || r == '-' || r == '_' || r == '\t'
+	}), "-"))
+	switch norm {
+	case "user":
+		return reasonUser
+	case "dependency", "weak-dependency":
+		return reasonDependency
+	default:
+		return reasonUnknown
+	}
+}
+
+// requestedFromReasons reads "name reason" lines and answers for the
+// installed names: true for requested, false for a dependency, and nothing
+// for a name whose reason is unknown or missing.
+func requestedFromReasons(out string, installed []model.Installation) map[string]bool {
+	type seen struct{ user, dep, unknown bool }
+	reasons := map[string]*seen{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		name, reason, _ := strings.Cut(line, " ")
+		r := reasons[name]
+		if r == nil {
+			r = &seen{}
+			reasons[name] = r
+		}
+		switch parseReason(reason) {
+		case reasonUser:
+			r.user = true
+		case reasonDependency:
+			r.dep = true
+		default:
+			r.unknown = true
+		}
+	}
+	got := make(map[string]bool, len(installed))
+	for _, inst := range installed {
+		r := reasons[inst.Name]
+		switch {
+		case r == nil:
+		case r.user:
+			got[inst.Name] = true
+		case r.dep && !r.unknown:
+			got[inst.Name] = false
+		}
+	}
+	return got
+}
