@@ -321,3 +321,18 @@ var _ provider.Privileged = (*Provider)(nil)
 func (p *Provider) Privilege(context.Context, exec.Runner, provider.PrivilegeTarget) provider.PrivilegeDecision {
 	return shell.RootPrivilege("pacman installs system packages, which needs root")
 }
+
+var _ provider.RequestedReporter = (*Provider)(nil)
+
+// Requested reads pacman's explicitly installed packages (`pacman -Qqe`);
+// every other installed package was installed as a dependency.
+func (p *Provider) Requested(ctx context.Context, installed []model.Installation) (map[string]bool, error) {
+	res, err := p.runner.Run(ctx, "pacman", "-Qqe")
+	if err != nil {
+		return nil, shell.Failure(p.Name(), "requested", "could not run pacman -Qqe", err)
+	}
+	if res.Failed() {
+		return nil, shell.Failure(p.Name(), "requested", shell.Diagnostic(res.Field()), nil)
+	}
+	return shell.RequestedFrom(strings.Fields(res.Stdout), installed), nil
+}

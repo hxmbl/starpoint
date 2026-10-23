@@ -240,7 +240,7 @@ func TestExistingOwnershipIsAdoptedRatherThanDuplicated(t *testing.T) {
 	f.brew.With(model.Installation{Name: "ripgrep", Version: "14.1.0", Path: "/opt/homebrew/bin/rg"})
 
 	plan := f.plan(Options{})
-	if !plan.Empty() {
+	if !onlyRecords(plan) {
 		t.Fatalf("software that is already installed must not be reinstalled, got %+v", plan.Actions)
 	}
 	st := f.state(plan, "ripgrep")
@@ -789,7 +789,7 @@ func TestManagingProviderBeatsReadOnlySystemProvider(t *testing.T) {
 	if st.Desired == nil || st.Desired.Provider != brew.Name {
 		t.Fatalf("the package manager that owns git should win, got %+v", st.Desired)
 	}
-	if !plan.Empty() {
+	if !onlyRecords(plan) {
 		t.Errorf("an already-installed package needs no action: %+v", plan.Actions)
 	}
 }
@@ -850,7 +850,7 @@ func TestRustToolchainBinaryIsOwnedByRustup(t *testing.T) {
 	if st.Res.Provider != rustup.Name {
 		t.Errorf("rustc belongs to rustup, got %q (%s)", st.Res.Provider, st.Res.Reason)
 	}
-	if !plan.Empty() {
+	if !onlyRecords(plan) {
 		t.Errorf("an already-installed toolchain needs no action: %+v", plan.Actions)
 	}
 }
@@ -891,7 +891,7 @@ func TestRustupNeverClaimsACrate(t *testing.T) {
 	if st.Res.Provider != cargo.Name {
 		t.Errorf("an installed crate keeps Cargo as its owner, got %q (%s)", st.Res.Provider, st.Res.Reason)
 	}
-	if !plan.Empty() {
+	if !onlyRecords(plan) {
 		t.Errorf("nothing to do for a crate already installed: %+v", plan.Actions)
 	}
 }
@@ -1168,4 +1168,21 @@ func TestAddToolchainPinInstallsThatToolchain(t *testing.T) {
 	if got := f.rustup.InstallCalls[0].Package.Version; got != "1.50.0" {
 		t.Errorf("the concrete toolchain should be requested, got %q", got)
 	}
+}
+
+// onlyRecords reports whether a plan changes nothing on the machine: every
+// action, if any, records an owner in the configuration and nothing else.
+// An installed package with no provider recorded gets exactly that.
+func onlyRecords(plan model.Plan) bool {
+	for _, a := range plan.Actions {
+		if a.Action != model.ActionRecord || a.ConfigChange == nil {
+			return false
+		}
+		for _, e := range a.Effects {
+			if e.Kind != model.EffectConfig {
+				return false
+			}
+		}
+	}
+	return true
 }

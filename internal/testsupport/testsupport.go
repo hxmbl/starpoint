@@ -134,6 +134,8 @@ type FakeProvider struct {
 	UpdateError  error
 	// InstalledError makes Installed fail.
 	InstalledError error
+	// DiscoverError makes Discover fail.
+	DiscoverError error
 	// InstallPath is where Install puts the software. Tests set it so the paths a
 	// fake reports line up with the PATH a fake locator resolves, which matters
 	// whenever a test is exercising verification.
@@ -246,6 +248,9 @@ func (f *FakeProvider) Health(context.Context) provider.Health {
 func (f *FakeProvider) Discover(context.Context) ([]model.Installation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.DiscoverError != nil {
+		return nil, f.DiscoverError
+	}
 	names := make([]string, 0, len(f.Items))
 	for n := range f.Items {
 		names = append(names, n)
@@ -472,3 +477,35 @@ func WriteExecutable(t *testing.T, path, content string) {
 		t.Fatalf("chmod %s: %v", path, err)
 	}
 }
+
+// RequestedFake is a FakeProvider that also answers provider.RequestedReporter:
+// Marks says which names were requested (true) or dependencies (false); a
+// name left out is unknown. Err makes the question fail.
+type RequestedFake struct {
+	*FakeProvider
+	Marks map[string]bool
+	Err   error
+}
+
+var _ provider.RequestedReporter = (*RequestedFake)(nil)
+
+// Requested implements provider.RequestedReporter.
+func (f *RequestedFake) Requested(_ context.Context, installed []model.Installation) (map[string]bool, error) {
+	if f.Err != nil {
+		return nil, f.Err
+	}
+	out := map[string]bool{}
+	for _, inst := range installed {
+		if v, ok := f.Marks[inst.Name]; ok {
+			out[inst.Name] = v
+		}
+	}
+	return out, nil
+}
+
+// ListingFake is a FakeProvider whose listing holds only requested software,
+// as provider.RequestedByConstruction says.
+type ListingFake struct{ *FakeProvider }
+
+// DiscoverListsOnlyRequested implements provider.RequestedByConstruction.
+func (ListingFake) DiscoverListsOnlyRequested() bool { return true }

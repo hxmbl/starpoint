@@ -4,9 +4,11 @@ This document describes Starpoint's machine-readable output envelope and payload
 
 ## Schema Version
 
-Current schema version: `8`
+Current schema version: `9`
 
-All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 8, ...command fields }`; errors are `{ "schema_version": 8, "error": "..." }` on stderr, and a refusal adds `code`, `exit_code` and, when the command had a plan, `refused` (see "Errors and refusals").
+All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 9, ...command fields }`; errors are `{ "schema_version": 9, "error": "..." }` on stderr, and a refusal adds `code`, `exit_code` and, when the command had a plan, `refused` (see "Errors and refusals").
+
+Version 9 is the onboarding pass: Starpoint as an ownership ledger over the package managers already on the machine. It adds the read-only `inventory` command (every package each provider reports, managed or not). Every field a version 8 consumer read keeps its meaning. See "Migrating from schema 8 to 9".
 
 Version 8 says what `prune` left alone and when a pip install is destructive. `prune` reports every orphan it does not remove, because it lives outside the home directory or is a package manager, as a `prune-skipped` warning (severity `info`) naming the package, its provider and the reason; version 7 dropped them silently. `install .` reports a `requirements.txt` install with pip as a planned effect either way: inside a virtualenv (the active `VIRTUAL_ENV` whose pip is on PATH, or the project's `.venv`) a `modify` of that environment, named by the new `dependencies.command.virtualenv`; outside one a destructive `replace` of the Python packages it names, with the new warning `pip-outside-virtualenv`, which an unattended run refuses (exit 3) without `--allow-destructive`. Every field a version 7 consumer read keeps its meaning. See "Migrating from schema 7 to 8".
 
@@ -107,7 +109,11 @@ consumer should act on the code and show the message. Codes in use:
 | `transition-left-behind` | Ownership moved but the previous provider's copy is still present. |
 | `pin-conflict` | A newer version exists than the pin; the pin was kept. |
 | `pin-kept`, `already-current`, `update-unsupported`, `not-installed` | Why `update` left a package alone (severity `info`). |
-| `discover-failed` | A provider could not list its packages, so `prune` considered none of them. |
+| `discover-failed` | A provider could not list its packages, so `prune` considered none of them, or `inventory` shows none of them (including a provider whose health check or listing did not answer within the 20-second bound). |
+| `duplicate-install` | `install` would add a second copy beside another provider's (or the operating system's); shown on the action before the confirmation. Unattended, the same condition is the `duplicate-install` refusal. |
+| `provider-drift` | `sync` found a package installed through another provider than the configuration gives it. Nothing was moved or removed; the message names `starpoint transition <package>` and `starpoint adopt <package> <owner>`. |
+| `owner-ambiguous` | `adopt --all` found a name installed on request through more than one provider and nobody to ask; it was left out. |
+| `requested-unknown` | `inventory` could not ask a provider which of its packages were installed on purpose; they are all shown as `requested: unknown`. |
 | `prune-skipped` | An orphan (installed, declared nowhere) that `prune` left alone, with its `package` and `provider`; the message gives the reason: it lives outside the invoking user's home directory (a system npm prefix, the interpreter's own site-packages), or it is a package manager (any registered provider, `corepack`, `starpoint`). Severity `info`; reported by dry runs and real runs alike. |
 | `pip-outside-virtualenv` | `install .` runs `pip install -r requirements.txt` outside any virtualenv, so it installs into the user's site-packages (as root, the system's) and may upgrade or downgrade packages other software depends on. Its effect is destructive; creating a virtualenv (`python3 -m venv .venv`) makes Starpoint install there instead. |
 | `toolchain-missing` | `install .` found the project's toolchain absent. |
@@ -349,10 +355,118 @@ such as `running-elevated`, name no package and appear only at the top level.
 }
 ```
 
+An entry with no `provider` whose software is already installed through the
+provider resolution settles on (not `system`, and not an ambiguous choice)
+gets a `record` action: one configuration change setting `provider` (and
+`reason` when empty), no machine effect, `result: "applied"` once written.
+It is confirmed like any other change, and the next run has nothing to do.
+
+`sync` never removes or moves software. A package whose configured provider
+is not the one that has it produces no action and no `transitions` entry: it
+keeps the status `provider-differs`, so `converged` is false, and the warning
+`provider-drift` names the package, the configured `provider`, and in its
+message the provider that has it and the commands that settle it
+(`starpoint transition <package>`, `starpoint adopt <package> <owner>`).
+`transitions` is therefore always empty for `sync`; `transition` reports
+moves.
+
 In a dry run, `states` and `converged` describe the machine as it is. After
 a real run that changed something they describe the machine as the run left
 it: `converged` is true only when every action applied and every package is
 now satisfied.
+
+### Inventory
+
+`starpoint inventory [--provider <name>]...` only observes: providers are
+probed for health and asked to list what they have installed (Discover),
+nothing else. It works with no configuration, resolves nothing, installs
+nothing, writes no configuration and leaves no audit entry. It reports:
+
+```json
+{
+  "schema_version": 9,
+  "providers": [
+    {
+      "name": "string",
+      "available": "boolean",
+      "reason": "string | null",
+      "listed": "boolean",
+      "count": "integer",
+      "error": "string | null",
+      "requested": "reported | listing | unknown | null"
+    }
+  ],
+  "packages": [
+    {
+      "provider": "string",
+      "name": "string",
+      "version": "string | null",
+      "path": "string | null",
+      "scope": "global | user | project | null",
+      "managed": "boolean",
+      "requested": "requested | dependency | unknown"
+    }
+  ],
+  "warnings": ["Warning"],
+  "summary": { "packages": "integer", "managed": "integer", "unmanaged": "integer", "requested": "integer" }
+}
+```
+
+`providers` has one entry per registered provider (or per `--provider`), in
+registration order. `listed` is true when the provider was asked and
+answered; it is false for an unavailable provider, one that cannot enumerate
+(`reason` says so), and one whose listing failed (`error`, plus a
+`discover-failed` warning naming the `provider`; the other providers are still
+listed). Each provider has 20 seconds to answer (the same bound as the
+per-package survey); one that has not answered by then is reported the same
+way, with an `error` and warning message saying it timed out, so a hung
+package manager never stalls the command. Health checks run first,
+concurrently, each with its own 20 seconds; a provider whose health check
+times out or is cancelled is reported the same way too (`available` false,
+an `error`, and a `discover-failed` warning saying it could not be checked),
+never as a quietly unavailable provider. `packages` are sorted by provider in registration order, then name.
+`name` is the provider's own name. `path` is what the provider reported or,
+failing that, the PATH entry attributed to the same provider; absent when
+neither says. `managed` is true only when the configuration has an entry with
+this `name` and this `provider`: an entry for the same name with another
+provider, or with no provider recorded yet, leaves it `false`.
+
+`requested` says whether the user asked for the package, as the provider
+knows it. A provider's `requested` says how it knows (present only when it
+was listed):
+
+| Provider `requested` | Providers | Meaning |
+| --- | --- | --- |
+| `reported` | apt (`apt-mark showmanual`), dnf (`dnf repoquery --installed --queryformat '%{name} %{reason}\n'`), pacman (`pacman -Qqe`), brew (`brew list --formula --installed-on-request`; casks: each cask's install receipt) | The tool records why each package is installed. A package is `requested` or `dependency`, or `unknown` where the record does not say. dnf: only the `user` reason is `requested` and only `dependency` or `weak-dependency` (DNF 5: `Dependency`, `Weak Dependency`) is `dependency`; `group`, `unknown`/`None`, `clean` and DNF 5's `External User` are `unknown` (`--userinstalled` is not used: it also returns group and module-profile packages and unknown reasons). brew: with an older Homebrew that lacks that flag, `brew leaves --installed-on-request` names some requested formulae and the rest are `unknown`, never `dependency`; when the cask list cannot be read, only names `brew list --formula` confirms as formulae can be `dependency`, the rest are `unknown`. brew casks: `brew info --json=v2` carries no install reason for casks, so the reason is `installed_on_request` in the cask's install receipt (`<caskroom>/<token>/.metadata/INSTALL_RECEIPT.json`, written by Homebrew 4.4.0 and later; an early receipt's `installed_as_dependency: true` also means `dependency`). A cask with no receipt (installed before 4.4.0), or whose receipt says neither, is `dependency` when another installed cask depends on it (from the other casks' receipts or `brew info --json=v2 --installed --cask`), and otherwise `unknown`; a cask is never assumed `requested`. |
+| `listing` | uv, cargo, npm, pnpm, go, rustup, nix, flatpak | What the tool lists is only what was installed on purpose (uv tools, `cargo install`, global packages at depth 0, installed Go binaries, toolchains, the Nix profile, Flatpak applications without runtimes), so every package is `requested`, except a package manager itself (any provider name, `corepack`, `starpoint`), which is `unknown`. |
+| `unknown` | pip, gem, yarn, snap, system | The listing mixes requested software with dependencies and the tool has no record to tell them apart; every package is `unknown`. |
+
+When a `reported` provider's question fails, its packages are all `unknown`
+and the warning `requested-unknown` names the provider.
+
+### Adopt
+
+`adopt` reports the operation fields above (`operation: "adopt"`) plus:
+
+```json
+{
+  "skipped": [{ "package": "string", "provider": "string | null", "reason": "string" }],
+  "left_unmanaged": [{ "provider": "string", "dependency": "integer", "unknown": "integer" }]
+}
+```
+
+Every action is `adopt` (`result` `planned` in a dry run, `applied`
+otherwise) with one configuration change and no machine effect: adopting
+never installs, uninstalls or moves anything. A package no provider has, or
+that the named provider does not have, is an error and nothing is recorded;
+software only the `system` provider has is never adopted. `skipped` names
+what was looked at and left alone, with the reason (already recorded; with
+`--all`, a name the configuration records with another provider, with the
+`transition` or `adopt` command that settles it, or one several providers
+claim, which also raises the warning `owner-ambiguous` when nobody could be
+asked). `left_unmanaged` is `--all` only: per provider, how many unmanaged
+packages it left because the provider calls them dependencies or cannot say
+(`inventory`'s `requested`). The system provider is not counted.
 
 ### Install .
 
@@ -394,7 +508,7 @@ not observed; inside a virtualenv the planned effect is a non-destructive
 
 ```json
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "operation": "remove",
   "dry_run": false,
   "config_changed": true,
@@ -456,7 +570,7 @@ not observed; inside a virtualenv the planned effect is a non-destructive
 Every error is one JSON document on stderr:
 
 ```json
-{ "schema_version": 8, "error": "string" }
+{ "schema_version": 9, "error": "string" }
 ```
 
 A refusal is an error that a flag would have allowed. Nothing was changed. It
@@ -465,12 +579,14 @@ planned its work, `refused`:
 
 ```json
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "error": "string",
-  "code": "destructive-unattended | elevated-refused | invoking-user-unresolved | privilege-drop-failed",
+  "code": "destructive-unattended | elevated-refused | invoking-user-unresolved | privilege-drop-failed | owner-ambiguous | duplicate-install | provider-ambiguous",
   "exit_code": 3,
+  "package": "string (decision refusals, exit 5)",
+  "candidates": ["string (decision refusals, exit 5)"],
   "refused": {
-    "operation": "sync | install | remove | update | prune | transition",
+    "operation": "sync | install | remove | update | prune | transition | adopt",
     "actions": ["ActionResult"],
     "warnings": ["Warning"],
     "summary": "Summary"
@@ -484,12 +600,18 @@ planned its work, `refused`:
 | `elevated-refused` | 4 | A command that changes anything ran as root or elevated, without `--allow-root` and without an interactive confirmation (only possible under sudo or doas at a terminal). `refused` is absent: the refusal happens before any planning. |
 | `invoking-user-unresolved` | 4 | Under sudo or doas from an ordinary user, that user's uid, gid or home could not be resolved (or HOME could not be pointed at it). Starpoint will not run their providers as root instead, and `--allow-root` does not change that. `refused` is absent. |
 | `privilege-drop-failed` | 4 | Under sudo or doas from an ordinary user, a process could not actually be started as that user (Starpoint runs `id -u` as them before changing anything and checks they can write their home): no right to switch users, a uid the system rejects, an unwritable home. `--allow-root` does not change it. `refused` is absent. |
+| `duplicate-install` | 5 | An unattended `install` would add a second copy: another provider already has the software (`candidates` names it, whoever chose the target provider), or only the operating system has it and Starpoint picked the provider (`candidates` is `["system"]`). Rerun with `--allow-duplicate`, name the provider for a managed copy beside the system's, or use `adopt`/`transition`. `refused` holds the planned install. |
+| `provider-ambiguous` | 5 | An unattended `sync` would install a package with no recorded provider whose provider is ambiguous. `package` is the first such package (the message names all), `candidates` the providers that could own it. Record a `provider` or install it with the provider named. `refused` holds the planned actions. |
+| `owner-ambiguous` | 5 | `adopt <package>` without a provider found the software installed through more than one provider and had no terminal to ask on. `package` names it and `candidates` the providers that have it; name the owner (`starpoint adopt <package> <provider>`). `refused` is absent. |
+
+Exit 5 is the decision refusal: a choice only the user can make was needed
+and nobody could be asked. Such a refusal carries `package` and `candidates`.
 
 Every action in `refused.actions` has `result: "planned"` and `dry_run: true`,
 and lists every planned effect and configuration change, destructive or not.
 
-Exit status for every command: `0` success, `1` failure, `2` usage error, `3`
-and `4` the refusals above.
+Exit status for every command: `0` success, `1` failure, `2` usage error, `3`,
+`4` and `5` the refusals above.
 
 ### Example: an unattended removal refused
 
@@ -497,7 +619,7 @@ and `4` the refusals above.
 
 ```json
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "error": "refusing to remove unattended: it would delete or replace something (ruff) and --yes (or --no-confirm) was given. Nothing was changed. Review the planned changes, then rerun with --allow-destructive to allow it",
   "code": "destructive-unattended",
   "exit_code": 3,
@@ -764,6 +886,43 @@ Version 8 adds; nothing a version 7 consumer read is removed or renamed.
    exit 3 and `destructive-unattended` unless `--allow-destructive`; an
    interactive run lists it with `!` before asking. A virtualenv is never
    required.
+
+## Migrating from schema 8 to 9
+
+Version 9 adds; nothing a version 8 consumer read is removed or renamed.
+
+1. The version number moved from 8 to 9.
+2. New command `inventory`, with its own payload (see "Inventory"):
+   `providers`, `packages`, `warnings` and `summary`.
+3. `discover-failed` is also raised by `inventory`, once per provider whose
+   health check or listing failed or did not answer within the 20-second
+   bound.
+4. `Warning.code` gains `requested-unknown` and `owner-ambiguous`.
+5. New command `adopt`, with the operation fields plus `skipped` and
+   `left_unmanaged` (see "Adopt"); `refused.operation` gains `adopt`.
+6. Refusal `code` gains `owner-ambiguous` with the new exit status 5, the
+   decision refusal, whose error document carries `package` and
+   `candidates`.
+7. Behaviour: adopting (including `install .` recording a project's
+   toolchain) never records a package the chosen provider neither reports
+   nor owns on PATH; version 8 wrote such an entry with a
+   `recorded-not-installed` warning.
+8. Behaviour: `sync` no longer moves software between providers, so it never
+   removes anything. Where version 8 planned a `relocate` action (and a
+   `transitions` entry) for a provider mismatch, version 9 plans nothing,
+   reports `provider-drift`, and leaves the package `provider-differs`.
+   `relocate` actions now come only from `transition`.
+9. Refusal `code` gains `duplicate-install` and `provider-ambiguous` (exit
+   5), and `Warning.code` gains `duplicate-install`. Behaviour: an unattended
+   `install` that would silently add a second copy, and an unattended `sync`
+   that would pick a provider for an ambiguous package, are refused where
+   version 8 went ahead. `install --allow-duplicate` is new.
+10. Behaviour: `sync` plans a `record` action (configuration only) for an
+    installed entry with no provider recorded, so `converged` is false in a
+    dry run until it is written. Version 8 left such an entry unrecorded with
+    no action. A `record` action with a configuration change reports
+    `result: "applied"`; one without (an unsatisfiable pin) still reports
+    `reported`.
 
 ## Versioning Policy
 

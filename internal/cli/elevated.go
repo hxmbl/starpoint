@@ -180,7 +180,7 @@ func changingCommand(cmd string, args []string) bool {
 	switch canonicalCommand(cmd) {
 	case "init":
 		return true
-	case "sync", "install", "remove", "update", "prune":
+	case "sync", "install", "remove", "update", "prune", "adopt":
 		return !dryRun
 	case "transition":
 		if dryRun {
@@ -283,6 +283,9 @@ func (e *Env) alignPolicy() *align.Policy {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
 			p.Home = home
 		}
+	}
+	if e.AdjustAlignment != nil {
+		e.AdjustAlignment(p)
 	}
 	e.alignment = p
 	return p
