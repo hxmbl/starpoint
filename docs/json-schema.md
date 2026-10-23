@@ -109,7 +109,7 @@ consumer should act on the code and show the message. Codes in use:
 | `transition-left-behind` | Ownership moved but the previous provider's copy is still present. |
 | `pin-conflict` | A newer version exists than the pin; the pin was kept. |
 | `pin-kept`, `already-current`, `update-unsupported`, `not-installed` | Why `update` left a package alone (severity `info`). |
-| `discover-failed` | A provider could not list its packages, so `prune` considered none of them, or `inventory` shows none of them. |
+| `discover-failed` | A provider could not list its packages, so `prune` considered none of them, or `inventory` shows none of them (including a provider that did not answer within the 20-second bound). |
 | `provider-drift` | `sync` found a package installed through another provider than the configuration gives it. Nothing was moved or removed; the message names `starpoint transition <package>` and `starpoint adopt <package> <owner>`. |
 | `owner-ambiguous` | `adopt --all` found a name installed on request through more than one provider and nobody to ask; it was left out. |
 | `requested-unknown` | `inventory` could not ask a provider which of its packages were installed on purpose; they are all shown as `requested: unknown`. |
@@ -410,7 +410,10 @@ registration order. `listed` is true when the provider was asked and
 answered; it is false for an unavailable provider, one that cannot enumerate
 (`reason` says so), and one whose listing failed (`error`, plus a
 `discover-failed` warning naming the `provider`; the other providers are still
-listed). `packages` are sorted by provider in registration order, then name.
+listed). Each provider has 20 seconds to answer (the same bound as the
+per-package survey); one that has not answered by then is reported the same
+way, with an `error` and warning message saying it timed out, so a hung
+package manager never stalls the command. `packages` are sorted by provider in registration order, then name.
 `name` is the provider's own name. `path` is what the provider reported or,
 failing that, the PATH entry attributed to the same provider; absent when
 neither says. `managed` is true only when the configuration has an entry with
@@ -423,7 +426,7 @@ was listed):
 
 | Provider `requested` | Providers | Meaning |
 | --- | --- | --- |
-| `reported` | apt (`apt-mark showmanual`), dnf (`dnf repoquery --userinstalled`), pacman (`pacman -Qqe`), brew (`brew list --formula --installed-on-request`; every cask) | The tool records why each package is installed. A package is `requested` or `dependency`. With an older Homebrew that lacks that flag, `brew leaves --installed-on-request` names some requested formulae and the rest are `unknown`, never `dependency`. |
+| `reported` | apt (`apt-mark showmanual`), dnf (`dnf repoquery --installed --queryformat '%{name} %{reason}\n'`), pacman (`pacman -Qqe`), brew (`brew list --formula --installed-on-request`; every cask) | The tool records why each package is installed. A package is `requested` or `dependency`, or `unknown` where the record does not say. dnf: only the `user` reason is `requested` and only `dependency` or `weak-dependency` (DNF 5: `Dependency`, `Weak Dependency`) is `dependency`; `group`, `unknown`/`None`, `clean` and DNF 5's `External User` are `unknown` (`--userinstalled` is not used: it also returns group and module-profile packages and unknown reasons). brew: with an older Homebrew that lacks that flag, `brew leaves --installed-on-request` names some requested formulae and the rest are `unknown`, never `dependency`; when the cask list cannot be read, only names `brew list --formula` confirms as formulae can be `dependency`, the rest are `unknown`. |
 | `listing` | uv, cargo, npm, pnpm, go, rustup, nix, flatpak | What the tool lists is only what was installed on purpose (uv tools, `cargo install`, global packages at depth 0, installed Go binaries, toolchains, the Nix profile, Flatpak applications without runtimes), so every package is `requested`, except a package manager itself (any provider name, `corepack`, `starpoint`), which is `unknown`. |
 | `unknown` | pip, gem, yarn, snap, system | The listing mixes requested software with dependencies and the tool has no record to tell them apart; every package is `unknown`. |
 
@@ -879,7 +882,7 @@ Version 9 adds; nothing a version 8 consumer read is removed or renamed.
 2. New command `inventory`, with its own payload (see "Inventory"):
    `providers`, `packages`, `warnings` and `summary`.
 3. `discover-failed` is also raised by `inventory`, once per provider whose
-   listing failed.
+   listing failed or did not answer within the 20-second bound.
 4. `Warning.code` gains `requested-unknown` and `owner-ambiguous`.
 5. New command `adopt`, with the operation fields plus `skipped` and
    `left_unmanaged` (see "Adopt"); `refused.operation` gains `adopt`.
