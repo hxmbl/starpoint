@@ -82,7 +82,12 @@ func hasCode(ws []model.Warning, code string) bool {
 func binHarness(t *testing.T, config string) (*harness, string) {
 	t.Helper()
 	h := newHarness(t, config)
-	bin := t.TempDir()
+	// uv's executable directory is ~/.local/bin, inside the user's home:
+	// prune only ever removes software found there.
+	bin := filepath.Join(h.home, ".local", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	h.uv.ExeDir = bin
 	h.uv.InstallPath = bin
 	h.uv.InstallHook = func(req provider.Request) {

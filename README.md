@@ -171,7 +171,7 @@ is printed for you to run.
 | `starpoint install .` | Install the current project's declared packages and dependencies; record its toolchain in the project config |
 | `starpoint remove <package> [provider]` | Uninstall and delete from config (aliases: `uninstall`, `rm`); `--dry-run`, `--no-confirm`, `--allow-empty` |
 | `starpoint update [--self] [--dry-run] [--no-confirm]` | Update managed software; asks before moving past a pin (alias: `upgrade`) |
-| `starpoint prune [--dry-run] [--no-confirm]` | Preview and remove orphaned user-scoped installations; refuses when the configuration declares no packages |
+| `starpoint prune [--dry-run] [--no-confirm]` | Preview and remove orphaned user-scoped installations inside your home directory; never a package manager itself; refuses when the configuration declares no packages |
 | `starpoint recover [--discard] [--no-confirm]` | Inspect and clear files left by an interrupted run |
 | `starpoint runs [--package <name>] [--directory <dir>]` | Show where Starpoint has been run (alias: `history`) |
 | `starpoint logging [prune\|config]` | Show, age out, or configure Starpoint's own logging (alias: `logs`) |
@@ -376,7 +376,7 @@ Implemented in this release:
 | `flatpak` | global | The system installation: application IDs, runtimes excluded, a branch (`stable`, `beta`) as the channel. Per-user installations are not enumerated or modified. |
 | `snap` | global | snapd's inventory and channels. Never grants classic confinement on its own: that is a decision about unrestricted access, and the failure says so. |
 | `uv` | user | Python tools and interpreters, `==` pins. |
-| `pip` | user | Python packages, installed with `--user` so pip never needs root. Locations come from `pip show -f`: the console script when there is one, otherwise the package directory. |
+| `pip` | user | Python packages, installed with `--user` so pip never needs root. Locations come from `pip show -f`: the console script when there is one, otherwise the package directory. Only what `pip list --user` names is user scope; the interpreter's own site-packages are reported as global. |
 | `rustup` | user | Rust toolchains: `rustc`, `cargo`, `rustfmt` and friends, plus the toolchains themselves. |
 | `cargo` | user | Crates from `cargo install`, `--version` pins. |
 | `npm` | user | Global packages, `name@version` and dist-tags. |

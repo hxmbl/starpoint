@@ -3,11 +3,13 @@ package cli
 import (
 	"encoding/json"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/hxmbl/starpoint/internal/model"
 	"github.com/hxmbl/starpoint/internal/report"
+	"github.com/hxmbl/starpoint/internal/testsupport"
 )
 
 // prune must refuse when the configuration declares nothing. With no source of
@@ -98,5 +100,44 @@ func TestInfoJSONIsOneDocument(t *testing.T) {
 	}
 	if v, ok := first["schema_version"].(float64); !ok || v != report.SchemaVersion {
 		t.Errorf("schema_version = %v, want %d", first["schema_version"], report.SchemaVersion)
+	}
+}
+
+// Prune removes only what lives in the user's home. A provider whose global
+// prefix is a system location (npm under /usr, a Python image's
+// site-packages, CARGO_HOME under /usr/local) lists software that belongs to
+// the machine; running prune as root over SSH must not uninstall it.
+func TestPruneLeavesSoftwareOutsideTheHomeAlone(t *testing.T) {
+	h, bin := binHarness(t, "schema = 1\n\n[[package]]\nname = \"jq\"\nprovider = \"brew\"\n")
+	mine := filepath.Join(bin, "mine")
+	testsupport.WriteFile(t, mine, "#!/bin/sh\n")
+	machine := filepath.Join(t.TempDir(), "usr", "lib", "node_modules", "machine")
+	testsupport.WriteFile(t, machine, "#!/bin/sh\n")
+	h.uv.With(model.Installation{Name: "mine", Version: "1.0", Path: mine})
+	h.uv.With(model.Installation{Name: "machine", Version: "1.0", Path: machine})
+
+	op := decodeOperation(t, h.mustRun("prune", "--dry-run", "--json"))
+	if len(op.Actions) != 1 || op.Actions[0].Package != "mine" {
+		t.Fatalf("only the package in the home is a candidate: %+v", op.Actions)
+	}
+
+	h.mustRun("prune", "--yes", "--allow-destructive")
+	if len(h.uv.RemoveCalls) != 1 || h.uv.RemoveCalls[0].Name != "mine" {
+		t.Errorf("prune removed %v; software outside the home must never be removed", h.uv.RemoveCalls)
+	}
+}
+
+// A package manager is never an orphan: npm lists npm and corepack among its
+// own globals, and uv or pnpm may have been installed through pip or npm.
+// Pruning them would take a provider away.
+func TestPruneNeverRemovesAPackageManager(t *testing.T) {
+	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"jq\"\nprovider = \"brew\"\n")
+	for _, name := range []string{"npm", "corepack", "uv", "orphan"} {
+		h.uv.With(model.Installation{Name: name, Version: "1.0"})
+	}
+
+	op := decodeOperation(t, h.mustRun("prune", "--dry-run", "--json"))
+	if len(op.Actions) != 1 || op.Actions[0].Package != "orphan" {
+		t.Fatalf("package managers are not prune candidates: %+v", op.Actions)
 	}
 }

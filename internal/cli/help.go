@@ -256,7 +256,9 @@ Options:
 
 Remove orphaned user-scoped software that Starpoint-managed providers can
 enumerate and remove. Configured packages and system/global software are never
-touched.
+touched, nor is anything outside your home directory (a system npm prefix, the
+interpreter's own site-packages) or a package manager itself (npm, corepack,
+pip, uv, pnpm, ...).
 
 Options:
   --dry-run, -n        Show what would be removed; change nothing

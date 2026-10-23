@@ -801,6 +801,24 @@ func (e *Engine) Prune(ctx context.Context, doc *config.Document, opts Options) 
 			"so there is no source of truth to tell managed software from orphans")
 	}
 
+	// Two more boundaries, because a provider's idea of "user scope" is only
+	// as good as what it can ask its tool:
+	//
+	//   - A package manager is never an orphan of itself or of another
+	//     provider. npm lists npm and corepack among its globals, pip lists
+	//     pip, and uv, pnpm or yarn may have been installed through pip or
+	//     npm; pruning them would disable a provider Starpoint relies on.
+	//   - Only software inside the home directory is the user's to prune. A
+	//     global npm prefix of /usr, a Python image's site-packages, or a
+	//     CARGO_HOME under /usr/local belong to the machine, whoever runs
+	//     Starpoint. A plain root shell therefore only ever prunes root's own
+	//     home.
+	protected := map[string]bool{"corepack": true, "starpoint": true}
+	for _, q := range e.reg.All() {
+		protected[q.Name()] = true
+	}
+	home := e.profileHome()
+
 	var failures []string
 	for _, p := range e.reg.All() {
 		provName := p.Name()
@@ -832,8 +850,14 @@ func (e *Engine) Prune(ctx context.Context, doc *config.Document, opts Options) 
 			if inst.Scope == model.ScopeGlobal || inst.Scope == model.ScopeProject || managed[inst.Name] {
 				continue
 			}
+			if protected[inst.Name] {
+				continue
+			}
 			inst := inst
 			located := e.withPath(&inst)
+			if where := e.pruneLocation(ctx, p, located); where != "" && home != "" && !insideDir(where, home) {
+				continue
+			}
 			pkg := model.Package{Name: inst.Name, Provider: provName, Scope: model.ScopeUser}
 			action := model.PlannedAction{
 				Action:  model.ActionRemove,
@@ -870,4 +894,44 @@ func (e *Engine) Prune(ctx context.Context, doc *config.Document, opts Options) 
 	}
 
 	return res, nil
+}
+
+// pruneLocation is where a prune candidate lives on disk: its executable or
+// package path when known, otherwise the first directory the provider says
+// the package occupies. Empty means the location is unknown.
+func (e *Engine) pruneLocation(ctx context.Context, p provider.Provider, inst *model.Installation) string {
+	if inst != nil && inst.Path != "" {
+		return inst.Path
+	}
+	if inst == nil {
+		return ""
+	}
+	if d, ok := p.(provider.InstallDirProvider); ok {
+		for _, dir := range d.InstallDirs(ctx, model.Package{Name: inst.Name}) {
+			if dir != "" {
+				return dir
+			}
+		}
+	}
+	return ""
+}
+
+// insideDir reports whether path is dir or below it, comparing the paths as
+// written and with symlinks resolved, so a home reached through a symlink
+// (/home -> /var/home) still counts as the same place.
+func insideDir(path, dir string) bool {
+	within := func(p, d string) bool {
+		rel, err := filepath.Rel(d, p)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+	}
+	path, dir = filepath.Clean(path), filepath.Clean(dir)
+	if within(path, dir) {
+		return true
+	}
+	rp, err1 := filepath.EvalSymlinks(path)
+	rd, err2 := filepath.EvalSymlinks(dir)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return within(rp, rd)
 }
