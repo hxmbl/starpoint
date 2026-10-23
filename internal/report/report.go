@@ -464,21 +464,36 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 		warnings = []model.Warning{}
 	}
 	transitions := append(append([]model.Transition{}, plan.Transitions...), res.Transitions...)
+	// A dry run describes the machine as it is. A real run that changed
+	// something describes it as the run left it: the caller re-plans and puts
+	// the fresh states in res.States, and any action that did not apply
+	// means the machine has not converged whatever the states say.
+	states := plan.States
+	converged := plan.Empty()
+	if !res.DryRun && len(res.Applied) > 0 && res.States != nil {
+		states = res.States
+		converged = true
+		for _, a := range actions {
+			if a.Result != string(model.OutcomeApplied) {
+				converged = false
+			}
+		}
+	}
 	out := SyncResult{
 		DryRun:        res.DryRun,
 		ConfigChanged: res.ConfigChanged,
 		ConfigPath:    res.ConfigPath,
 		Actions:       actions,
 		Transitions:   dedupeTransitions(transitions),
-		States:        plan.States,
+		States:        states,
 		Warnings:      warnings,
 		Project:       proj,
 		Summary:       summarize(actions, warnings),
 	}
 	// Converged means every desired package is actually satisfied, which is
 	// stricter than having produced no actions.
-	out.Converged = plan.Empty()
-	for _, st := range plan.States {
+	out.Converged = converged
+	for _, st := range states {
 		if !st.Status.Healthy() {
 			out.Converged = false
 		}

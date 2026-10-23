@@ -331,6 +331,25 @@ raised by the action and every top-level warning that names its package. Every
 action warning also appears at the top level. Warnings about the run itself,
 such as `running-elevated`, name no package and appear only at the top level.
 
+### Sync
+
+`sync` reports the operation fields above (without `operation`) plus:
+
+```json
+{
+  "converged": "boolean",
+  "transitions": ["Transition"],
+  "states": ["State"],
+  "problems": ["string"],
+  "project": "ProjectInfo | null"
+}
+```
+
+In a dry run, `states` and `converged` describe the machine as it is. After
+a real run that changed something they describe the machine as the run left
+it: `converged` is true only when every action applied and every package is
+now satisfied.
+
 ### Example: a destructive removal
 
 `starpoint remove ruff --yes --allow-destructive --json`, where uv had linked ruff into `~/.local/bin`:

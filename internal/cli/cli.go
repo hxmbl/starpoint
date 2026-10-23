@@ -972,6 +972,14 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 	opts.DryRun = dryRun
 
 	res, applyErr := eng.Apply(ctx, doc, plan, opts)
+	if !dryRun && len(res.Applied) > 0 {
+		// What the machine looks like now, not what it looked like before
+		// the run: `states` and `converged` describe the result. A sync that
+		// converged must not tell a caller it has not.
+		if after, _, err := eng.Plan(ctx, doc, opts); err == nil {
+			res.States = after.States
+		}
+	}
 	if applyErr != nil {
 		// Still report what did happen; partial progress is real progress.
 		_ = w.Sync(res, plan, proj)
