@@ -1708,8 +1708,10 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 	deps, why := proj.Dependencies(osexec.LookPath)
 	depReport := &dependencyReport{Command: deps, Skipped: why, DryRun: opts.DryRun, Effects: []model.Effect{}}
 
-	// The packages the project declares are installed below; an unattended
-	// run that would replace or overwrite anything doing so is refused first.
+	// The packages the project declares are installed below, and the
+	// dependency installer runs after them; an unattended run that would
+	// replace or overwrite anything doing either is refused first.
+	var guarded []model.PlannedAction
 	if proj.HasProjectConfig {
 		if declared, ok := doc.ProjectFileFor(proj.Root); ok {
 			var previews []model.PlannedAction
@@ -1724,17 +1726,29 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 					previews = append(previews, preview)
 				}
 			}
-			if err := env.guardDestructive("install", opts, changeActions(model.ActionInstall, previews)); err != nil {
-				return nil, nil, err
-			}
+			guarded = append(guarded, changeActions(model.ActionInstall, previews)...)
 		}
+	}
+	replaced := dependencyReplacements(deps)
+	if len(replaced) > 0 {
+		guarded = append(guarded, model.PlannedAction{
+			Action:  model.ActionInstall,
+			State:   model.State{Package: model.Package{Name: deps.String()}},
+			Note:    "in " + deps.Dir,
+			Outcome: model.OutcomePlanned,
+			Effects: replaced,
+		})
+	}
+	if err := env.guardDestructive("install", opts, guarded); err != nil {
+		return nil, nil, err
 	}
 	if deps != nil {
 		if err := env.confirmChanges([]change{{
-			verb:   "Run",
-			target: deps.String(),
-			detail: "in " + deps.Dir + " (" + deps.Reason + ")",
-			after:  "the project's dependencies are installed by " + deps.Tool + "; the toolchain is recorded in " + projectConfig,
+			verb:    "Run",
+			target:  deps.String(),
+			detail:  "in " + deps.Dir + " (" + deps.Reason + ")",
+			after:   "the project's dependencies are installed by " + deps.Tool + "; the toolchain is recorded in " + projectConfig,
+			effects: replaced,
 		}}, opts); err != nil {
 			return nil, nil, err
 		}
@@ -1843,19 +1857,104 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 			Op: model.EffectModify, Kind: model.EffectDirectory, Path: deps.Dir, Evidence: model.EvidencePlanned,
 			Detail: deps.Tool + " writes the project's dependencies under this directory",
 		})
+		depReport.Effects = append(depReport.Effects, replaced...)
 		report.WriteEffects(out, pal, depReport.Effects, true, true, "  ")
 		return result, depReport, nil
 	}
 	fmt.Fprintf(out, "Running: %s (in %s)\n", deps.String(), deps.Dir)
 	watch := eng.WatchDirs(deps.Dir)
+	before := statAll(replaced)
 	runErr := env.runInDir(ctx, deps.Dir, out, env.Stderr, deps.Tool, deps.Args...)
 	depReport.Effects = append(depReport.Effects, watch.Finish(ctx)...)
+	depReport.Effects = append(depReport.Effects, observedReplacements(replaced, before)...)
 	report.WriteEffects(out, pal, depReport.Effects, false, env.Verbose, "  ")
 	if runErr != nil {
 		return result, depReport, fmt.Errorf("installing dependencies with '%s' in %s: %w", deps.String(), deps.Dir, runErr)
 	}
 	depReport.Ran = true
 	return result, depReport, nil
+}
+
+// dependencyReplacements is what a dependency install will delete or rewrite
+// wholesale, as destructive planned effects.
+func dependencyReplacements(deps *project.DependencyInstall) []model.Effect {
+	if deps == nil {
+		return nil
+	}
+	var out []model.Effect
+	for _, r := range deps.Replaces() {
+		out = append(out, model.Effect{
+			Op: model.EffectReplace, Kind: model.EffectDirectory, Path: r.Path,
+			Destructive: true, Evidence: model.EvidencePlanned, Detail: r.Detail,
+		})
+	}
+	return out
+}
+
+// replacedBefore is what a planned replacement's path held before the run.
+type replacedBefore struct {
+	info    os.FileInfo
+	entries []os.DirEntry
+}
+
+// statAll records what each planned replacement's path is before the run.
+func statAll(effects []model.Effect) []replacedBefore {
+	out := make([]replacedBefore, len(effects))
+	for i, eff := range effects {
+		out[i].info, _ = os.Lstat(eff.Path)
+		out[i].entries, _ = os.ReadDir(eff.Path)
+	}
+	return out
+}
+
+// maxListedRemovals bounds how many removed entries of one replaced
+// directory are listed one by one.
+const maxListedRemovals = 20
+
+// observedReplacements reports which planned replacements happened: the
+// directory is gone, a different one now stands at its path, or entries it
+// held are gone (npm ci empties node_modules in place).
+func observedReplacements(planned []model.Effect, before []replacedBefore) []model.Effect {
+	var out []model.Effect
+	for i, eff := range planned {
+		if before[i].info == nil {
+			continue
+		}
+		eff.Evidence = model.EvidenceObserved
+		after, err := os.Lstat(eff.Path)
+		switch {
+		case err != nil:
+			eff.Op = model.EffectDelete
+			out = append(out, eff)
+			continue
+		case !os.SameFile(before[i].info, after):
+			eff.Op = model.EffectReplace
+			out = append(out, eff)
+			continue
+		}
+		var gone []os.DirEntry
+		for _, entry := range before[i].entries {
+			if _, err := os.Lstat(filepath.Join(eff.Path, entry.Name())); err != nil {
+				gone = append(gone, entry)
+			}
+		}
+		for j, entry := range gone {
+			if j == maxListedRemovals {
+				out = append(out, model.Effect{Op: model.EffectModify, Kind: model.EffectDirectory, Path: eff.Path,
+					Destructive: true, Evidence: model.EvidenceObserved,
+					Detail: fmt.Sprintf("%d more entries were removed from this directory", len(gone)-maxListedRemovals)})
+				break
+			}
+			kind := model.EffectFile
+			if entry.IsDir() {
+				kind = model.EffectDirectory
+			}
+			out = append(out, model.Effect{Op: model.EffectDelete, Kind: kind,
+				Path: filepath.Join(eff.Path, entry.Name()), Destructive: true, Evidence: model.EvidenceObserved,
+				Detail: "removed by the dependency installer: " + eff.Detail})
+		}
+	}
+	return out
 }
 
 // runInDir runs a command in a directory with its output streamed, which is

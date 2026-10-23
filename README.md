@@ -74,7 +74,10 @@ the packages it declares.
 
 The command is shown and confirmed before anything changes (declining changes
 nothing at all), `--dry-run` prints it without running it, and `--no-confirm`
-runs it unattended. A Python project with neither uv configuration nor
+runs it unattended. Two installers are exact and delete what is already there:
+`npm ci` replaces an existing `node_modules`, and `uv sync` removes packages the
+lockfile does not list from an existing `.venv`. Those are listed as destructive
+(`!`) effects, so an unattended run needs `--allow-destructive` for them. A Python project with neither uv configuration nor
 requirements.txt is reported rather than guessed at.
 
 ### What Starpoint writes

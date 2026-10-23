@@ -125,3 +125,45 @@ func fileContains(path, needle string) bool {
 	data, err := os.ReadFile(path)
 	return err == nil && strings.Contains(string(data), needle)
 }
+
+// Replaced is something in the project that a dependency install deletes or
+// rewrites wholesale, which makes running the install a destructive change.
+type Replaced struct {
+	// Path is what is replaced.
+	Path string `json:"path"`
+	// Detail says what the installer does to it.
+	Detail string `json:"detail"`
+}
+
+// Replaces reports what running d would delete or rewrite wholesale, among
+// the things that are there now. Most installers only add (cargo fetch, go
+// mod download, bundle install); two are exact by design:
+//
+//   - `npm ci` deletes node_modules and installs it again from the lockfile.
+//   - `uv sync` removes every package the lockfile does not list from the
+//     project's .venv.
+func (d DependencyInstall) Replaces() []Replaced {
+	var out []Replaced
+	present := func(name string) (string, bool) {
+		p := filepath.Join(d.Dir, name)
+		_, err := os.Lstat(p)
+		return p, err == nil
+	}
+	sub := ""
+	if len(d.Args) > 0 {
+		sub = d.Args[0]
+	}
+	switch {
+	case d.Tool == "npm" && sub == "ci":
+		if p, ok := present("node_modules"); ok {
+			out = append(out, Replaced{Path: p,
+				Detail: "npm ci deletes node_modules and installs it again from the lockfile; anything changed or added there by hand is lost"})
+		}
+	case d.Tool == "uv" && sub == "sync":
+		if p, ok := present(".venv"); ok {
+			out = append(out, Replaced{Path: p,
+				Detail: "uv sync removes every package the lockfile does not list from .venv"})
+		}
+	}
+	return out
+}

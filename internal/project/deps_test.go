@@ -2,6 +2,7 @@ package project
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,5 +70,38 @@ func TestDependencyCommandIsAbsentWhenNothingSaysHow(t *testing.T) {
 	}
 	if got, _ := (Info{Kind: KindUnknown}).Dependencies(nil); got != nil {
 		t.Error("no project, no command")
+	}
+}
+
+// npm ci and uv sync are exact: they delete or prune what is already there.
+// Additive installers replace nothing, and neither does an exact one in a
+// project that has nothing to replace yet.
+func TestReplacesNamesWhatExactInstallersDelete(t *testing.T) {
+	dir := t.TempDir()
+	ci := DependencyInstall{Tool: "npm", Args: []string{"ci"}, Dir: dir}
+	sync := DependencyInstall{Tool: "uv", Args: []string{"sync"}, Dir: dir}
+	fetch := DependencyInstall{Tool: "cargo", Args: []string{"fetch"}, Dir: dir}
+	for _, d := range []DependencyInstall{ci, sync, fetch} {
+		if got := d.Replaces(); len(got) != 0 {
+			t.Errorf("%s in an empty project replaces nothing, got %+v", d, got)
+		}
+	}
+	for _, name := range []string{"node_modules", ".venv"} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := ci.Replaces(); len(got) != 1 || got[0].Path != filepath.Join(dir, "node_modules") {
+		t.Errorf("npm ci replaces node_modules, got %+v", got)
+	}
+	if got := sync.Replaces(); len(got) != 1 || got[0].Path != filepath.Join(dir, ".venv") {
+		t.Errorf("uv sync prunes .venv, got %+v", got)
+	}
+	if got := fetch.Replaces(); len(got) != 0 {
+		t.Errorf("cargo fetch only adds, got %+v", got)
+	}
+	install := DependencyInstall{Tool: "npm", Args: []string{"install"}, Dir: dir}
+	if got := install.Replaces(); len(got) != 0 {
+		t.Errorf("npm install keeps node_modules, got %+v", got)
 	}
 }

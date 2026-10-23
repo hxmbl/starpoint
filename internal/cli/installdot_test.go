@@ -174,3 +174,116 @@ func TestInstallDotReportsWhatTheDependencyInstallerChanged(t *testing.T) {
 		t.Errorf("the dry run says where the installer will write:\n%s", dry)
 	}
 }
+
+// npm ci deletes node_modules before installing. When there is one, running
+// it unattended is a destructive run like any other: refused without
+// --allow-destructive, with the deletion in the refusal's plan.
+func TestInstallDotRefusesAnUnattendedNpmCiOverAnExistingNodeModules(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	dir := nodeProject(t, h)
+	modules := filepath.Join(dir, "node_modules")
+	testsupport.WriteFile(t, filepath.Join(modules, "patched.js"), "// a local change\n")
+
+	code, _, errOut := h.run("install", ".", "--yes", "--json")
+	if code != ExitRefusedDestructive {
+		t.Fatalf("expected exit %d, got %d\n%s", ExitRefusedDestructive, code, errOut)
+	}
+	if len(h.ran) != 0 {
+		t.Errorf("nothing may run: %v", h.ran)
+	}
+	if !strings.Contains(errOut, modules) || !strings.Contains(errOut, "destructive-unattended") {
+		t.Errorf("the refusal names node_modules:\n%s", errOut)
+	}
+
+	h.mustRun("install", ".", "--yes", "--allow-destructive")
+	if len(h.ran) != 1 || h.ran[0] != dir+": npm ci" {
+		t.Errorf("--allow-destructive runs it: %v", h.ran)
+	}
+}
+
+// Without node_modules there is nothing for npm ci to delete, and an
+// unattended run goes ahead.
+func TestInstallDotNpmCiIntoAFreshProjectIsNotDestructive(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	nodeProject(t, h)
+	h.mustRun("install", ".", "--yes")
+	if len(h.ran) != 1 {
+		t.Errorf("a fresh npm ci runs unattended: %v", h.ran)
+	}
+}
+
+// The dry run and the confirmation list the deletion, and the real run
+// reports that node_modules was replaced.
+func TestInstallDotListsAndObservesTheNodeModulesReplacement(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	dir := nodeProject(t, h)
+	modules := filepath.Join(dir, "node_modules")
+	testsupport.WriteFile(t, filepath.Join(modules, "patched.js"), "// a local change\n")
+	h.env.RunInDir = func(_ context.Context, d string, _, _ io.Writer, name string, args ...string) error {
+		h.ran = append(h.ran, d+": "+name+" "+strings.Join(args, " "))
+		if err := os.RemoveAll(filepath.Join(d, "node_modules")); err != nil {
+			return err
+		}
+		return os.MkdirAll(filepath.Join(d, "node_modules", "is-number"), 0o755)
+	}
+
+	dry := h.mustRun("install", ".", "--dry-run")
+	if !strings.Contains(dry, "! would replace directory "+modules) {
+		t.Errorf("the dry run lists the deletion:\n%s", dry)
+	}
+	out := h.mustRun("install", ".")
+	if !strings.Contains(out, "! would replace directory "+modules) {
+		t.Errorf("the confirmation lists the deletion with !:\n%s", out)
+	}
+
+	op := h.mustRun("install", ".", "--yes", "--allow-destructive", "--json")
+	var payload struct {
+		Dependencies struct {
+			Effects []model.Effect `json:"effects"`
+		} `json:"dependencies"`
+	}
+	if err := json.Unmarshal([]byte(op), &payload); err != nil {
+		t.Fatalf("%v\n%s", err, op)
+	}
+	var observed bool
+	for _, e := range payload.Dependencies.Effects {
+		if e.Path == modules && e.Op == model.EffectReplace && e.Destructive && e.Evidence == model.EvidenceObserved {
+			observed = true
+		}
+	}
+	if !observed {
+		t.Errorf("the replaced node_modules is reported as observed and destructive: %+v", payload.Dependencies.Effects)
+	}
+}
+
+// npm ci may empty node_modules in place rather than replace the directory;
+// what it removed is still reported.
+func TestInstallDotReportsWhatAnInPlaceNpmCiRemoved(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	dir := nodeProject(t, h)
+	modules := filepath.Join(dir, "node_modules")
+	patched := filepath.Join(modules, "patched.js")
+	testsupport.WriteFile(t, patched, "// a local change\n")
+	h.env.RunInDir = func(_ context.Context, d string, _, _ io.Writer, name string, args ...string) error {
+		return os.Remove(filepath.Join(d, "node_modules", "patched.js"))
+	}
+
+	out := h.mustRun("install", ".", "--yes", "--allow-destructive", "--json")
+	var payload struct {
+		Dependencies struct {
+			Effects []model.Effect `json:"effects"`
+		} `json:"dependencies"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	var reported bool
+	for _, e := range payload.Dependencies.Effects {
+		if e.Path == patched && e.Op == model.EffectDelete && e.Destructive && e.Evidence == model.EvidenceObserved {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Errorf("the removed file is reported: %+v", payload.Dependencies.Effects)
+	}
+}
