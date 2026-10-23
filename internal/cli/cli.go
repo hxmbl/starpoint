@@ -968,6 +968,7 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 	if err != nil {
 		return err
 	}
+	plan, beside := besideSystem(ctx, eng, doc, plan)
 	plan = withoutMoves(plan)
 
 	guardOpts := opts
@@ -977,6 +978,12 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 		return err
 	}
 	if err := env.guardAmbiguous("sync", guardOpts, plan.Actions); err != nil {
+		return err
+	}
+	if err := env.guardBesideSystem("sync", guardOpts, beside); err != nil {
+		return err
+	}
+	if plan, err = env.decideBesideSystem(guardOpts, plan, beside); err != nil {
 		return err
 	}
 	if !dryRun && !noConfirm && len(plan.Actions) > 0 && env.Confirm != nil {

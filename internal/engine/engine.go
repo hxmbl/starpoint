@@ -467,25 +467,7 @@ func (e *Engine) actionFor(st model.State, available map[string]provider.Health)
 		if !prov.Capabilities().Install {
 			return model.PlannedAction{}, false
 		}
-		// The provider decision has not been recorded yet. Recording it is a
-		// configuration change, and it is the durable part of the operation.
-		edit := &model.ConfigEdit{File: st.Package.Origin.Path}
-		pkg := st.Package
-		pkg.Provider = st.Res.Provider
-		if pkg.Reason == "" {
-			pkg.Reason = st.Res.Reason
-		}
-		edit.Upsert = &pkg
-		note := ""
-		if st.Res.Ambiguous {
-			note = "provider choice was ambiguous; the configuration will record " + st.Res.Provider
-		}
-		return model.PlannedAction{
-			Action:       model.ActionInstall,
-			State:        st,
-			ConfigChange: edit,
-			Note:         note,
-		}, true
+		return installAction(st), true
 
 	case model.StatusVersionDiffers:
 		edit := &model.ConfigEdit{File: st.Package.Origin.Path}
@@ -523,6 +505,58 @@ func (e *Engine) actionFor(st model.State, available map[string]provider.Health)
 		}, true
 	}
 	return model.PlannedAction{}, false
+}
+
+// installAction installs st's package through the provider resolution
+// settled on. The provider decision has not been recorded yet. Recording it
+// is a configuration change, and it is the durable part of the operation.
+func installAction(st model.State) model.PlannedAction {
+	edit := &model.ConfigEdit{File: st.Package.Origin.Path}
+	pkg := st.Package
+	pkg.Provider = st.Res.Provider
+	if pkg.Reason == "" {
+		pkg.Reason = st.Res.Reason
+	}
+	edit.Upsert = &pkg
+	note := ""
+	if st.Res.Ambiguous {
+		note = "provider choice was ambiguous; the configuration will record " + st.Res.Provider
+	}
+	return model.PlannedAction{
+		Action:       model.ActionInstall,
+		State:        st,
+		ConfigChange: edit,
+		Note:         note,
+	}
+}
+
+// OnlySystemHas reports whether a planned move is the case where the
+// configuration names no provider and the only copy on the machine is the
+// operating system's. Converging it means adding a managed copy beside the
+// system's, which is a decision for the user, not for Starpoint: the
+// caller asks, or refuses when nobody can be asked.
+func OnlySystemHas(a model.PlannedAction) bool {
+	st := a.State
+	return a.Action == model.ActionRelocate && st.Package.Provider == "" &&
+		st.Current != nil && st.Current.Provider == system.Name && st.Res.Provider != system.Name
+}
+
+// InstallBesideSystem turns such a move into what it really is, an install
+// of a managed copy through the resolved provider that leaves the system's
+// copy alone, described like any planned install. It reports false when
+// that provider cannot install.
+func (e *Engine) InstallBesideSystem(ctx context.Context, doc *config.Document, a model.PlannedAction) (model.PlannedAction, bool) {
+	if !OnlySystemHas(a) {
+		return model.PlannedAction{}, false
+	}
+	prov, ok := e.reg.Get(a.State.Res.Provider)
+	if !ok || !prov.Capabilities().Install {
+		return model.PlannedAction{}, false
+	}
+	install := installAction(a.State)
+	install = e.describePlanned(ctx, doc, install)
+	install.Outcome = model.OutcomePlanned
+	return install, true
 }
 
 func shortVersion(i *model.Installation) string {

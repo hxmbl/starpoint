@@ -1186,3 +1186,43 @@ func onlyRecords(plan model.Plan) bool {
 	}
 	return true
 }
+
+// A system-only copy of an entry with no provider is planned as a move the
+// caller must not make on its own; InstallBesideSystem turns it into an
+// install of a managed copy that records its owner and removes nothing. A
+// configured provider is not that case.
+func TestInstallBesideSystemIsAnInstallThatRemovesNothing(t *testing.T) {
+	f := newFixture(t, "schema = 1\n\n[[package]]\nname = \"zsh\"\n")
+	f.sys.With(model.Installation{Name: "zsh", Path: "/usr/bin/zsh", Provider: system.Name, Scope: model.ScopeGlobal})
+	f.uv.IsAvailable = false
+	f.cargo.IsAvailable = false
+	f.npm.IsAvailable = false
+
+	plan := f.plan(Options{})
+	if len(plan.Actions) != 1 || !OnlySystemHas(plan.Actions[0]) {
+		t.Fatalf("only the system has zsh and nothing names a provider: %+v", plan.Actions)
+	}
+	a, ok := f.eng.InstallBesideSystem(context.Background(), f.doc, plan.Actions[0])
+	if !ok || a.Action != model.ActionInstall || a.State.Res.Provider != brew.Name {
+		t.Fatalf("expected an install through brew, got %v %+v", ok, a)
+	}
+	if a.ConfigChange == nil || a.ConfigChange.Upsert == nil || a.ConfigChange.Upsert.Provider != brew.Name {
+		t.Errorf("the managed copy's owner is recorded: %+v", a.ConfigChange)
+	}
+	for _, e := range a.Effects {
+		if e.Op == model.EffectDelete || e.Op == model.EffectReplace {
+			t.Errorf("a copy beside the system's deletes and replaces nothing: %+v", e)
+		}
+	}
+
+	named := newFixture(t, "schema = 1\n\n[[package]]\nname = \"zsh\"\nprovider = \"brew\"\n")
+	named.sys.With(model.Installation{Name: "zsh", Path: "/usr/bin/zsh", Provider: system.Name, Scope: model.ScopeGlobal})
+	for _, act := range named.plan(Options{}).Actions {
+		if OnlySystemHas(act) {
+			t.Errorf("a configured provider is a decision, not this case: %+v", act)
+		}
+		if _, ok := named.eng.InstallBesideSystem(context.Background(), named.doc, act); ok {
+			t.Error("InstallBesideSystem must refuse a configured provider")
+		}
+	}
+}
