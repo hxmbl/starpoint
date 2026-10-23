@@ -164,7 +164,10 @@ needs: the packages declared in its .starpoint.toml, its toolchain (recorded in
 the project's .starpoint.toml), and its dependencies through the ecosystem's
 own tool (npm ci / pnpm install / yarn install, uv sync / pip install -r,
 cargo fetch, go mod download, bundle install). The dependency command is shown
-and confirmed first; --dry-run only prints it.
+and confirmed first; --dry-run only prints it. pip install -r outside a
+virtualenv (no active VIRTUAL_ENV, no project .venv) can upgrade or downgrade
+packages other software uses, so like npm ci over node_modules it needs
+--allow-destructive when unattended.
 
 Aliases: add, i
 
@@ -256,9 +259,12 @@ Options:
 
 Remove orphaned user-scoped software that Starpoint-managed providers can
 enumerate and remove. Configured packages and system/global software are never
-touched, nor is anything outside your home directory (a system npm prefix, the
-interpreter's own site-packages) or a package manager itself (npm, corepack,
-pip, uv, pnpm, ...).
+touched. Prune only removes software inside the home directory of the user it
+acts for (under sudo, the invoking user's), and never a package manager: no
+registered provider (npm, pip, uv, pnpm, ...), corepack or starpoint, wherever
+it lives. A system npm prefix or the interpreter's own site-packages is left
+alone. Every orphan it leaves alone is still listed, with the reason, as a
+prune-skipped warning.
 
 Options:
   --dry-run, -n        Show what would be removed; change nothing

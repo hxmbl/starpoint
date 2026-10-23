@@ -851,11 +851,15 @@ func (e *Engine) Prune(ctx context.Context, doc *config.Document, opts Options) 
 				continue
 			}
 			if protected[inst.Name] {
+				res.Warnings = append(res.Warnings, pruneSkipped(inst.Name, provName,
+					"it is a package manager, and prune never removes one"))
 				continue
 			}
 			inst := inst
 			located := e.withPath(&inst)
 			if where := e.pruneLocation(ctx, p, located); where != "" && home != "" && !insideDir(where, home) {
+				res.Warnings = append(res.Warnings, pruneSkipped(inst.Name, provName,
+					"it is outside your home directory ("+where+"), and prune only removes software inside "+home))
 				continue
 			}
 			pkg := model.Package{Name: inst.Name, Provider: provName, Scope: model.ScopeUser}
@@ -894,6 +898,15 @@ func (e *Engine) Prune(ctx context.Context, doc *config.Document, opts Options) 
 	}
 
 	return res, nil
+}
+
+// pruneSkipped is the warning for an orphan prune left alone, so a skipped
+// candidate is reported rather than silently dropped.
+func pruneSkipped(name, provName, why string) model.Warning {
+	return model.Warning{
+		Severity: model.SeverityInfo, Code: model.WarnPruneSkipped, Package: name, Provider: provName,
+		Message: "not removing " + name + " (" + provName + "), which no configuration declares: " + why,
+	}
 }
 
 // pruneLocation is where a prune candidate lives on disk: its executable or

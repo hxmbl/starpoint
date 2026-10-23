@@ -67,7 +67,7 @@ the packages it declares.
 | Node with pnpm-lock.yaml / yarn.lock / package-lock.json | `pnpm install` / `yarn install` / `npm ci` |
 | Node without a lockfile | `npm install` |
 | Python with uv.lock, or `[tool.uv]` in pyproject.toml | `uv sync` |
-| Python with requirements.txt | `pip3 install -r requirements.txt` (or `pip`) |
+| Python with requirements.txt | `pip3 install -r requirements.txt` (or `pip`); the project's `.venv/bin/pip` when it has one and no other virtualenv is active |
 | Rust (Cargo.toml) | `cargo fetch` |
 | Go (go.mod) | `go mod download` |
 | Ruby (Gemfile) | `bundle install` |
@@ -77,8 +77,18 @@ nothing at all), `--dry-run` prints it without running it, and `--no-confirm`
 runs it unattended. Two installers are exact and delete what is already there:
 `npm ci` replaces an existing `node_modules`, and `uv sync` removes packages the
 lockfile does not list from an existing `.venv`. Those are listed as destructive
-(`!`) effects, so an unattended run needs `--allow-destructive` for them. A Python project with neither uv configuration nor
-requirements.txt is reported rather than guessed at.
+(`!`) effects, so an unattended run needs `--allow-destructive` for them.
+
+A `requirements.txt` install depends on where pip installs. Inside a virtualenv
+(an active `VIRTUAL_ENV` whose pip is the one on PATH, or the project's own
+`.venv`, whose pip is then used) it only changes that environment and is an
+ordinary effect. Outside one, pip installs into your user site-packages (as
+root, the system's) and may upgrade or downgrade packages other software depends
+on, so it is a destructive (`!`) planned effect with a `pip-outside-virtualenv`
+warning suggesting `python3 -m venv .venv`: an unattended run needs
+`--allow-destructive`, and as root the usual `--allow-root` rule applies too. A
+virtualenv is suggested, never required. A Python project with neither uv
+configuration nor requirements.txt is reported rather than guessed at.
 
 ### What Starpoint writes
 
@@ -176,7 +186,7 @@ is printed for you to run.
 | `starpoint install .` | Install the current project's declared packages and dependencies; record its toolchain in the project config |
 | `starpoint remove <package> [provider]` | Uninstall and delete from config (aliases: `uninstall`, `rm`); `--dry-run`, `--no-confirm`, `--allow-empty` |
 | `starpoint update [--self] [--dry-run] [--no-confirm]` | Update managed software; asks before moving past a pin (alias: `upgrade`) |
-| `starpoint prune [--dry-run] [--no-confirm]` | Preview and remove orphaned user-scoped installations inside your home directory; never a package manager itself; refuses when the configuration declares no packages |
+| `starpoint prune [--dry-run] [--no-confirm]` | Preview and remove orphaned user-scoped installations inside your home directory; never a package manager itself, and every orphan left alone is listed with the reason; refuses when the configuration declares no packages |
 | `starpoint recover [--discard] [--no-confirm]` | Inspect and clear files left by an interrupted run |
 | `starpoint runs [--package <name>] [--directory <dir>]` | Show where Starpoint has been run (alias: `history`) |
 | `starpoint logging [prune\|config]` | Show, age out, or configure Starpoint's own logging (alias: `logs`) |
@@ -226,6 +236,15 @@ Planned changes (none were made; ! removes or overwrites something):
       ! would delete symlink ~/.local/bin/ruff → ~/.local/share/uv/tools/ruff/bin/ruff
       ! ruff would stop resolving to ~/.local/bin/ruff
 ```
+
+**What prune never touches.** `starpoint prune` only removes software inside the
+home directory of the user it acts for (under `sudo`, the invoking user's; in a
+plain root shell, root's own), and never a package manager: no registered
+provider (npm, pip, uv, pnpm, yarn, cargo, ...), `corepack` or `starpoint`
+itself, wherever it lives. A system npm prefix such as `/usr/lib/node_modules`
+or the interpreter's own site-packages belongs to the machine, whoever runs
+Starpoint. Each orphan it leaves alone for either reason is still listed, with
+the reason, as a `prune-skipped` warning in human output and in `--json`.
 
 **Running as root.** A command that changes anything is refused when Starpoint
 runs as root (effective uid 0) or with an elevated Windows token, unless

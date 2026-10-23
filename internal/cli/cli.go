@@ -1738,13 +1738,17 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 		}
 	}
 	replaced := dependencyReplacements(deps)
-	if len(replaced) > 0 {
+	pipEffects, pipWarning := pipEnvironment(deps)
+	if pipWarning != nil {
+		result.Warnings = append(result.Warnings, *pipWarning)
+	}
+	if planned := append(append([]model.Effect{}, replaced...), destructiveOnly(pipEffects)...); len(planned) > 0 {
 		guarded = append(guarded, model.PlannedAction{
 			Action:  model.ActionInstall,
 			State:   model.State{Package: model.Package{Name: deps.String()}},
 			Note:    "in " + deps.Dir,
 			Outcome: model.OutcomePlanned,
-			Effects: replaced,
+			Effects: planned,
 		})
 	}
 	if err := env.guardDestructive("install", opts, guarded); err != nil {
@@ -1756,7 +1760,7 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 			target:  deps.String(),
 			detail:  "in " + deps.Dir + " (" + deps.Reason + ")",
 			after:   "the project's dependencies are installed by " + deps.Tool + "; the toolchain is recorded in " + projectConfig,
-			effects: replaced,
+			effects: append(append([]model.Effect{}, pipEffects...), replaced...),
 		}}, opts); err != nil {
 			return nil, nil, err
 		}
@@ -1865,6 +1869,7 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 			Op: model.EffectModify, Kind: model.EffectDirectory, Path: deps.Dir, Evidence: model.EvidencePlanned,
 			Detail: deps.Tool + " writes the project's dependencies under this directory",
 		})
+		depReport.Effects = append(depReport.Effects, pipEffects...)
 		depReport.Effects = append(depReport.Effects, replaced...)
 		report.WriteEffects(out, pal, depReport.Effects, true, true, "  ")
 		return result, depReport, nil
@@ -1876,6 +1881,10 @@ func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *conf
 	depReport.Effects = append(depReport.Effects, watch.Finish(ctx)...)
 	depReport.Effects = append(depReport.Effects, observedReplacements(replaced, before)...)
 	report.WriteEffects(out, pal, depReport.Effects, false, env.Verbose, "  ")
+	// pip writes to site-packages outside the project, where nothing is
+	// watched; what it was going to change is reported as planned (evidence
+	// "planned"), not printed as something observed.
+	depReport.Effects = append(depReport.Effects, pipEffects...)
 	if runErr != nil {
 		return result, depReport, fmt.Errorf("installing dependencies with '%s' in %s: %w", deps.String(), deps.Dir, runErr)
 	}
@@ -1895,6 +1904,51 @@ func dependencyReplacements(deps *project.DependencyInstall) []model.Effect {
 			Op: model.EffectReplace, Kind: model.EffectDirectory, Path: r.Path,
 			Destructive: true, Evidence: model.EvidencePlanned, Detail: r.Detail,
 		})
+	}
+	return out
+}
+
+// pipEnvironment is where a pip dependency install writes, as a planned
+// effect, and the warning an install outside any virtualenv carries.
+//
+// Inside a virtualenv pip only changes that environment, an ordinary effect.
+// Outside one it installs into the Python environment the whole account
+// shares (or, as root, the machine's) and can upgrade or downgrade packages
+// other software depends on. That is a destructive planned effect, so an
+// unattended run needs --allow-destructive; a virtualenv is suggested, never
+// required.
+func pipEnvironment(deps *project.DependencyInstall) ([]model.Effect, *model.Warning) {
+	if deps == nil || !deps.Pip() {
+		return nil, nil
+	}
+	if deps.Virtualenv != "" {
+		return []model.Effect{{
+			Op: model.EffectModify, Kind: model.EffectDirectory, Path: deps.Virtualenv, Evidence: model.EvidencePlanned,
+			Detail: "pip installs requirements.txt into this virtualenv",
+		}}, nil
+	}
+	effect := model.Effect{
+		Op: model.EffectReplace, Kind: model.EffectPackage, Name: "the Python packages requirements.txt names",
+		Destructive: true, Evidence: model.EvidencePlanned,
+		Detail: "outside a virtualenv pip installs into the user's site-packages (as root, the system's) " +
+			"and may upgrade or downgrade packages already installed there",
+	}
+	warning := &model.Warning{
+		Severity: model.SeverityWarn, Code: model.WarnPipOutsideVirtualenv,
+		Message: "'" + deps.String() + "' runs outside a virtualenv: it installs into your user site-packages " +
+			"(as root, the system's) and may upgrade or downgrade packages other software depends on. " +
+			"Create one first (python3 -m venv .venv) and Starpoint installs into it instead.",
+	}
+	return []model.Effect{effect}, warning
+}
+
+// destructiveOnly keeps the destructive effects.
+func destructiveOnly(effects []model.Effect) []model.Effect {
+	var out []model.Effect
+	for _, e := range effects {
+		if e.Destructive {
+			out = append(out, e)
+		}
 	}
 	return out
 }
@@ -2740,6 +2794,11 @@ func cmdPrune(ctx context.Context, env *Env, w *report.Writer, args []string, al
 		for _, a := range preview.Applied {
 			fmt.Fprintf(listing, "  %s via %s\n", a.State.Package.Name, a.State.Res.Provider)
 			report.WriteEffects(listing, env.palPrompt, a.Effects, true, env.Verbose, "    ")
+		}
+		for _, warn := range preview.Warnings {
+			if warn.Code == model.WarnPruneSkipped {
+				fmt.Fprintf(listing, "  %s\n", env.palPrompt.Dim(warn.Message))
+			}
 		}
 		ok, err := env.Confirm(fmt.Sprintf("Remove %d orphaned user-scoped package(s)?", len(preview.Applied)))
 		if err != nil {

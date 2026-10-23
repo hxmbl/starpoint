@@ -141,3 +141,67 @@ func TestPruneNeverRemovesAPackageManager(t *testing.T) {
 		t.Fatalf("package managers are not prune candidates: %+v", op.Actions)
 	}
 }
+
+// Prune names every orphan it leaves alone, with the reason, in human output
+// and in JSON. Skipping software outside the home or a package manager
+// without a word left a user wondering why prune "missed" it.
+func TestPruneFlagsWhatItSkips(t *testing.T) {
+	h, bin := binHarness(t, "schema = 1\n\n[[package]]\nname = \"jq\"\nprovider = \"brew\"\n")
+	mine := filepath.Join(bin, "mine")
+	testsupport.WriteFile(t, mine, "#!/bin/sh\n")
+	machine := filepath.Join(t.TempDir(), "usr", "lib", "node_modules", "machine")
+	testsupport.WriteFile(t, machine, "#!/bin/sh\n")
+	h.uv.With(model.Installation{Name: "mine", Version: "1.0", Path: mine})
+	h.uv.With(model.Installation{Name: "machine", Version: "1.0", Path: machine})
+	h.uv.With(model.Installation{Name: "npm", Version: "10.0"})
+
+	op := decodeOperation(t, h.mustRun("prune", "--dry-run", "--json"))
+	if len(op.Actions) != 1 || op.Actions[0].Package != "mine" {
+		t.Fatalf("only the package in the home is a candidate: %+v", op.Actions)
+	}
+	reasons := map[string]string{}
+	for _, w := range op.Warnings {
+		if w.Code == model.WarnPruneSkipped {
+			if w.Provider != "uv" {
+				t.Errorf("a skipped candidate names its provider: %+v", w)
+			}
+			reasons[w.Package] = w.Message
+		}
+	}
+	if !strings.Contains(reasons["machine"], "outside your home directory") || !strings.Contains(reasons["machine"], machine) {
+		t.Errorf("software outside the home is flagged with where it is: %q", reasons["machine"])
+	}
+	if !strings.Contains(reasons["npm"], "package manager") {
+		t.Errorf("a package manager is flagged as one: %q", reasons["npm"])
+	}
+	if len(reasons) != 2 {
+		t.Errorf("exactly the two skipped candidates are flagged: %v", reasons)
+	}
+	if hasCode(op.Actions[0].Warnings, model.WarnPruneSkipped) {
+		t.Errorf("a skip warning does not belong to a candidate that is removed: %+v", op.Actions[0].Warnings)
+	}
+
+	for _, args := range [][]string{{"prune", "--dry-run"}, {"prune", "--yes", "--allow-destructive"}} {
+		out := h.mustRun(args...)
+		for _, want := range []string{"[prune-skipped]", "not removing machine (uv)", "not removing npm (uv)"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%v: human output lists what was left alone (%q):\n%s", args, want, out)
+			}
+		}
+	}
+	if len(h.uv.RemoveCalls) != 1 || h.uv.RemoveCalls[0].Name != "mine" {
+		t.Errorf("prune removed %v", h.uv.RemoveCalls)
+	}
+}
+
+// With nothing left to remove, what was skipped is still listed rather than
+// hidden behind "nothing to do".
+func TestPruneListsSkipsWhenNothingIsRemoved(t *testing.T) {
+	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"jq\"\nprovider = \"brew\"\n")
+	h.uv.With(model.Installation{Name: "corepack", Version: "0.29"})
+
+	out := h.mustRun("prune", "--dry-run")
+	if !strings.Contains(out, "No orphaned software found.") || !strings.Contains(out, "not removing corepack (uv)") {
+		t.Errorf("an empty prune still lists what it left alone:\n%s", out)
+	}
+}
