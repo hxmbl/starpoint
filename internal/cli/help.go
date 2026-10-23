@@ -12,6 +12,7 @@ var aliases = map[string]string{
 	"sync":       "sync",
 	"list":       "list",
 	"ls":         "list",
+	"inventory":  "inventory",
 	"info":       "info",
 	"show":       "info",
 	"explain":    "explain",
@@ -46,6 +47,7 @@ var commandFlags = map[string][]string{
 	"init":       {"--force"},
 	"sync":       {"--dry-run", "--no-confirm"},
 	"list":       {"--managed", "--provider"},
+	"inventory":  {"--provider"},
 	"info":       {},
 	"explain":    {"--provider"},
 	"doctor":     {"--all"},
@@ -108,6 +110,24 @@ Options:
   --provider <name>   Restrict automatic provider choice (repeatable)
   --json              Machine-readable output
   --verbose, -v       List every effect, not only what is removed or overwritten
+`,
+	"inventory": `Usage: starpoint inventory [--provider <name>]...
+
+List every package each available provider reports as installed: provider,
+the provider's own name for it, version, scope, path, and whether the
+configuration manages it. Managed means the configuration has an entry with
+that name and that provider.
+
+Inventory only observes. Providers are probed for health and asked for their
+package lists; nothing is resolved, installed, recorded in the configuration
+or written to Starpoint's own logs, and even an elevated run gives no file
+to another owner. It works with no configuration at all. A provider whose
+health check or listing fails, or does not answer within 20 seconds, is
+reported (discover-failed) and the others are still shown.
+
+Options:
+  --provider <name>   Only this provider (repeatable)
+  --json              Machine-readable output
 `,
 	"list": `Usage: starpoint list [--managed] [--provider <name>]
 

@@ -284,6 +284,9 @@ func (e *Env) alignPolicy() *align.Policy {
 			p.Home = home
 		}
 	}
+	if e.AdjustAlignment != nil {
+		e.AdjustAlignment(p)
+	}
 	e.alignment = p
 	return p
 }

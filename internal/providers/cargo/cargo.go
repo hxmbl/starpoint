@@ -398,3 +398,9 @@ func (p *Provider) ExecutableForPackage(crate string) (string, bool) {
 	exe, ok := knownBinaries[crate]
 	return exe, ok
 }
+
+var _ provider.RequestedByConstruction = (*Provider)(nil)
+
+// DiscoverListsOnlyRequested reports that Discover lists only what the user
+// installed on purpose: no dependencies appear in it.
+func (p *Provider) DiscoverListsOnlyRequested() bool { return true }

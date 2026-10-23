@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hxmbl/starpoint/internal/model"
 	"github.com/hxmbl/starpoint/internal/provider"
 )
 
@@ -192,4 +193,20 @@ func Failure(name, op, msg string, err error) *provider.Error {
 // UnsupportedVerify builds an unsupported error for Verify operations.
 func UnsupportedVerify(name string) *provider.Error {
 	return Unsupported(name, "verify", "this provider does not support executable verification")
+}
+
+// RequestedFrom answers a provider.RequestedReporter question from a list of
+// the names a tool says were requested: every installed name is true when it
+// is in the list, false otherwise. It is for tools whose list is complete, so
+// absence really means "installed as a dependency".
+func RequestedFrom(requested []string, installed []model.Installation) map[string]bool {
+	set := make(map[string]bool, len(requested))
+	for _, n := range requested {
+		set[n] = true
+	}
+	out := make(map[string]bool, len(installed))
+	for _, inst := range installed {
+		out[inst.Name] = set[inst.Name]
+	}
+	return out
 }
