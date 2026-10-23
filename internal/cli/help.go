@@ -100,8 +100,10 @@ Options:
 `,
 	"sync": `Usage: starpoint sync [--dry-run] [--no-confirm]
 
-Make the installed state match the configuration: install what is missing
-and reconcile pinned versions. The plan is shown and confirmed first.
+Make the installed state match the configuration: install what is missing,
+reconcile pinned versions, and record the owner of an entry that is already
+installed but has no provider yet (a configuration change only). The plan is
+shown and confirmed first.
 
 An unattended sync (--yes, no_confirm, or no terminal) that would have to
 guess a provider for a package nothing decides is refused with

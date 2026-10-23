@@ -199,9 +199,13 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 
 	// Phase 5: conflicts are reported, never resolved by editing the source of
 	// truth.
+	// A record with a configuration change wrote that change in phase 1.
 	for _, action := range plan.Actions {
 		if action.Action == model.ActionRecord {
 			action.Outcome = model.OutcomeReported
+			if action.ConfigChange != nil {
+				action.Outcome = model.OutcomeApplied
+			}
 			res.Applied = append(res.Applied, action)
 		}
 	}

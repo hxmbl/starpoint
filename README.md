@@ -179,7 +179,7 @@ is printed for you to run.
 | Command | Purpose |
 | --- | --- |
 | `starpoint init [--force]` | Create `~/.starpoint.toml`; exits 1 without changing anything if it exists, `--force` replaces it |
-| `starpoint sync [--dry-run] [--no-confirm]` | Converge the machine onto the configuration: install what is missing and reconcile pins. Never removes or moves software; a provider mismatch is reported as drift |
+| `starpoint sync [--dry-run] [--no-confirm]` | Converge the machine onto the configuration: install what is missing, reconcile pins, and record the owner of entries that are installed but have no provider yet (a config-only change). Never removes or moves software; a provider mismatch is reported as drift |
 | `starpoint transition [pkg...] [--all] [--dry-run] [--no-confirm]` | Show or perform provider transitions (alias: `move`) |
 | `starpoint transition --reverse <package>` | Reverse the most recent transition when safe |
 | `starpoint doctor [--all]` | Inspect Starpoint, config, providers, ownership, inconsistencies, PATH |
