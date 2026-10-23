@@ -28,7 +28,7 @@ func TestSchemaDocumentMatchesTheEmittedVersion(t *testing.T) {
 	if want := fmt.Sprintf("## Migrating from schema %d to %d", SchemaVersion-1, SchemaVersion); !strings.Contains(doc, want) {
 		t.Errorf("docs/json-schema.md must have %q", want)
 	}
-	for _, code := range []string{model.WarnPruneSkipped, model.WarnPipOutsideVirtualenv} {
+	for _, code := range []string{model.WarnPruneSkipped, model.WarnPipOutsideVirtualenv, model.WarnRequestedUnknown, "owner-ambiguous", model.WarnProviderDrift, "duplicate-install"} {
 		if !strings.Contains(doc, "| `"+code+"` |") {
 			t.Errorf("docs/json-schema.md must list the warning code %s", code)
 		}

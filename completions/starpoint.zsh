@@ -6,7 +6,7 @@
 _starpoint() {
   local -a commands globals providers flags
   local cmd word
-  commands=(init sync list ls info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover logging logs help)
+  commands=(init sync list ls inventory adopt info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover logging logs help)
   globals=(--json --provider --force --context --verbose --color --allow-destructive --allow-root --version --help)
   providers=(apt brew cargo dnf flatpak gem go nix npm pacman pip pnpm rustup snap system uv yarn)
 
@@ -32,10 +32,12 @@ _starpoint() {
     init) flags=(--force) ;;
     sync) flags=(--dry-run --no-confirm) ;;
     list|ls) flags=(--managed --provider) ;;
+    inventory) flags=(--provider) ;;
+    adopt) flags=(--all --provider --dry-run --no-confirm) ;;
     info|show) flags=() ;;
     explain) flags=(--provider) ;;
     doctor) flags=(--all) ;;
-    install|add|i) flags=(--version --channel --project --provider --dry-run --no-confirm) ;;
+    install|add|i) flags=(--version --channel --project --provider --allow-duplicate --dry-run --no-confirm) ;;
     remove|uninstall|rm) flags=(--provider --dry-run --no-confirm --allow-empty) ;;
     logging|logs) flags=() ;;
     transition|move) flags=(--all --reverse --dry-run --no-confirm) ;;
@@ -50,6 +52,8 @@ _starpoint() {
     compadd -- $flags --help --json
   elif [[ $cmd == install || $cmd == add || $cmd == i ]]; then
     compadd -- . $providers
+  elif [[ $cmd == adopt ]]; then
+    compadd -- $providers
   fi
 }
 # Autoloaded from $fpath (via #compdef) the file body runs as the completion

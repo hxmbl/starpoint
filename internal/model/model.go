@@ -422,6 +422,8 @@ const (
 	WarnVerificationFailed   = "verification-failed"
 	WarnToolchainMissing     = "toolchain-missing"
 	WarnDiscoverFailed       = "discover-failed"
+	WarnRequestedUnknown     = "requested-unknown"
+	WarnProviderDrift        = "provider-drift"
 	WarnPinKept              = "pin-kept"
 	WarnPinConflict          = "pin-conflict"
 	WarnUpdateUnsupported    = "update-unsupported"

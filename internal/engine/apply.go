@@ -199,9 +199,13 @@ func (e *Engine) Apply(ctx context.Context, doc *config.Document, plan model.Pla
 
 	// Phase 5: conflicts are reported, never resolved by editing the source of
 	// truth.
+	// A record with a configuration change wrote that change in phase 1.
 	for _, action := range plan.Actions {
 		if action.Action == model.ActionRecord {
 			action.Outcome = model.OutcomeReported
+			if action.ConfigChange != nil {
+				action.Outcome = model.OutcomeApplied
+			}
 			res.Applied = append(res.Applied, action)
 		}
 	}
@@ -584,6 +588,18 @@ func (e *Engine) describeAdd(ctx context.Context, doc *config.Document, pkg mode
 			state.Status = model.StatusMissing
 		case !p.Capabilities().Install:
 			return nil, fmt.Errorf("provider %q cannot install packages", resolution.Provider)
+		case opts.AdoptOnly && (plan.existing == nil || plan.existing.Provider != resolution.Provider):
+			// Adopting records what is already there. Software the chosen
+			// provider does not have, and that is not attributed to it on
+			// PATH either, is not there to adopt: recording it anyway would
+			// put an entry in the source of truth that the next sync turns
+			// into an install nobody asked for.
+			where := "not installed"
+			if plan.existing != nil {
+				where = "installed through " + plan.existing.Provider + ", not " + resolution.Provider
+			}
+			return nil, &provider.Error{Provider: resolution.Provider, Op: "adopt", Kind: provider.ErrNotFound,
+				Message: pkg.Name + " is " + where + "; adopting only records software that is already there, so nothing was recorded"}
 		case opts.AdoptOnly:
 			warnings = append(warnings, model.Warning{
 				Severity: model.SeverityWarn,

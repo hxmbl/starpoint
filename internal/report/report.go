@@ -261,7 +261,12 @@ func (w *Writer) JSON() bool { return w.asJSON }
 // `replace` of Python packages with a `pip-outside-virtualenv` warning, which
 // an unattended run refuses without --allow-destructive. Every existing field
 // keeps its meaning.
-const SchemaVersion = 8
+//
+// Version 9 is the onboarding pass: the read-only `inventory` command, which
+// lists every package each provider reports and whether the configuration
+// manages it (matched by provider and name). Every existing field keeps its
+// meaning.
+const SchemaVersion = 9
 
 // respond emits one flat JSON object: schema_version plus the given fields.
 //
@@ -519,16 +524,23 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 		// "No actions" is not the same claim as "everything is right". A package
 		// whose provider cannot install it produces no action and is still not
 		// converged, so the message has to tell those apart.
-		unhealthy := 0
+		unhealthy, drift := 0, 0
 		for _, st := range plan.States {
 			if !st.Status.Healthy() {
 				unhealthy++
 			}
+			if st.Status == model.StatusProviderDiffers {
+				drift++
+			}
 		}
-		if unhealthy == 0 {
+		switch {
+		case unhealthy == 0:
 			fmt.Fprintf(w.out, "%s %d package(s) match the configuration.\n",
 				w.p.Green("In sync."), len(plan.States))
-		} else {
+		case drift == unhealthy:
+			fmt.Fprintf(w.out, "%s %d of %d package(s) match the configuration; %d installed through another provider than configured, which sync does not move.\n",
+				w.p.Yellow("Nothing to do."), len(plan.States)-unhealthy, len(plan.States), drift)
+		default:
 			fmt.Fprintf(w.out, "%s %d of %d package(s) match the configuration, and Starpoint has no way to change the rest.\n",
 				w.p.Yellow("Nothing to do."), len(plan.States)-unhealthy, len(plan.States))
 		}
@@ -779,6 +791,20 @@ type DoctorReport struct {
 	ShowAllPATH bool            `json:"-"`
 	Problems    []model.Warning `json:"problems,omitempty"`
 	Healthy     bool            `json:"healthy"`
+	// Unmanaged counts, per provider, what the provider has installed that
+	// no configuration entry records with it. Informational: it never makes
+	// doctor unhealthy.
+	Unmanaged []UnmanagedCount `json:"unmanaged"`
+}
+
+// UnmanagedCount is one provider's unmanaged software, for doctor.
+type UnmanagedCount struct {
+	Provider string `json:"provider"`
+	// Count is every unmanaged package the provider reports.
+	Count int `json:"count"`
+	// Requested is how many of them the provider says were installed on
+	// request: what `adopt --all` would record.
+	Requested int `json:"requested"`
 }
 
 // StarpointInfo describes the running binary.
@@ -865,6 +891,18 @@ func (w *Writer) Doctor(rep DoctorReport) error {
 		}
 	} else if err := w.pathSummary(rep); err != nil {
 		return err
+	}
+
+	if len(rep.Unmanaged) > 0 {
+		fmt.Fprintf(w.out, "\n%s\n", w.section("Unmanaged"))
+		requested := 0
+		for _, u := range rep.Unmanaged {
+			requested += u.Requested
+			fmt.Fprintf(w.out, "  %s: %d unmanaged, %d installed on request\n", u.Provider, u.Count, u.Requested)
+		}
+		if requested > 0 {
+			fmt.Fprintf(w.out, "  %s\n", w.p.Dim("Review with 'starpoint adopt --all --dry-run'; 'starpoint adopt' records an owner without changing anything installed."))
+		}
 	}
 
 	if len(rep.Problems) > 0 {
