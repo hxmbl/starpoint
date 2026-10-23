@@ -290,3 +290,50 @@ func TestAsRootRootProvidersKeepTheirFilesOutOfTheUsersHome(t *testing.T) {
 		t.Errorf("npm with a system prefix runs as root with root's home: ran-by %q, %v", by, err)
 	}
 }
+
+// TestAsRootInventoryChownsNothing: under sudo, every other command gives
+// Starpoint's own records back to the invoking user when it ends. Inventory
+// writes nothing, ownership included, so a root-owned configuration stays
+// root's until a command that writes runs.
+func TestAsRootInventoryChownsNothing(t *testing.T) {
+	requireRoot(t)
+	h := newHarness(t, "schema = 1\n")
+	h.brew.With(model.Installation{Name: "jq"})
+	top := t.TempDir()
+	for dir := top; dir != os.TempDir() && dir != "/" && dir != "."; dir = filepath.Dir(dir) {
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	home := filepath.Join(top, "home")
+	if err := os.Mkdir(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(home, 65534, 65534); err != nil {
+		t.Fatal(err)
+	}
+	h.env.GlobalConfig = filepath.Join(home, ".starpoint.toml")
+	testsupport.WriteFile(t, h.env.GlobalConfig, "schema = 1\n")
+	h.env.Elevation = func() elevation.Status {
+		return elevation.Status{Elevated: true, Mechanism: "effective user id 0, root", Home: "/root",
+			InvokingUser: "nobody", Via: "sudo", InvokingUID: 65534, InvokingGID: 65534, InvokingHome: home,
+			InvokingGroups: []int{65534}}
+	}
+	h.env.SetHome = func(string) error { return nil }
+
+	if code, out, errOut := h.run("inventory"); code != 0 {
+		t.Fatalf("inventory exit %d\n%s%s", code, out, errOut)
+	}
+	if uid := ownerOf(t, h.env.GlobalConfig); uid != 0 {
+		t.Errorf("inventory gave the configuration to %d; it must chown nothing", uid)
+	}
+
+	// A command that writes still gives it back, so the check above means
+	// something.
+	if code, out, errOut := h.run("list"); code != 0 {
+		t.Fatalf("list exit %d\n%s%s", code, out, errOut)
+	}
+	if uid := ownerOf(t, h.env.GlobalConfig); uid != 65534 {
+		t.Errorf("list should give the configuration back to nobody: owned by %d", uid)
+	}
+}

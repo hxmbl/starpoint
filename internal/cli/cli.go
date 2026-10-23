@@ -133,6 +133,10 @@ type Env struct {
 	target *elevation.Target
 	// alignment is the ownership and permission policy of an elevated run.
 	alignment *align.Policy
+	// AdjustAlignment, when set, sees the ownership and permission policy of
+	// an elevated run before it is used. Tests that cannot change owners use
+	// it to reassign from their own uid and record the chowns instead.
+	AdjustAlignment func(p *align.Policy)
 	// started is when this Run began; an elevated run only reassigns what
 	// changed after it.
 	started time.Time
@@ -477,7 +481,9 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		err = env.dispatch(ctx, w, cmd, cmdArgs, force, providers)
 	}
 	if err == errHelpShown {
-		env.alignOwnFiles()
+		if !writesNothing(canonicalCommand(cmd)) {
+			env.alignOwnFiles()
+		}
 		return 0
 	}
 	if err == errUnknownCommand {
@@ -525,6 +531,8 @@ func (env *Env) dispatch(ctx context.Context, w *report.Writer, cmd string, cmdA
 		err = cmdSync(ctx, env, w, cmdArgs, providers)
 	case "list", "ls":
 		err = cmdList(ctx, env, w, cmdArgs)
+	case "inventory":
+		err = cmdInventory(ctx, env, w, cmdArgs, providers)
 	case "info", "show":
 		err = cmdInfo(ctx, env, w, cmdArgs)
 	case "explain":
@@ -570,7 +578,7 @@ func (env *Env) dispatch(ctx context.Context, w *report.Writer, cmd string, cmdA
 // which point it is the tool's fault and it stops working.
 func (e *Env) begin(command string, args []string) {
 	canonical := canonicalCommand(command)
-	if canonical == "" {
+	if canonical == "" || writesNothing(canonical) {
 		return
 	}
 	e.applyRetention()
@@ -593,9 +601,14 @@ func (e *Env) begin(command string, args []string) {
 // finish records how a command ended and returns its exit code.
 func (e *Env) finish(command string, args []string, code int, err error) int {
 	// Starpoint's own records go back to the user an elevated run acts for
-	// before the last entry is appended; appending keeps the owner.
-	e.alignOwnFiles()
-	if command != "" {
+	// before the last entry is appended; appending keeps the owner. A command
+	// that writes nothing has nothing of its own to give back, and must not
+	// chown what earlier runs left either: "writes nothing" includes
+	// ownership.
+	if !writesNothing(command) {
+		e.alignOwnFiles()
+	}
+	if command != "" && !writesNothing(command) {
 		result := "ok"
 		if err != nil {
 			result = "failed"
@@ -613,6 +626,11 @@ func (e *Env) finish(command string, args []string, code int, err error) int {
 	}
 	return code
 }
+
+// writesNothing reports whether a command is observation only, down to
+// Starpoint's own records: inventory leaves no audit entry and ages nothing
+// out, so it can be run on a machine Starpoint has never touched.
+func writesNothing(command string) bool { return command == "inventory" }
 
 // errorDetail is the message an audit entry carries, if any.
 func errorDetail(err error) string {
@@ -784,6 +802,8 @@ Commands:
   sync [--dry-run] [--no-confirm]
                                  Make installed state match the configuration
   list, ls                       Show managed software, where it is, and who owns it
+  inventory [--provider <name>]  List what every provider has installed, managed or not;
+                                 changes and records nothing
   info, show <package>           Show one package's state in detail
   explain <package>              Show how Starpoint decides which provider owns a package
   doctor [--all]                 Inspect Starpoint, configuration, providers, ownership, PATH
@@ -1037,6 +1057,36 @@ func cmdList(ctx context.Context, env *Env, w *report.Writer, args []string) err
 		states = filterProvider(states, filter)
 	}
 	return w.List(states, env.loc().OnPath())
+}
+
+// cmdInventory lists what every provider reports as installed, managed or
+// not. It only observes: providers are asked for their health and their
+// package lists, and nothing is resolved, installed, recorded or logged.
+func cmdInventory(ctx context.Context, env *Env, w *report.Writer, args []string, only []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("%w: unknown argument %q for inventory", ErrUsage, args[0])
+	}
+	reg := env.registry()
+	for _, name := range only {
+		if _, ok := reg.Get(name); !ok {
+			return fmt.Errorf("%w: unknown provider %q", ErrUsage, name)
+		}
+	}
+	path, err := env.globalPath()
+	if err != nil {
+		return err
+	}
+	// A missing configuration is not an error here: inventory is how a
+	// machine with no configuration yet is looked at.
+	doc, err := config.Load(config.LoadOptions{GlobalPath: path, Dir: env.WorkDir, DiscoverProjects: true})
+	if err != nil {
+		return err
+	}
+	for _, warn := range doc.Warnings {
+		env.warn(warn)
+	}
+	inv := env.newEngine().Inventory(ctx, doc, only)
+	return w.Inventory(inv)
 }
 
 func filterManaged(states []model.State) []model.State {
