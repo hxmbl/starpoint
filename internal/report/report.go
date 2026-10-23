@@ -524,16 +524,23 @@ func (w *Writer) Sync(res *engine.Result, plan model.Plan, proj *project.Info) e
 		// "No actions" is not the same claim as "everything is right". A package
 		// whose provider cannot install it produces no action and is still not
 		// converged, so the message has to tell those apart.
-		unhealthy := 0
+		unhealthy, drift := 0, 0
 		for _, st := range plan.States {
 			if !st.Status.Healthy() {
 				unhealthy++
 			}
+			if st.Status == model.StatusProviderDiffers {
+				drift++
+			}
 		}
-		if unhealthy == 0 {
+		switch {
+		case unhealthy == 0:
 			fmt.Fprintf(w.out, "%s %d package(s) match the configuration.\n",
 				w.p.Green("In sync."), len(plan.States))
-		} else {
+		case drift == unhealthy:
+			fmt.Fprintf(w.out, "%s %d of %d package(s) match the configuration; %d installed through another provider than configured, which sync does not move.\n",
+				w.p.Yellow("Nothing to do."), len(plan.States)-unhealthy, len(plan.States), drift)
+		default:
 			fmt.Fprintf(w.out, "%s %d of %d package(s) match the configuration, and Starpoint has no way to change the rest.\n",
 				w.p.Yellow("Nothing to do."), len(plan.States)-unhealthy, len(plan.States))
 		}

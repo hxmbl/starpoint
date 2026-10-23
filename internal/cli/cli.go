@@ -791,7 +791,8 @@ Usage:
 Commands:
   init [--force]                 Create the global configuration (~/.starpoint.toml)
   sync [--dry-run] [--no-confirm]
-                                 Make installed state match the configuration
+                                 Make installed state match the configuration;
+                                 never removes or moves software
   list, ls                       Show managed software, where it is, and who owns it
   inventory [--provider <name>]  List what every provider has installed, managed or not;
                                  changes and records nothing
@@ -966,6 +967,7 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 	if err != nil {
 		return err
 	}
+	plan = withoutMoves(plan)
 
 	guardOpts := opts
 	guardOpts.DryRun = dryRun
@@ -992,7 +994,7 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 		// the run: `states` and `converged` describe the result. A sync that
 		// converged must not tell a caller it has not.
 		if after, _, err := eng.Plan(ctx, doc, opts); err == nil {
-			res.States = after.States
+			res.States = withoutMoves(after).States
 		}
 	}
 	if applyErr != nil {
@@ -1001,6 +1003,45 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 		return applyErr
 	}
 	return w.Sync(res, plan, proj)
+}
+
+// withoutMoves takes provider moves out of a sync plan.
+//
+// sync never removes software. Software the configuration gives to one
+// provider while another has it is drift: the real provider still owns its
+// lifecycle, and moving it (install the new copy, remove the old) is a
+// decision `transition` makes, one package at a time, with its phases and
+// its reversal. sync reports each one as a provider-drift warning naming the
+// two commands that settle it, and the package stays unconverged.
+func withoutMoves(plan model.Plan) model.Plan {
+	kept := plan.Actions[:0:0]
+	for _, a := range plan.Actions {
+		if a.Action != model.ActionRelocate {
+			kept = append(kept, a)
+			continue
+		}
+		st := a.State
+		current := ""
+		where := ""
+		if st.Current != nil {
+			current = st.Current.Provider
+			if st.Current.Path != "" {
+				where = " at " + st.Current.Path
+			}
+		}
+		plan.Warnings = append(plan.Warnings, model.Warning{
+			Severity: model.SeverityWarn,
+			Code:     model.WarnProviderDrift,
+			Package:  st.Package.Name,
+			Provider: st.Res.Provider,
+			Message: fmt.Sprintf("the configuration gives %s to %s, but %s has it%s; sync does not move or remove software. "+
+				"Run 'starpoint transition %s' to move it to %s, or 'starpoint adopt %s %s' to record %s as its owner",
+				st.Package.Name, st.Res.Provider, current, where, st.Package.Name, st.Res.Provider, st.Package.Name, current, current),
+		})
+	}
+	plan.Actions = kept
+	plan.Transitions = nil
+	return plan
 }
 
 // confirmPlan shows the user exactly what is about to happen.

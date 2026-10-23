@@ -110,6 +110,7 @@ consumer should act on the code and show the message. Codes in use:
 | `pin-conflict` | A newer version exists than the pin; the pin was kept. |
 | `pin-kept`, `already-current`, `update-unsupported`, `not-installed` | Why `update` left a package alone (severity `info`). |
 | `discover-failed` | A provider could not list its packages, so `prune` considered none of them, or `inventory` shows none of them. |
+| `provider-drift` | `sync` found a package installed through another provider than the configuration gives it. Nothing was moved or removed; the message names `starpoint transition <package>` and `starpoint adopt <package> <owner>`. |
 | `owner-ambiguous` | `adopt --all` found a name installed on request through more than one provider and nobody to ask; it was left out. |
 | `requested-unknown` | `inventory` could not ask a provider which of its packages were installed on purpose; they are all shown as `requested: unknown`. |
 | `prune-skipped` | An orphan (installed, declared nowhere) that `prune` left alone, with its `package` and `provider`; the message gives the reason: it lives outside the invoking user's home directory (a system npm prefix, the interpreter's own site-packages), or it is a package manager (any registered provider, `corepack`, `starpoint`). Severity `info`; reported by dry runs and real runs alike. |
@@ -352,6 +353,15 @@ such as `running-elevated`, name no package and appear only at the top level.
   "project": "ProjectInfo | null"
 }
 ```
+
+`sync` never removes or moves software. A package whose configured provider
+is not the one that has it produces no action and no `transitions` entry: it
+keeps the status `provider-differs`, so `converged` is false, and the warning
+`provider-drift` names the package, the configured `provider`, and in its
+message the provider that has it and the commands that settle it
+(`starpoint transition <package>`, `starpoint adopt <package> <owner>`).
+`transitions` is therefore always empty for `sync`; `transition` reports
+moves.
 
 In a dry run, `states` and `converged` describe the machine as it is. After
 a real run that changed something they describe the machine as the run left
@@ -880,6 +890,11 @@ Version 9 adds; nothing a version 8 consumer read is removed or renamed.
    toolchain) never records a package the chosen provider neither reports
    nor owns on PATH; version 8 wrote such an entry with a
    `recorded-not-installed` warning.
+8. Behaviour: `sync` no longer moves software between providers, so it never
+   removes anything. Where version 8 planned a `relocate` action (and a
+   `transitions` entry) for a provider mismatch, version 9 plans nothing,
+   reports `provider-drift`, and leaves the package `provider-differs`.
+   `relocate` actions now come only from `transition`.
 
 ## Versioning Policy
 
