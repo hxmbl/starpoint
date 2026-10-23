@@ -184,7 +184,7 @@ the privilege classification and the schema's provider table.
 
 `make build` and the repo-root binary are development artifacts. Real releases
 belong to the pipeline: `.goreleaser.yaml` builds the matrix
-(linux/darwin/windows × amd64/arm64, CGO_ENABLED=0, version via `-X ...Version`)
+(linux/darwin × amd64/arm64; no Windows builds, CGO_ENABLED=0, version via `-X ...Version`)
 and renders the Homebrew formula; `.github/workflows/release.yml` fires on a
 `v*.*.*` tag, runs `ci.yml` as a gate, then pushes the rendered formula to the
 `Hxmbl/homebrew-tap` over SSH. The release workflow's actions are pinned by

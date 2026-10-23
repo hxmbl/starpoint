@@ -14,6 +14,8 @@ config → desired state → provider resolution → current state → diff → 
 
 ## Quick start
 
+Starpoint runs on Linux and macOS. There are no Windows builds.
+
 ```sh
 go install github.com/hxmbl/starpoint/cmd/starpoint@latest
 # or, from a checkout:
@@ -610,6 +612,8 @@ suite substitutes a scripted command runner and in-memory providers.
 - HTTP API. The internal model is already machine-readable and `--json` exposes
   it. A server can be added later without reshaping anything.
 - GUI.
+- Windows. There are no Windows builds; the elevated-token handling below is
+  kept so `go build` still works there, but Windows is not supported.
 - Additional ecosystems such as Bun, Deno, mise/asdf, winget, Chocolatey,
   Composer, Maven/Gradle, NuGet, SwiftPM, CocoaPods, vcpkg and Conda remain
   candidates.
