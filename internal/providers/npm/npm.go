@@ -352,3 +352,9 @@ func (p *Provider) StateDirs(ctx context.Context) []string {
 	}
 	return out
 }
+
+var _ provider.RequestedByConstruction = (*Provider)(nil)
+
+// DiscoverListsOnlyRequested reports that Discover lists only what the user
+// installed on purpose: no dependencies appear in it.
+func (p *Provider) DiscoverListsOnlyRequested() bool { return true }

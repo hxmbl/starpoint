@@ -133,6 +133,10 @@ type Env struct {
 	target *elevation.Target
 	// alignment is the ownership and permission policy of an elevated run.
 	alignment *align.Policy
+	// AdjustAlignment, when set, sees the ownership and permission policy of
+	// an elevated run before it is used. Tests that cannot change owners use
+	// it to reassign from their own uid and record the chowns instead.
+	AdjustAlignment func(p *align.Policy)
 	// started is when this Run began; an elevated run only reassigns what
 	// changed after it.
 	started time.Time
@@ -477,7 +481,9 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		err = env.dispatch(ctx, w, cmd, cmdArgs, force, providers)
 	}
 	if err == errHelpShown {
-		env.alignOwnFiles()
+		if !writesNothing(canonicalCommand(cmd)) {
+			env.alignOwnFiles()
+		}
 		return 0
 	}
 	if err == errUnknownCommand {
@@ -525,6 +531,10 @@ func (env *Env) dispatch(ctx context.Context, w *report.Writer, cmd string, cmdA
 		err = cmdSync(ctx, env, w, cmdArgs, providers)
 	case "list", "ls":
 		err = cmdList(ctx, env, w, cmdArgs)
+	case "inventory":
+		err = cmdInventory(ctx, env, w, cmdArgs, providers)
+	case "adopt":
+		err = cmdAdopt(ctx, env, w, cmdArgs, providers)
 	case "info", "show":
 		err = cmdInfo(ctx, env, w, cmdArgs)
 	case "explain":
@@ -570,7 +580,7 @@ func (env *Env) dispatch(ctx context.Context, w *report.Writer, cmd string, cmdA
 // which point it is the tool's fault and it stops working.
 func (e *Env) begin(command string, args []string) {
 	canonical := canonicalCommand(command)
-	if canonical == "" {
+	if canonical == "" || writesNothing(canonical) {
 		return
 	}
 	e.applyRetention()
@@ -593,9 +603,14 @@ func (e *Env) begin(command string, args []string) {
 // finish records how a command ended and returns its exit code.
 func (e *Env) finish(command string, args []string, code int, err error) int {
 	// Starpoint's own records go back to the user an elevated run acts for
-	// before the last entry is appended; appending keeps the owner.
-	e.alignOwnFiles()
-	if command != "" {
+	// before the last entry is appended; appending keeps the owner. A command
+	// that writes nothing has nothing of its own to give back, and must not
+	// chown what earlier runs left either: "writes nothing" includes
+	// ownership.
+	if !writesNothing(command) {
+		e.alignOwnFiles()
+	}
+	if command != "" && !writesNothing(command) {
 		result := "ok"
 		if err != nil {
 			result = "failed"
@@ -613,6 +628,11 @@ func (e *Env) finish(command string, args []string, code int, err error) int {
 	}
 	return code
 }
+
+// writesNothing reports whether a command is observation only, down to
+// Starpoint's own records: inventory leaves no audit entry and ages nothing
+// out, so it can be run on a machine Starpoint has never touched.
+func writesNothing(command string) bool { return command == "inventory" }
 
 // errorDetail is the message an audit entry carries, if any.
 func errorDetail(err error) string {
@@ -782,11 +802,17 @@ Usage:
 Commands:
   init [--force]                 Create the global configuration (~/.starpoint.toml)
   sync [--dry-run] [--no-confirm]
-                                 Make installed state match the configuration
+                                 Make installed state match the configuration;
+                                 never removes or moves software
   list, ls                       Show managed software, where it is, and who owns it
+  inventory [--provider <name>]  List what every provider has installed, managed or not;
+                                 changes and records nothing
   info, show <package>           Show one package's state in detail
   explain <package>              Show how Starpoint decides which provider owns a package
   doctor [--all]                 Inspect Starpoint, configuration, providers, ownership, PATH
+  adopt <package> [provider]     Record the owner of software that is already installed;
+  adopt --all                    never installs, removes or moves anything (--all: everything
+                                 a provider says was installed on request)
   install, add <package>         Install software and record it in the configuration
   install .                      Install the current project's packages and dependencies
   remove, uninstall <package>    Remove software and delete it from the configuration
@@ -848,8 +874,9 @@ commands and doctor always run.
 
 Exit status: 0 success, 1 failure, 2 usage error, 3 refused because an
 unattended run would delete or replace something (--allow-destructive), 4
-refused because a changing command ran as root (--allow-root). Nothing is
-changed by a refusal.
+refused because a changing command ran as root (--allow-root), 5 refused
+because a decision only you can make was needed and there was no terminal to
+ask on (the refusal names the candidates). Nothing is changed by a refusal.
 
 Examples:
   starpoint init
@@ -951,6 +978,7 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 	if err != nil {
 		return err
 	}
+	plan = withoutMoves(plan)
 
 	guardOpts := opts
 	guardOpts.DryRun = dryRun
@@ -977,7 +1005,7 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 		// the run: `states` and `converged` describe the result. A sync that
 		// converged must not tell a caller it has not.
 		if after, _, err := eng.Plan(ctx, doc, opts); err == nil {
-			res.States = after.States
+			res.States = withoutMoves(after).States
 		}
 	}
 	if applyErr != nil {
@@ -986,6 +1014,45 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 		return applyErr
 	}
 	return w.Sync(res, plan, proj)
+}
+
+// withoutMoves takes provider moves out of a sync plan.
+//
+// sync never removes software. Software the configuration gives to one
+// provider while another has it is drift: the real provider still owns its
+// lifecycle, and moving it (install the new copy, remove the old) is a
+// decision `transition` makes, one package at a time, with its phases and
+// its reversal. sync reports each one as a provider-drift warning naming the
+// two commands that settle it, and the package stays unconverged.
+func withoutMoves(plan model.Plan) model.Plan {
+	kept := plan.Actions[:0:0]
+	for _, a := range plan.Actions {
+		if a.Action != model.ActionRelocate {
+			kept = append(kept, a)
+			continue
+		}
+		st := a.State
+		current := ""
+		where := ""
+		if st.Current != nil {
+			current = st.Current.Provider
+			if st.Current.Path != "" {
+				where = " at " + st.Current.Path
+			}
+		}
+		plan.Warnings = append(plan.Warnings, model.Warning{
+			Severity: model.SeverityWarn,
+			Code:     model.WarnProviderDrift,
+			Package:  st.Package.Name,
+			Provider: st.Res.Provider,
+			Message: fmt.Sprintf("the configuration gives %s to %s, but %s has it%s; sync does not move or remove software. "+
+				"Run 'starpoint transition %s' to move it to %s, or 'starpoint adopt %s %s' to record %s as its owner",
+				st.Package.Name, st.Res.Provider, current, where, st.Package.Name, st.Res.Provider, st.Package.Name, current, current),
+		})
+	}
+	plan.Actions = kept
+	plan.Transitions = nil
+	return plan
 }
 
 // confirmPlan shows the user exactly what is about to happen.
@@ -1037,6 +1104,36 @@ func cmdList(ctx context.Context, env *Env, w *report.Writer, args []string) err
 		states = filterProvider(states, filter)
 	}
 	return w.List(states, env.loc().OnPath())
+}
+
+// cmdInventory lists what every provider reports as installed, managed or
+// not. It only observes: providers are asked for their health and their
+// package lists, and nothing is resolved, installed, recorded or logged.
+func cmdInventory(ctx context.Context, env *Env, w *report.Writer, args []string, only []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("%w: unknown argument %q for inventory", ErrUsage, args[0])
+	}
+	reg := env.registry()
+	for _, name := range only {
+		if _, ok := reg.Get(name); !ok {
+			return fmt.Errorf("%w: unknown provider %q", ErrUsage, name)
+		}
+	}
+	path, err := env.globalPath()
+	if err != nil {
+		return err
+	}
+	// A missing configuration is not an error here: inventory is how a
+	// machine with no configuration yet is looked at.
+	doc, err := config.Load(config.LoadOptions{GlobalPath: path, Dir: env.WorkDir, DiscoverProjects: true})
+	if err != nil {
+		return err
+	}
+	for _, warn := range doc.Warnings {
+		env.warn(warn)
+	}
+	inv := env.newEngine().Inventory(ctx, doc, only)
+	return w.Inventory(inv)
 }
 
 func filterManaged(states []model.State) []model.State {

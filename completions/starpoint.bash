@@ -6,7 +6,7 @@ _starpoint() {
   local cur prev cmd i commands globals providers flags
   cur=${COMP_WORDS[COMP_CWORD]}
   prev=${COMP_WORDS[COMP_CWORD-1]}
-  commands='init sync list ls info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover logging logs help'
+  commands='init sync list ls inventory adopt info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover logging logs help'
   globals='--json --provider --force --context --verbose --color --allow-destructive --allow-root --version --help'
   providers='apt brew cargo dnf flatpak gem go nix npm pacman pip pnpm rustup snap system uv yarn'
 
@@ -32,6 +32,8 @@ _starpoint() {
     init) flags='--force' ;;
     sync) flags='--dry-run --no-confirm' ;;
     list|ls) flags='--managed --provider' ;;
+    inventory) flags='--provider' ;;
+    adopt) flags='--all --provider --dry-run --no-confirm' ;;
     info|show) flags='' ;;
     explain) flags='--provider' ;;
     doctor) flags='--all' ;;
@@ -50,6 +52,8 @@ _starpoint() {
     COMPREPLY=( $(compgen -W "$flags --help --json" -- "$cur") )
   elif [[ $cmd == install || $cmd == add || $cmd == i ]]; then
     COMPREPLY=( $(compgen -W ". $providers" -- "$cur") )
+  elif [[ $cmd == adopt ]]; then
+    COMPREPLY=( $(compgen -W "$providers" -- "$cur") )
   fi
 }
 complete -F _starpoint starpoint

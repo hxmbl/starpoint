@@ -212,9 +212,11 @@ func TestSyncTransitionAndPruneAreGuardedToo(t *testing.T) {
 	t.Run("sync", func(t *testing.T) {
 		h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"ripgrep\"\nprovider = \"uv\"\n")
 		h.brew.With(model.Installation{Name: "ripgrep", Version: "14.1.0", Path: "/opt/homebrew/bin/rg"})
-		code, _, errOut := h.run("sync", "--yes")
-		if code != ExitRefusedDestructive || !strings.Contains(errOut, "would uninstall ripgrep") {
-			t.Fatalf("a sync that moves a package is refused unattended, got %d\n%s", code, errOut)
+		// sync never moves software, so an unattended sync has nothing
+		// destructive to refuse: it reports the drift and changes nothing.
+		code, out, errOut := h.run("sync", "--yes")
+		if code != 0 || !strings.Contains(out, "starpoint transition ripgrep") {
+			t.Fatalf("an unattended sync reports drift and succeeds, got %d\n%s\n%s", code, out, errOut)
 		}
 		if len(h.brew.RemoveCalls)+len(h.uv.InstallCalls) != 0 {
 			t.Error("nothing may run")
