@@ -180,7 +180,7 @@ func changingCommand(cmd string, args []string) bool {
 	switch canonicalCommand(cmd) {
 	case "init":
 		return true
-	case "sync", "install", "remove", "update", "prune":
+	case "sync", "install", "remove", "update", "prune", "adopt":
 		return !dryRun
 	case "transition":
 		if dryRun {

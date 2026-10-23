@@ -30,8 +30,8 @@ config → desired state → provider resolution → current state → diff → 
 
 ### The Command Layer
 **`internal/cli/cli.go`** - Dispatch, flags, and per-command bodies
-- Sixteen canonical commands, most with aliases: `init`, `sync`, `list`
-  (`ls`), `inventory`, `info` (`show`), `explain`, `doctor`, `install` (`add`, `i`),
+- Seventeen canonical commands, most with aliases: `init`, `sync`, `list`
+  (`ls`), `inventory`, `adopt`, `info` (`show`), `explain`, `doctor`, `install` (`add`, `i`),
   `remove` (`uninstall`, `rm`), `transition` (`move`), `update` (`upgrade`),
   `runs` (`history`), `prune`, `recover`, `logging` (`logs`), `help`
 - Global flags (`--json`, `--force`, `--provider`, `--context`, `--color`,
@@ -46,7 +46,9 @@ config → desired state → provider resolution → current state → diff → 
 **`internal/cli/guard.go`** - The refusals
 - Exit codes 0, 1 and 2 are the conventional ones; refusals get their own so a
   script can tell "it would not do this without being told it may" from "it
-  tried and failed": 3 (`destructive-unattended`) and 4 (`elevated-refused`)
+  tried and failed": 3 (`destructive-unattended`), 4 (`elevated-refused`)
+  and 5, a decision only the user can make with nobody to ask
+  (`owner-ambiguous`), which names the candidates
 - A `RefusalError` carries the plan it refused, so the caller sees exactly what
   would have happened; nothing was changed, and the refusal is audited
 - An unattended run (`--yes`, no terminal, or a piped answer) that would delete
@@ -67,6 +69,12 @@ config → desired state → provider resolution → current state → diff → 
   name the provider; only the first or last token is considered, never a
   middle one, because `install brew` must keep installing the software called
   brew, and naming the provider twice is an error rather than a guess
+
+**`internal/cli/adopt.go`** - `adopt <pkg> [provider]` and `adopt --all`
+- Ownership bookkeeping through the engine's AdoptOnly path: config-only,
+  previewed and confirmed; never installs, removes or moves. `--all` takes
+  only what `inventory` calls requested; two owners are asked about, or
+  refused (exit 5) with nobody to ask
 
 **`internal/cli/elevated.go`** - What changes when the run is root
 - Four things: whose environment the run acts on (under sudo or doas it is the

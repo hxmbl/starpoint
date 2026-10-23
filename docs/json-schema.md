@@ -110,6 +110,7 @@ consumer should act on the code and show the message. Codes in use:
 | `pin-conflict` | A newer version exists than the pin; the pin was kept. |
 | `pin-kept`, `already-current`, `update-unsupported`, `not-installed` | Why `update` left a package alone (severity `info`). |
 | `discover-failed` | A provider could not list its packages, so `prune` considered none of them, or `inventory` shows none of them. |
+| `owner-ambiguous` | `adopt --all` found a name installed on request through more than one provider and nobody to ask; it was left out. |
 | `requested-unknown` | `inventory` could not ask a provider which of its packages were installed on purpose; they are all shown as `requested: unknown`. |
 | `prune-skipped` | An orphan (installed, declared nowhere) that `prune` left alone, with its `package` and `provider`; the message gives the reason: it lives outside the invoking user's home directory (a system npm prefix, the interpreter's own site-packages), or it is a package manager (any registered provider, `corepack`, `starpoint`). Severity `info`; reported by dry runs and real runs alike. |
 | `pip-outside-virtualenv` | `install .` runs `pip install -r requirements.txt` outside any virtualenv, so it installs into the user's site-packages (as root, the system's) and may upgrade or downgrade packages other software depends on. Its effect is destructive; creating a virtualenv (`python3 -m venv .venv`) makes Starpoint install there instead. |
@@ -419,6 +420,30 @@ was listed):
 When a `reported` provider's question fails, its packages are all `unknown`
 and the warning `requested-unknown` names the provider.
 
+### Adopt
+
+`adopt` reports the operation fields above (`operation: "adopt"`) plus:
+
+```json
+{
+  "skipped": [{ "package": "string", "provider": "string | null", "reason": "string" }],
+  "left_unmanaged": [{ "provider": "string", "dependency": "integer", "unknown": "integer" }]
+}
+```
+
+Every action is `adopt` (`result` `planned` in a dry run, `applied`
+otherwise) with one configuration change and no machine effect: adopting
+never installs, uninstalls or moves anything. A package no provider has, or
+that the named provider does not have, is an error and nothing is recorded;
+software only the `system` provider has is never adopted. `skipped` names
+what was looked at and left alone, with the reason (already recorded; with
+`--all`, a name the configuration records with another provider, with the
+`transition` or `adopt` command that settles it, or one several providers
+claim, which also raises the warning `owner-ambiguous` when nobody could be
+asked). `left_unmanaged` is `--all` only: per provider, how many unmanaged
+packages it left because the provider calls them dependencies or cannot say
+(`inventory`'s `requested`). The system provider is not counted.
+
 ### Install .
 
 `install .` reports the operation fields above plus `dependencies`, the
@@ -532,10 +557,12 @@ planned its work, `refused`:
 {
   "schema_version": 9,
   "error": "string",
-  "code": "destructive-unattended | elevated-refused | invoking-user-unresolved | privilege-drop-failed",
+  "code": "destructive-unattended | elevated-refused | invoking-user-unresolved | privilege-drop-failed | owner-ambiguous",
   "exit_code": 3,
+  "package": "string (decision refusals, exit 5)",
+  "candidates": ["string (decision refusals, exit 5)"],
   "refused": {
-    "operation": "sync | install | remove | update | prune | transition",
+    "operation": "sync | install | remove | update | prune | transition | adopt",
     "actions": ["ActionResult"],
     "warnings": ["Warning"],
     "summary": "Summary"
@@ -549,12 +576,16 @@ planned its work, `refused`:
 | `elevated-refused` | 4 | A command that changes anything ran as root or elevated, without `--allow-root` and without an interactive confirmation (only possible under sudo or doas at a terminal). `refused` is absent: the refusal happens before any planning. |
 | `invoking-user-unresolved` | 4 | Under sudo or doas from an ordinary user, that user's uid, gid or home could not be resolved (or HOME could not be pointed at it). Starpoint will not run their providers as root instead, and `--allow-root` does not change that. `refused` is absent. |
 | `privilege-drop-failed` | 4 | Under sudo or doas from an ordinary user, a process could not actually be started as that user (Starpoint runs `id -u` as them before changing anything and checks they can write their home): no right to switch users, a uid the system rejects, an unwritable home. `--allow-root` does not change it. `refused` is absent. |
+| `owner-ambiguous` | 5 | `adopt <package>` without a provider found the software installed through more than one provider and had no terminal to ask on. `package` names it and `candidates` the providers that have it; name the owner (`starpoint adopt <package> <provider>`). `refused` is absent. |
+
+Exit 5 is the decision refusal: a choice only the user can make was needed
+and nobody could be asked. Such a refusal carries `package` and `candidates`.
 
 Every action in `refused.actions` has `result: "planned"` and `dry_run: true`,
 and lists every planned effect and configuration change, destructive or not.
 
-Exit status for every command: `0` success, `1` failure, `2` usage error, `3`
-and `4` the refusals above.
+Exit status for every command: `0` success, `1` failure, `2` usage error, `3`,
+`4` and `5` the refusals above.
 
 ### Example: an unattended removal refused
 
@@ -839,7 +870,16 @@ Version 9 adds; nothing a version 8 consumer read is removed or renamed.
    `providers`, `packages`, `warnings` and `summary`.
 3. `discover-failed` is also raised by `inventory`, once per provider whose
    listing failed.
-4. `Warning.code` gains `requested-unknown`.
+4. `Warning.code` gains `requested-unknown` and `owner-ambiguous`.
+5. New command `adopt`, with the operation fields plus `skipped` and
+   `left_unmanaged` (see "Adopt"); `refused.operation` gains `adopt`.
+6. Refusal `code` gains `owner-ambiguous` with the new exit status 5, the
+   decision refusal, whose error document carries `package` and
+   `candidates`.
+7. Behaviour: adopting (including `install .` recording a project's
+   toolchain) never records a package the chosen provider neither reports
+   nor owns on PATH; version 8 wrote such an entry with a
+   `recorded-not-installed` warning.
 
 ## Versioning Policy
 
