@@ -337,3 +337,52 @@ func TestPathFromShowPrefersTheScriptNamedAfterThePackage(t *testing.T) {
 		t.Errorf("no location means no path, got %q", got)
 	}
 }
+
+// `pip list` names the interpreter's own site-packages as well as the user
+// site: on a machine whose Python came from an image or a package manager,
+// that is pip itself, wheel, and whatever the system installed. Only what
+// `pip list --user` also names is the user's. Reporting the rest as user scope
+// made prune offer to uninstall pip and the system's Python packages.
+func TestDiscoverReportsOnlyTheUserSiteAsUserScope(t *testing.T) {
+	p, r := newProvider(t)
+	r.Set("lit==23.1.0\nPillow==12.3.0\n", "pip3", "list", "--user", "--format=freeze")
+
+	got, err := p.Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopes := map[string]model.Scope{}
+	for _, inst := range got {
+		scopes[inst.Name] = inst.Scope
+	}
+	for _, name := range []string{"lit", "pillow"} {
+		if scopes[name] != model.ScopeUser {
+			t.Errorf("%s is in the user site, got scope %q", name, scopes[name])
+		}
+	}
+	for _, name := range []string{"certifi", "pip", "wheel"} {
+		if scopes[name] != model.ScopeGlobal {
+			t.Errorf("%s is the interpreter's, not the user's: got scope %q", name, scopes[name])
+		}
+	}
+}
+
+// When the user site cannot be listed (a virtual environment without user
+// site-packages, an old pip), nothing is claimed for the user.
+func TestDiscoverClaimsNothingForTheUserWhenTheUserSiteIsUnreadable(t *testing.T) {
+	p, r := newProvider(t)
+	r.SetFail(1, "ERROR: unknown option", "pip3", "list", "--user", "--format=freeze")
+
+	got, err := p.Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) == 0 {
+		t.Fatal("the full listing still reports what is installed")
+	}
+	for _, inst := range got {
+		if inst.Scope != model.ScopeGlobal {
+			t.Errorf("%s: an unreadable user site must not make anything user scope, got %q", inst.Name, inst.Scope)
+		}
+	}
+}
