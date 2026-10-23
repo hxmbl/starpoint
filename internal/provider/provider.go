@@ -279,7 +279,7 @@ type LatestVersionProvider interface {
 
 // RequestedReporter is implemented by providers that can tell software the
 // user asked for from software installed only as a dependency: apt's manual
-// marks, dnf's user-installed reason, pacman's explicit installs, Homebrew's
+// marks, dnf's install reason, pacman's explicit installs, Homebrew's
 // installed-on-request.
 //
 // Requested is given what Discover reported and answers for those names:

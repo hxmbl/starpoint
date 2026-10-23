@@ -117,3 +117,50 @@ func TestInventoryDefaultsToTheSurveyTimeout(t *testing.T) {
 		t.Errorf("DiscoverTimeout() = %s after setting 1s", got)
 	}
 }
+
+// hangingRequested lists normally but never answers which packages were
+// requested until its context is cancelled.
+type hangingRequested struct{ *testsupport.FakeProvider }
+
+func (h *hangingRequested) Requested(ctx context.Context, _ []model.Installation) (map[string]bool, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// The requested query is the same package manager as the listing, so it
+// shares the bound: a provider whose listing answered but whose requested
+// query hangs is still listed, every package shown as unknown, with a
+// requested-unknown warning saying it timed out.
+func TestInventoryBoundsTheRequestedQuery(t *testing.T) {
+	reg := provider.NewRegistry()
+	slow := &hangingRequested{testsupport.NewFakeProvider("slow", provider.KindSystem)}
+	slow.Caps = provider.Capabilities{Discover: true}
+	slow.With(model.Installation{Name: "git"})
+	reg.Register(slow)
+	eng := New(reg, nil, WithStateDir(t.TempDir()), WithHome(t.TempDir()))
+	eng.SetDiscoverTimeout(150 * time.Millisecond)
+
+	done := make(chan Inventory, 1)
+	go func() { done <- eng.Inventory(context.Background(), nil, nil) }()
+	var inv Inventory
+	select {
+	case inv = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("inventory hung on a requested query that never answers")
+	}
+	if len(inv.Providers) != 1 || !inv.Providers[0].Listed || inv.Providers[0].Requested != "unknown" {
+		t.Errorf("the provider is listed, with requested unknown: %+v", inv.Providers)
+	}
+	if len(inv.Items) != 1 || inv.Items[0].Requested != RequestedUnknown {
+		t.Errorf("git is listed as unknown: %+v", inv.Items)
+	}
+	var warned bool
+	for _, w := range inv.Warnings {
+		if w.Code == model.WarnRequestedUnknown && strings.Contains(w.Message, "timed out") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("a requested-unknown warning says the query timed out: %+v", inv.Warnings)
+	}
+}
