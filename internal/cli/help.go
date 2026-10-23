@@ -53,7 +53,7 @@ var commandFlags = map[string][]string{
 	"info":       {},
 	"explain":    {"--provider"},
 	"doctor":     {"--all"},
-	"install":    {"--version", "--channel", "--project", "--provider", "--dry-run", "--no-confirm"},
+	"install":    {"--version", "--channel", "--project", "--provider", "--allow-duplicate", "--dry-run", "--no-confirm"},
 	"remove":     {"--provider", "--dry-run", "--no-confirm", "--allow-empty"},
 	"transition": {"--all", "--reverse", "--dry-run", "--no-confirm"},
 	"update":     {"--self", "--dry-run", "--no-confirm"},
@@ -102,6 +102,10 @@ Options:
 
 Make the installed state match the configuration: install what is missing
 and reconcile pinned versions. The plan is shown and confirmed first.
+
+An unattended sync (--yes, no_confirm, or no terminal) that would have to
+guess a provider for a package nothing decides is refused with
+provider-ambiguous (exit 5), naming the candidates.
 
 sync never removes or moves software. When the configuration gives a package
 to one provider and another provider has it, that is reported as drift
@@ -229,6 +233,13 @@ virtualenv (no active VIRTUAL_ENV, no project .venv) can upgrade or downgrade
 packages other software uses, so like npm ci over node_modules it needs
 --allow-destructive when unattended.
 
+Starpoint never makes a second copy silently. When another provider already
+has the software (or, when Starpoint picks the provider, only the operating
+system has it), the confirmation says so first; an unattended run is refused
+with duplicate-install (exit 5) unless --allow-duplicate is given. Naming the
+provider is enough to ask for a managed copy beside the system's. To record
+the copy that is already there instead, use 'starpoint adopt'.
+
 Aliases: add, i
 
 Options:
@@ -236,6 +247,7 @@ Options:
   --channel <name>     Release channel, for providers that have them
   --project            Record the package in the project's configuration
   --provider <name>    Use this provider
+  --allow-duplicate    Let an unattended install add a second copy
   --dry-run, -n        Show what would happen; change nothing
   --no-confirm, -y     Do not ask first
   --allow-destructive  Let an unattended run delete or replace things

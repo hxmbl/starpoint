@@ -110,6 +110,7 @@ consumer should act on the code and show the message. Codes in use:
 | `pin-conflict` | A newer version exists than the pin; the pin was kept. |
 | `pin-kept`, `already-current`, `update-unsupported`, `not-installed` | Why `update` left a package alone (severity `info`). |
 | `discover-failed` | A provider could not list its packages, so `prune` considered none of them, or `inventory` shows none of them. |
+| `duplicate-install` | `install` would add a second copy beside another provider's (or the operating system's); shown on the action before the confirmation. Unattended, the same condition is the `duplicate-install` refusal. |
 | `provider-drift` | `sync` found a package installed through another provider than the configuration gives it. Nothing was moved or removed; the message names `starpoint transition <package>` and `starpoint adopt <package> <owner>`. |
 | `owner-ambiguous` | `adopt --all` found a name installed on request through more than one provider and nobody to ask; it was left out. |
 | `requested-unknown` | `inventory` could not ask a provider which of its packages were installed on purpose; they are all shown as `requested: unknown`. |
@@ -567,7 +568,7 @@ planned its work, `refused`:
 {
   "schema_version": 9,
   "error": "string",
-  "code": "destructive-unattended | elevated-refused | invoking-user-unresolved | privilege-drop-failed | owner-ambiguous",
+  "code": "destructive-unattended | elevated-refused | invoking-user-unresolved | privilege-drop-failed | owner-ambiguous | duplicate-install | provider-ambiguous",
   "exit_code": 3,
   "package": "string (decision refusals, exit 5)",
   "candidates": ["string (decision refusals, exit 5)"],
@@ -586,6 +587,8 @@ planned its work, `refused`:
 | `elevated-refused` | 4 | A command that changes anything ran as root or elevated, without `--allow-root` and without an interactive confirmation (only possible under sudo or doas at a terminal). `refused` is absent: the refusal happens before any planning. |
 | `invoking-user-unresolved` | 4 | Under sudo or doas from an ordinary user, that user's uid, gid or home could not be resolved (or HOME could not be pointed at it). Starpoint will not run their providers as root instead, and `--allow-root` does not change that. `refused` is absent. |
 | `privilege-drop-failed` | 4 | Under sudo or doas from an ordinary user, a process could not actually be started as that user (Starpoint runs `id -u` as them before changing anything and checks they can write their home): no right to switch users, a uid the system rejects, an unwritable home. `--allow-root` does not change it. `refused` is absent. |
+| `duplicate-install` | 5 | An unattended `install` would add a second copy: another provider already has the software (`candidates` names it, whoever chose the target provider), or only the operating system has it and Starpoint picked the provider (`candidates` is `["system"]`). Rerun with `--allow-duplicate`, name the provider for a managed copy beside the system's, or use `adopt`/`transition`. `refused` holds the planned install. |
+| `provider-ambiguous` | 5 | An unattended `sync` would install a package with no recorded provider whose provider is ambiguous. `package` is the first such package (the message names all), `candidates` the providers that could own it. Record a `provider` or install it with the provider named. `refused` holds the planned actions. |
 | `owner-ambiguous` | 5 | `adopt <package>` without a provider found the software installed through more than one provider and had no terminal to ask on. `package` names it and `candidates` the providers that have it; name the owner (`starpoint adopt <package> <provider>`). `refused` is absent. |
 
 Exit 5 is the decision refusal: a choice only the user can make was needed
@@ -895,6 +898,11 @@ Version 9 adds; nothing a version 8 consumer read is removed or renamed.
    `transitions` entry) for a provider mismatch, version 9 plans nothing,
    reports `provider-drift`, and leaves the package `provider-differs`.
    `relocate` actions now come only from `transition`.
+9. Refusal `code` gains `duplicate-install` and `provider-ambiguous` (exit
+   5), and `Warning.code` gains `duplicate-install`. Behaviour: an unattended
+   `install` that would silently add a second copy, and an unattended `sync`
+   that would pick a provider for an ambiguous package, are refused where
+   version 8 went ahead. `install --allow-duplicate` is new.
 
 ## Versioning Policy
 

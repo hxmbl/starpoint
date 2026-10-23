@@ -37,7 +37,7 @@ _starpoint() {
     info|show) flags=() ;;
     explain) flags=(--provider) ;;
     doctor) flags=(--all) ;;
-    install|add|i) flags=(--version --channel --project --provider --dry-run --no-confirm) ;;
+    install|add|i) flags=(--version --channel --project --provider --allow-duplicate --dry-run --no-confirm) ;;
     remove|uninstall|rm) flags=(--provider --dry-run --no-confirm --allow-empty) ;;
     logging|logs) flags=() ;;
     transition|move) flags=(--all --reverse --dry-run --no-confirm) ;;

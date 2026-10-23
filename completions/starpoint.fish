@@ -30,6 +30,7 @@ complete -c starpoint -n '__fish_seen_subcommand_from adopt' -l all -d 'Adopt ev
 complete -c starpoint -n '__fish_seen_subcommand_from adopt' -a "$providers" -d 'Owner'
 complete -c starpoint -n '__fish_seen_subcommand_from install add i' -l channel -r -d 'Release channel'
 complete -c starpoint -n '__fish_seen_subcommand_from install add i' -l project -d 'Record in the project configuration'
+complete -c starpoint -n '__fish_seen_subcommand_from install add i' -l allow-duplicate -d 'Let an unattended install add a second copy'
 complete -c starpoint -n '__fish_seen_subcommand_from install add i' -a '.' -d 'The current project'
 complete -c starpoint -n '__fish_seen_subcommand_from transition move' -l reverse -d 'Reverse the last transition'
 complete -c starpoint -n '__fish_seen_subcommand_from update upgrade' -l self -d 'Also update Starpoint'
