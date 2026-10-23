@@ -80,6 +80,11 @@ type Inventory struct {
 // is it" without deciding anything. A provider that fails to list is
 // reported with a discover-failed warning rather than stopping the others.
 //
+// Health checks run concurrently, each under its own bound, before the
+// listing round. One that times out or is cancelled is reported the same
+// way (an error on its row and a discover-failed warning), never as a
+// silently unavailable provider, and is not remembered as unavailable.
+//
 // Package managers can hang (a lock held by another process, a prompt
 // nobody sees, a network mirror that never answers), so every provider's
 // answer is bounded by the survey timeout (SetDiscoverTimeout overrides it).
@@ -88,9 +93,6 @@ type Inventory struct {
 // one stuck package manager costs the timeout, never the whole command.
 func (e *Engine) Inventory(ctx context.Context, doc *config.Document, only []string) Inventory {
 	timeout := e.DiscoverTimeout()
-	hctx, hcancel := context.WithTimeout(ctx, timeout)
-	available := e.health(hctx)
-	hcancel()
 	want := map[string]bool{}
 	for _, n := range only {
 		want[n] = true
@@ -110,6 +112,12 @@ func (e *Engine) Inventory(ctx context.Context, doc *config.Document, only []str
 			selected = append(selected, p)
 		}
 	}
+
+	// Health first, concurrently and each provider under its own bound: a
+	// slow health check must not spend the others' time, and one that does
+	// not finish is a failed provider (warned below), not a quiet
+	// "unavailable".
+	available, healthFailed := e.healthWithin(ctx, selected, timeout)
 
 	type answer struct {
 		items     []model.Installation
@@ -186,6 +194,13 @@ wait:
 		row := InventoryProvider{Name: p.Name(), Available: h.Available, Reason: h.Reason}
 		a := answers[i]
 		switch {
+		case healthFailed[p.Name()] != "":
+			msg := healthFailed[p.Name()]
+			row.Error = msg
+			inv.Warnings = append(inv.Warnings, model.Warning{
+				Severity: model.SeverityError, Code: model.WarnDiscoverFailed, Provider: p.Name(),
+				Message: "could not check whether " + p.Name() + " is usable, so none of what it has installed is shown: " + msg,
+			})
 		case !h.Available:
 		case !p.Capabilities().Discover:
 			row.Reason = "cannot list what it has installed"
