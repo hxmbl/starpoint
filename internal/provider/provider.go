@@ -277,6 +277,28 @@ type LatestVersionProvider interface {
 	LatestVersion(ctx context.Context, pkg model.Package) (string, error)
 }
 
+// RequestedReporter is implemented by providers that can tell software the
+// user asked for from software installed only as a dependency: apt's manual
+// marks, dnf's user-installed reason, pacman's explicit installs, Homebrew's
+// installed-on-request.
+//
+// Requested is given what Discover reported and answers for those names:
+// true for requested, false for a dependency. A name left out of the map is
+// unknown. That distinction is the point: `adopt --all` takes only what is
+// known to be requested, so a provider that cannot say must not guess.
+type RequestedReporter interface {
+	Requested(ctx context.Context, installed []model.Installation) (map[string]bool, error)
+}
+
+// RequestedByConstruction is implemented by providers whose Discover lists
+// only what the user installed on purpose, because the tool keeps no
+// dependencies in that list: uv's tools, `cargo install`, global npm and
+// pnpm packages at depth 0, Go's installed binaries, rustup's toolchains,
+// the Nix profile, Flatpak applications (runtimes are not listed).
+type RequestedByConstruction interface {
+	DiscoverListsOnlyRequested() bool
+}
+
 // Health is the result of probing a provider.
 type Health struct {
 	// Name is the provider name.

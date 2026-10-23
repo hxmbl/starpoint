@@ -181,7 +181,7 @@ is printed for you to run.
 | `starpoint transition [pkg...] [--all] [--dry-run] [--no-confirm]` | Show or perform provider transitions (alias: `move`) |
 | `starpoint transition --reverse <package>` | Reverse the most recent transition when safe |
 | `starpoint doctor [--all]` | Inspect Starpoint, config, providers, ownership, inconsistencies, PATH |
-| `starpoint inventory [--provider <name>]` | List every package each provider reports, managed or not, matched by provider and name; observes only (Health and Discover), works with no configuration, writes nothing — not even the audit log |
+| `starpoint inventory [--provider <name>]` | List every package each provider reports, managed or not, matched by provider and name; observes only (Health and Discover), works with no configuration, writes nothing — not even the audit log; says per package whether it was installed on request, as a dependency, or unknown |
 | `starpoint list [--managed] [--provider <name>]` | Show managed software, its location, scope and provider (alias: `ls`) |
 | `starpoint info <package>` | Show one package's state in detail (alias: `show`) |
 | `starpoint explain <package>` | Explain how Starpoint resolves ownership |

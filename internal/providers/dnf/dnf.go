@@ -324,3 +324,21 @@ var _ provider.Privileged = (*Provider)(nil)
 func (p *Provider) Privilege(context.Context, exec.Runner, provider.PrivilegeTarget) provider.PrivilegeDecision {
 	return shell.RootPrivilege("dnf installs system packages, which needs root")
 }
+
+var _ provider.RequestedReporter = (*Provider)(nil)
+
+// Requested reads the packages DNF records as installed by the user
+// (`dnf repoquery --userinstalled`); every other installed package came in
+// as a dependency. The format ends in a space rather than "\n" because DNF 4
+// adds a newline after each entry and DNF 5 adds nothing, and splitting on
+// whitespace reads both.
+func (p *Provider) Requested(ctx context.Context, installed []model.Installation) (map[string]bool, error) {
+	res, err := p.runner.Run(ctx, "dnf", "repoquery", "--userinstalled", "--queryformat", "%{name} ")
+	if err != nil {
+		return nil, shell.Failure(p.Name(), "requested", "could not run dnf repoquery --userinstalled", err)
+	}
+	if res.Failed() {
+		return nil, shell.Failure(p.Name(), "requested", shell.Diagnostic(res.Field()), nil)
+	}
+	return shell.RequestedFrom(strings.Fields(res.Stdout), installed), nil
+}

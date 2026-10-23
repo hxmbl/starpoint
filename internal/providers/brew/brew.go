@@ -385,3 +385,45 @@ func (p *Provider) Privilege(ctx context.Context, q exec.Runner, t provider.Priv
 	}
 	return d
 }
+
+var _ provider.RequestedReporter = (*Provider)(nil)
+
+// Requested reads which formulae were installed on request
+// (`brew list --formula --installed-on-request`); a cask is always installed
+// on request. When that flag is missing (an older Homebrew),
+// `brew leaves --installed-on-request` names some of them, and the formulae
+// it leaves out stay unknown rather than being called dependencies: a
+// requested formula that another formula depends on is not a leaf.
+func (p *Provider) Requested(ctx context.Context, installed []model.Installation) (map[string]bool, error) {
+	casks := map[string]bool{}
+	if res, err := p.runner.Run(ctx, "brew", "list", "--cask", "-1"); err == nil && !res.Failed() {
+		for _, name := range strings.Fields(res.Stdout) {
+			casks[name] = true
+		}
+	}
+	res, err := p.runner.Run(ctx, "brew", "list", "--formula", "--installed-on-request", "-1")
+	if err == nil && !res.Failed() {
+		out := shell.RequestedFrom(strings.Fields(res.Stdout), installed)
+		for name := range casks {
+			if _, ok := out[name]; ok {
+				out[name] = true
+			}
+		}
+		return out, nil
+	}
+	leaves, err := p.runner.Run(ctx, "brew", "leaves", "--installed-on-request")
+	if err != nil {
+		return nil, shell.Failure(p.Name(), "requested", "could not ask Homebrew which formulae were installed on request", err)
+	}
+	if leaves.Failed() {
+		return nil, shell.Failure(p.Name(), "requested", shell.Diagnostic(leaves.Field()), nil)
+	}
+	out := map[string]bool{}
+	for _, name := range strings.Fields(leaves.Stdout) {
+		out[name] = true
+	}
+	for name := range casks {
+		out[name] = true
+	}
+	return out, nil
+}

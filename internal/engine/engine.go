@@ -813,10 +813,7 @@ func (e *Engine) Prune(ctx context.Context, doc *config.Document, opts Options) 
 	//     CARGO_HOME under /usr/local belong to the machine, whoever runs
 	//     Starpoint. A plain root shell therefore only ever prunes root's own
 	//     home.
-	protected := map[string]bool{"corepack": true, "starpoint": true}
-	for _, q := range e.reg.All() {
-		protected[q.Name()] = true
-	}
+	protected := e.packageManagerNames()
 	home := e.profileHome()
 
 	var failures []string

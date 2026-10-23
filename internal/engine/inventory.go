@@ -26,7 +26,20 @@ type InventoryItem struct {
 	// and this provider. A configuration entry for the same name with
 	// another provider, or with no provider yet, does not make it managed.
 	Managed bool `json:"managed"`
+	// Requested says whether the user asked for it: RequestedYes,
+	// RequestedDependency, or RequestedUnknown when the provider cannot say.
+	Requested string `json:"requested"`
 }
+
+// What an inventory knows about whether a package was asked for.
+const (
+	// RequestedYes: the provider says the user installed it on purpose.
+	RequestedYes = "requested"
+	// RequestedDependency: the provider says it came in as a dependency.
+	RequestedDependency = "dependency"
+	// RequestedUnknown: the provider cannot tell, or failed to say.
+	RequestedUnknown = "unknown"
+)
 
 // InventoryProvider says what one provider contributed to an inventory.
 type InventoryProvider struct {
@@ -43,6 +56,10 @@ type InventoryProvider struct {
 	Count int `json:"count"`
 	// Error is why listing failed, when it did.
 	Error string `json:"error,omitempty"`
+	// Requested is how the provider tells requested software from
+	// dependencies: "reported" (it keeps a record and was asked),
+	// "listing" (what it lists is only what was asked for), or "unknown".
+	Requested string `json:"requested,omitempty"`
 }
 
 // Inventory is everything the providers on this machine report as
@@ -84,9 +101,12 @@ func (e *Engine) Inventory(ctx context.Context, doc *config.Document, only []str
 	}
 
 	type answer struct {
-		items []model.Installation
-		err   error
-		asked bool
+		items     []model.Installation
+		err       error
+		asked     bool
+		requested map[string]bool
+		source    string
+		reqErr    error
 	}
 	answers := make([]answer, len(selected))
 	var wg sync.WaitGroup
@@ -98,7 +118,11 @@ func (e *Engine) Inventory(ctx context.Context, doc *config.Document, only []str
 		go func(i int, p provider.Provider) {
 			defer wg.Done()
 			items, err := p.Discover(ctx)
-			answers[i] = answer{items: items, err: err, asked: true}
+			a := answer{items: items, err: err, asked: true, source: "unknown"}
+			if err == nil {
+				a.requested, a.source, a.reqErr = e.requestedBy(ctx, p, items)
+			}
+			answers[i] = a
 		}(i, p)
 	}
 	wg.Wait()
@@ -120,6 +144,13 @@ func (e *Engine) Inventory(ctx context.Context, doc *config.Document, only []str
 			})
 		case a.asked:
 			row.Listed = true
+			row.Requested = a.source
+			if a.reqErr != nil {
+				inv.Warnings = append(inv.Warnings, model.Warning{
+					Severity: model.SeverityWarn, Code: model.WarnRequestedUnknown, Provider: p.Name(),
+					Message: "could not ask " + p.Name() + " which packages were installed on purpose, so all of them are shown as unknown: " + a.reqErr.Error(),
+				})
+			}
 			seen := map[string]bool{}
 			for _, inst := range a.items {
 				inst := inst
@@ -135,12 +166,13 @@ func (e *Engine) Inventory(ctx context.Context, doc *config.Document, only []str
 				}
 				located := e.withPath(&inst)
 				inv.Items = append(inv.Items, InventoryItem{
-					Provider: p.Name(),
-					Name:     inst.Name,
-					Version:  inst.Version,
-					Path:     located.Path,
-					Scope:    inst.Scope,
-					Managed:  managed[[2]string{p.Name(), inst.Name}],
+					Provider:  p.Name(),
+					Name:      inst.Name,
+					Version:   inst.Version,
+					Path:      located.Path,
+					Scope:     inst.Scope,
+					Managed:   managed[[2]string{p.Name(), inst.Name}],
+					Requested: requestedLabel(a.requested, inst.Name),
 				})
 				row.Count++
 			}
@@ -159,4 +191,54 @@ func (e *Engine) Inventory(ctx context.Context, doc *config.Document, only []str
 		return a.Name < b.Name
 	})
 	return inv
+}
+
+// requestedBy asks a provider which of the packages it listed were installed
+// on purpose. The source is "reported" for a provider that keeps that
+// record, "listing" for one whose list holds nothing else, and "unknown".
+//
+// A package manager is never called requested by its listing: npm lists npm
+// and corepack among its globals because Node installed them, not the user.
+func (e *Engine) requestedBy(ctx context.Context, p provider.Provider, items []model.Installation) (map[string]bool, string, error) {
+	if r, ok := p.(provider.RequestedReporter); ok {
+		got, err := r.Requested(ctx, items)
+		if err != nil {
+			return nil, "unknown", err
+		}
+		return got, "reported", nil
+	}
+	if c, ok := p.(provider.RequestedByConstruction); ok && c.DiscoverListsOnlyRequested() {
+		managers := e.packageManagerNames()
+		out := make(map[string]bool, len(items))
+		for _, inst := range items {
+			if !managers[inst.Name] {
+				out[inst.Name] = true
+			}
+		}
+		return out, "listing", nil
+	}
+	return nil, "unknown", nil
+}
+
+// requestedLabel renders one package's answer.
+func requestedLabel(m map[string]bool, name string) string {
+	v, ok := m[name]
+	switch {
+	case !ok:
+		return RequestedUnknown
+	case v:
+		return RequestedYes
+	default:
+		return RequestedDependency
+	}
+}
+
+// packageManagerNames are names that are never an ordinary user package:
+// every registered provider, plus corepack and Starpoint itself.
+func (e *Engine) packageManagerNames() map[string]bool {
+	out := map[string]bool{"corepack": true, "starpoint": true}
+	for _, q := range e.reg.All() {
+		out[q.Name()] = true
+	}
+	return out
 }

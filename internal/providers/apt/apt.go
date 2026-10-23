@@ -296,3 +296,29 @@ var _ provider.Privileged = (*Provider)(nil)
 func (p *Provider) Privilege(context.Context, exec.Runner, provider.PrivilegeTarget) provider.PrivilegeDecision {
 	return shell.RootPrivilege("apt installs system packages, which needs root")
 }
+
+var _ provider.RequestedReporter = (*Provider)(nil)
+
+// Requested reads apt's manual marks (`apt-mark showmanual`): a package
+// marked manual was asked for, any other was pulled in as a dependency.
+// dpkg qualifies some names with their architecture (libc6:arm64) where
+// apt-mark may not, so both spellings are matched.
+func (p *Provider) Requested(ctx context.Context, installed []model.Installation) (map[string]bool, error) {
+	res, err := p.runner.Run(ctx, "apt-mark", "showmanual")
+	if err != nil {
+		return nil, shell.Failure(p.Name(), "requested", "could not run apt-mark showmanual", err)
+	}
+	if res.Failed() {
+		return nil, shell.Failure(p.Name(), "requested", shell.Diagnostic(res.Field()), nil)
+	}
+	manual := map[string]bool{}
+	for _, name := range strings.Fields(res.Stdout) {
+		manual[name] = true
+	}
+	out := make(map[string]bool, len(installed))
+	for _, inst := range installed {
+		base, _, _ := strings.Cut(inst.Name, ":")
+		out[inst.Name] = manual[inst.Name] || manual[base]
+	}
+	return out, nil
+}
