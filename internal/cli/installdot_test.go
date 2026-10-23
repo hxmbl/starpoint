@@ -247,12 +247,19 @@ func TestInstallDotListsAndObservesTheNodeModulesReplacement(t *testing.T) {
 	}
 	var observed bool
 	for _, e := range payload.Dependencies.Effects {
-		if e.Path == modules && e.Op == model.EffectReplace && e.Destructive && e.Evidence == model.EvidenceObserved {
+		if !e.Destructive || e.Evidence != model.EvidenceObserved {
+			continue
+		}
+		// The new directory can reuse the old one's inode (seen on CI's
+		// filesystem), in which case the replacement is reported as the
+		// entries it removed rather than a new directory.
+		if (e.Path == modules && e.Op == model.EffectReplace) ||
+			(e.Path == filepath.Join(modules, "patched.js") && e.Op == model.EffectDelete) {
 			observed = true
 		}
 	}
 	if !observed {
-		t.Errorf("the replaced node_modules is reported as observed and destructive: %+v", payload.Dependencies.Effects)
+		t.Errorf("the replaced node_modules (or the local file it removed) is reported as observed and destructive: %+v", payload.Dependencies.Effects)
 	}
 }
 
