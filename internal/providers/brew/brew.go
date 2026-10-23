@@ -394,19 +394,33 @@ var _ provider.RequestedReporter = (*Provider)(nil)
 // `brew leaves --installed-on-request` names some of them, and the formulae
 // it leaves out stay unknown rather than being called dependencies: a
 // requested formula that another formula depends on is not a leaf.
+//
+// Only a formula can be a dependency. When the cask list cannot be read,
+// a name missing from the on-request list may be a cask, so it is called a
+// dependency only if `brew list --formula` names it as a formula; failing
+// that too, it stays unknown.
 func (p *Provider) Requested(ctx context.Context, installed []model.Installation) (map[string]bool, error) {
-	casks := map[string]bool{}
-	if res, err := p.runner.Run(ctx, "brew", "list", "--cask", "-1"); err == nil && !res.Failed() {
-		for _, name := range strings.Fields(res.Stdout) {
-			casks[name] = true
-		}
-	}
+	casks, casksOK := p.names(ctx, "list", "--cask", "-1")
 	res, err := p.runner.Run(ctx, "brew", "list", "--formula", "--installed-on-request", "-1")
 	if err == nil && !res.Failed() {
-		out := shell.RequestedFrom(strings.Fields(res.Stdout), installed)
-		for name := range casks {
-			if _, ok := out[name]; ok {
-				out[name] = true
+		onRequest := map[string]bool{}
+		for _, name := range strings.Fields(res.Stdout) {
+			onRequest[name] = true
+		}
+		// Which names are formulae: everything that is not a cask when the
+		// cask list was read, otherwise only what brew lists as a formula.
+		isFormula := func(name string) bool { return !casks[name] }
+		if !casksOK {
+			formulae, ok := p.names(ctx, "list", "--formula", "-1")
+			isFormula = func(name string) bool { return ok && formulae[name] }
+		}
+		out := make(map[string]bool, len(installed))
+		for _, inst := range installed {
+			switch {
+			case onRequest[inst.Name], casks[inst.Name]:
+				out[inst.Name] = true
+			case isFormula(inst.Name):
+				out[inst.Name] = false
 			}
 		}
 		return out, nil
@@ -426,4 +440,18 @@ func (p *Provider) Requested(ctx context.Context, installed []model.Installation
 		out[name] = true
 	}
 	return out, nil
+}
+
+// names runs a brew listing and returns the names it printed, and whether
+// it answered at all.
+func (p *Provider) names(ctx context.Context, args ...string) (map[string]bool, bool) {
+	res, err := p.runner.Run(ctx, "brew", args...)
+	if err != nil || res.Failed() {
+		return map[string]bool{}, false
+	}
+	out := map[string]bool{}
+	for _, name := range strings.Fields(res.Stdout) {
+		out[name] = true
+	}
+	return out, true
 }

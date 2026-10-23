@@ -67,6 +67,10 @@ type Engine struct {
 	// runAs reports the account a provider's commands run as in this run,
 	// when the caller knows. Nil means Starpoint's own account throughout.
 	runAs func(ctx context.Context, p provider.Provider) model.RunAs
+
+	// discoverTimeout bounds each provider's answer to Inventory. Zero means
+	// SurveyTimeout.
+	discoverTimeout time.Duration
 }
 
 // HistoryError reports why transition history is unavailable, or nil if it
