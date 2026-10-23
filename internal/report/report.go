@@ -791,6 +791,20 @@ type DoctorReport struct {
 	ShowAllPATH bool            `json:"-"`
 	Problems    []model.Warning `json:"problems,omitempty"`
 	Healthy     bool            `json:"healthy"`
+	// Unmanaged counts, per provider, what the provider has installed that
+	// no configuration entry records with it. Informational: it never makes
+	// doctor unhealthy.
+	Unmanaged []UnmanagedCount `json:"unmanaged"`
+}
+
+// UnmanagedCount is one provider's unmanaged software, for doctor.
+type UnmanagedCount struct {
+	Provider string `json:"provider"`
+	// Count is every unmanaged package the provider reports.
+	Count int `json:"count"`
+	// Requested is how many of them the provider says were installed on
+	// request: what `adopt --all` would record.
+	Requested int `json:"requested"`
 }
 
 // StarpointInfo describes the running binary.
@@ -877,6 +891,18 @@ func (w *Writer) Doctor(rep DoctorReport) error {
 		}
 	} else if err := w.pathSummary(rep); err != nil {
 		return err
+	}
+
+	if len(rep.Unmanaged) > 0 {
+		fmt.Fprintf(w.out, "\n%s\n", w.section("Unmanaged"))
+		requested := 0
+		for _, u := range rep.Unmanaged {
+			requested += u.Requested
+			fmt.Fprintf(w.out, "  %s: %d unmanaged, %d installed on request\n", u.Provider, u.Count, u.Requested)
+		}
+		if requested > 0 {
+			fmt.Fprintf(w.out, "  %s\n", w.p.Dim("Review with 'starpoint adopt --all --dry-run'; 'starpoint adopt' records an owner without changing anything installed."))
+		}
 	}
 
 	if len(rep.Problems) > 0 {
