@@ -30,12 +30,21 @@ const (
 	// neither --allow-root nor an interactive confirmation allowed it.
 	// Nothing was changed.
 	ExitRefusedElevated = 4
+	// ExitRefusedDecision: the command needs a decision only the user can
+	// make (which of several providers owns something, whether a second
+	// copy is wanted) and there was no one to ask. The refusal names the
+	// candidates and the flag or argument that makes the decision. Nothing
+	// was changed.
+	ExitRefusedDecision = 5
 )
 
 // Error codes carried by a refusal, in JSON (`code`) and in human output.
 const (
 	CodeDestructiveUnattended = "destructive-unattended"
 	CodeElevatedRefused       = "elevated-refused"
+	// CodeOwnerAmbiguous: more than one provider has the software and
+	// adopt was not told which owns it.
+	CodeOwnerAmbiguous = "owner-ambiguous"
 )
 
 // RefusalError is a command Starpoint declined to run because a safety rule
@@ -50,6 +59,10 @@ type RefusalError struct {
 	// Actions are the planned actions, with their effects and configuration
 	// changes, that the command would have carried out.
 	Actions []model.PlannedAction
+	// Package and Candidates are the decision a decision refusal (exit 5)
+	// needs: the software, and the providers to choose from.
+	Package    string
+	Candidates []string
 }
 
 func (e *RefusalError) Error() string { return e.Message }
@@ -188,6 +201,10 @@ func reportRefusal(w io.Writer, p color.Palette, asJSON bool, r *RefusalError, r
 			"code":           r.Code,
 			"exit_code":      r.Exit,
 		}
+		if r.Candidates != nil {
+			doc["package"] = r.Package
+			doc["candidates"] = r.Candidates
+		}
 		if r.Actions != nil {
 			refused := report.RefusedPlan(r.Actions, runAs)
 			refused["operation"] = r.Command
@@ -199,6 +216,9 @@ func reportRefusal(w io.Writer, p color.Palette, asJSON bool, r *RefusalError, r
 		return
 	}
 	fmt.Fprintf(w, "%s [%s]: %s\n", p.BoldRed("error"), p.BoldRed(r.Code), r.Message)
+	if len(r.Candidates) > 0 {
+		fmt.Fprintf(w, "  candidates for %s: %s\n", r.Package, strings.Join(r.Candidates, ", "))
+	}
 	if len(r.Actions) == 0 {
 		return
 	}

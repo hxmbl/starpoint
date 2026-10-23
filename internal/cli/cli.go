@@ -533,6 +533,8 @@ func (env *Env) dispatch(ctx context.Context, w *report.Writer, cmd string, cmdA
 		err = cmdList(ctx, env, w, cmdArgs)
 	case "inventory":
 		err = cmdInventory(ctx, env, w, cmdArgs, providers)
+	case "adopt":
+		err = cmdAdopt(ctx, env, w, cmdArgs, providers)
 	case "info", "show":
 		err = cmdInfo(ctx, env, w, cmdArgs)
 	case "explain":
@@ -807,6 +809,9 @@ Commands:
   info, show <package>           Show one package's state in detail
   explain <package>              Show how Starpoint decides which provider owns a package
   doctor [--all]                 Inspect Starpoint, configuration, providers, ownership, PATH
+  adopt <package> [provider]     Record the owner of software that is already installed;
+  adopt --all                    never installs, removes or moves anything (--all: everything
+                                 a provider says was installed on request)
   install, add <package>         Install software and record it in the configuration
   install .                      Install the current project's packages and dependencies
   remove, uninstall <package>    Remove software and delete it from the configuration
@@ -868,8 +873,9 @@ commands and doctor always run.
 
 Exit status: 0 success, 1 failure, 2 usage error, 3 refused because an
 unattended run would delete or replace something (--allow-destructive), 4
-refused because a changing command ran as root (--allow-root). Nothing is
-changed by a refusal.
+refused because a changing command ran as root (--allow-root), 5 refused
+because a decision only you can make was needed and there was no terminal to
+ask on (the refusal names the candidates). Nothing is changed by a refusal.
 
 Examples:
   starpoint init
