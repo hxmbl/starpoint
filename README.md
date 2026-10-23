@@ -95,8 +95,10 @@ version than a pin allows, it explains the conflict and asks:
 Update anyway? [y/N]
 ```
 
-Yes updates the package and rewrites the pin to the version now installed; no
-(or `--no-confirm`, or no terminal) keeps the pin; `--dry-run` reports the
+Yes lists the update, with the pin rewrite marked `!`, and asks once more
+before it updates the package and rewrites the pin to the version now
+installed; no (or `--no-confirm`, or no terminal, which includes a `yes` piped
+into stdin) keeps the pin; `--dry-run` reports the
 conflict. `--json` lists them under `pin_conflicts`. Newer versions are known for
 pip, npm, pnpm, Homebrew, Cargo, RubyGems and APT; for other providers a pin is
 simply reported as left unchanged.

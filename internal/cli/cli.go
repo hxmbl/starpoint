@@ -2272,8 +2272,11 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 	// Starpoint's. Each one is explained and asked about; anything but an
 	// explicit yes keeps the pin. --no-confirm keeps every pin, because
 	// silently rewriting the source of truth is the one thing an unattended
-	// update must not do.
-	if !opts.DryRun && !opts.NoConfirm && env.Confirm != nil {
+	// update must not do, and so does a run without a terminal: a `yes` piped
+	// into stdin answers without having read the question, and an empty stdin
+	// has no answer to give.
+	askPins := !opts.DryRun && !opts.NoConfirm && env.Confirm != nil && env.interactive()
+	if askPins {
 		for _, c := range previewRes.PinConflicts {
 			fmt.Fprintf(env.promptOut(), "%s\n", env.palPrompt.Yellow(fmt.Sprintf(
 				"!!! There is a new version available for %s (%s), but config says %s",
@@ -2287,6 +2290,15 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 					opts.UpdatePinned = map[string]bool{}
 				}
 				opts.UpdatePinned[c.Package] = true
+			}
+		}
+		// A pin the user agreed to move turns into an update, which replaces
+		// the installed copy and rewrites the configuration. The preview was
+		// taken before that answer, so it is taken again: the confirmation and
+		// the destructive guard below must see the update that will run.
+		if len(opts.UpdatePinned) > 0 {
+			if previewRes, err = eng.UpdatePreview(ctx, doc, opts); err != nil {
+				return err
 			}
 		}
 	}
