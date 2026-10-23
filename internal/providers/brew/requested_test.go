@@ -41,3 +41,38 @@ func TestRequestedFallsBackToLeavesAndLeavesTheRestUnknown(t *testing.T) {
 		t.Errorf("oniguruma must stay unknown, not a dependency: %v", got)
 	}
 }
+
+// When the cask list cannot be read, a name missing from the on-request
+// formula list may well be a cask, which is always installed on request:
+// it must not be called a dependency. Formulae brew still lists as such
+// keep their answer.
+func TestRequestedLeavesCasksUnknownWhenTheCaskListFails(t *testing.T) {
+	installed := []model.Installation{{Name: "jq"}, {Name: "oniguruma"}, {Name: "firefox"}}
+	for _, formulaList := range []bool{true, false} {
+		p, r := newProvider(t)
+		r.SetFail(1, "Error: cask listing broke", "brew", "list", "--cask", "-1")
+		r.Set("jq\n", "brew", "list", "--formula", "--installed-on-request", "-1")
+		if formulaList {
+			r.Set("jq\noniguruma\n", "brew", "list", "--formula", "-1")
+		} else {
+			r.SetFail(1, "Error: formula listing broke too", "brew", "list", "--formula", "-1")
+		}
+		got, err := p.Requested(context.Background(), installed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got["jq"] {
+			t.Errorf("formula list %v: jq was installed on request: %v", formulaList, got)
+		}
+		if v, known := got["firefox"]; known {
+			t.Errorf("formula list %v: firefox may be a cask, so unknown, not %v", formulaList, v)
+		}
+		v, known := got["oniguruma"]
+		switch {
+		case formulaList && (!known || v):
+			t.Errorf("oniguruma is a formula not installed on request, so a dependency: %v", got)
+		case !formulaList && known:
+			t.Errorf("with no formula list oniguruma could be a cask, so unknown: %v", got)
+		}
+	}
+}
