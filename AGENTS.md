@@ -137,7 +137,7 @@ and let the config tables in `internal/config` speak for reality.
 ## The JSON contract
 
 `--json` output is a public interface, versioned in `docs/json-schema.md`
-(currently envelope version 7, with the v1→v7 migration history at the bottom
+(currently envelope version 9, with the v1→v9 migration history at the bottom
 of that file). Every response is one flat object with a `schema_version`;
 warnings, refusal codes, effects and `run_as` entries carry stable codes and
 fields that tools read mechanically.

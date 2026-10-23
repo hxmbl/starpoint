@@ -30,8 +30,8 @@ config → desired state → provider resolution → current state → diff → 
 
 ### The Command Layer
 **`internal/cli/cli.go`** - Dispatch, flags, and per-command bodies
-- Fifteen canonical commands, most with aliases: `init`, `sync`, `list`
-  (`ls`), `info` (`show`), `explain`, `doctor`, `install` (`add`, `i`),
+- Sixteen canonical commands, most with aliases: `init`, `sync`, `list`
+  (`ls`), `inventory`, `info` (`show`), `explain`, `doctor`, `install` (`add`, `i`),
   `remove` (`uninstall`, `rm`), `transition` (`move`), `update` (`upgrade`),
   `runs` (`history`), `prune`, `recover`, `logging` (`logs`), `help`
 - Global flags (`--json`, `--force`, `--provider`, `--context`, `--color`,
@@ -209,6 +209,12 @@ user, an unknown directory is root, as it always was
 - Also `Duplicates`, `Shadowed`, `Explain`, `Discovery` and `Prune` (installs
   no longer in the configuration)
 
+**`internal/engine/inventory.go`** - `starpoint inventory`
+- Health and Discover only, concurrently per provider: what each provider
+  reports, marked managed when the configuration has that (provider, name).
+  No resolver, no per-package lookups, no writes; a failing provider is a
+  `discover-failed` warning, not a stop
+
 **`internal/engine/survey.go`** - One round of concurrent "do you have this?"
 - `SurveyTimeout` is 20 seconds; a hung package manager costs the timeout, not
   the run — and providers that cannot enumerate are skipped rather than asked
@@ -282,12 +288,12 @@ verification all run as the same account
 **`internal/report/report.go`** - Humans and machines, same results
 - JSON is a first-class path, not a wrapper around the text: another tool
   reads the structured data the engine produced, never a parsed table
-- One flat envelope per response: `{schema_version: 7, ...}` — errors too, on
+- One flat envelope per response: `{schema_version: 9, ...}` — errors too, on
   stderr, with refusal `code`, `exit_code` and, when there was a plan,
   `refused`
-- **`docs/json-schema.md`** documents schema 7 top to bottom: common types,
+- **`docs/json-schema.md`** documents schema 9 top to bottom: common types,
   `ActionResult` and its `run_as`, effects, summaries, refusal examples, and
-  the v1→v7 migration history. Any envelope change needs a bump plus a
+  the v1→v9 migration history. Any envelope change needs a bump plus a
   migration section there; removing or renaming fields is breaking
 
 **`internal/report/actions.go`** - `ActionResult`, the one shape every

@@ -4,9 +4,11 @@ This document describes Starpoint's machine-readable output envelope and payload
 
 ## Schema Version
 
-Current schema version: `8`
+Current schema version: `9`
 
-All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 8, ...command fields }`; errors are `{ "schema_version": 8, "error": "..." }` on stderr, and a refusal adds `code`, `exit_code` and, when the command had a plan, `refused` (see "Errors and refusals").
+All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 9, ...command fields }`; errors are `{ "schema_version": 9, "error": "..." }` on stderr, and a refusal adds `code`, `exit_code` and, when the command had a plan, `refused` (see "Errors and refusals").
+
+Version 9 is the onboarding pass: Starpoint as an ownership ledger over the package managers already on the machine. It adds the read-only `inventory` command (every package each provider reports, managed or not). Every field a version 8 consumer read keeps its meaning. See "Migrating from schema 8 to 9".
 
 Version 8 says what `prune` left alone and when a pip install is destructive. `prune` reports every orphan it does not remove, because it lives outside the home directory or is a package manager, as a `prune-skipped` warning (severity `info`) naming the package, its provider and the reason; version 7 dropped them silently. `install .` reports a `requirements.txt` install with pip as a planned effect either way: inside a virtualenv (the active `VIRTUAL_ENV` whose pip is on PATH, or the project's `.venv`) a `modify` of that environment, named by the new `dependencies.command.virtualenv`; outside one a destructive `replace` of the Python packages it names, with the new warning `pip-outside-virtualenv`, which an unattended run refuses (exit 3) without `--allow-destructive`. Every field a version 7 consumer read keeps its meaning. See "Migrating from schema 7 to 8".
 
@@ -107,7 +109,7 @@ consumer should act on the code and show the message. Codes in use:
 | `transition-left-behind` | Ownership moved but the previous provider's copy is still present. |
 | `pin-conflict` | A newer version exists than the pin; the pin was kept. |
 | `pin-kept`, `already-current`, `update-unsupported`, `not-installed` | Why `update` left a package alone (severity `info`). |
-| `discover-failed` | A provider could not list its packages, so `prune` considered none of them. |
+| `discover-failed` | A provider could not list its packages, so `prune` considered none of them, or `inventory` shows none of them. |
 | `prune-skipped` | An orphan (installed, declared nowhere) that `prune` left alone, with its `package` and `provider`; the message gives the reason: it lives outside the invoking user's home directory (a system npm prefix, the interpreter's own site-packages), or it is a package manager (any registered provider, `corepack`, `starpoint`). Severity `info`; reported by dry runs and real runs alike. |
 | `pip-outside-virtualenv` | `install .` runs `pip install -r requirements.txt` outside any virtualenv, so it installs into the user's site-packages (as root, the system's) and may upgrade or downgrade packages other software depends on. Its effect is destructive; creating a virtualenv (`python3 -m venv .venv`) makes Starpoint install there instead. |
 | `toolchain-missing` | `install .` found the project's toolchain absent. |
@@ -354,6 +356,53 @@ a real run that changed something they describe the machine as the run left
 it: `converged` is true only when every action applied and every package is
 now satisfied.
 
+### Inventory
+
+`starpoint inventory [--provider <name>]...` only observes: providers are
+probed for health and asked to list what they have installed (Discover),
+nothing else. It works with no configuration, resolves nothing, installs
+nothing, writes no configuration and leaves no audit entry. It reports:
+
+```json
+{
+  "schema_version": 9,
+  "providers": [
+    {
+      "name": "string",
+      "available": "boolean",
+      "reason": "string | null",
+      "listed": "boolean",
+      "count": "integer",
+      "error": "string | null"
+    }
+  ],
+  "packages": [
+    {
+      "provider": "string",
+      "name": "string",
+      "version": "string | null",
+      "path": "string | null",
+      "scope": "global | user | project | null",
+      "managed": "boolean"
+    }
+  ],
+  "warnings": ["Warning"],
+  "summary": { "packages": "integer", "managed": "integer", "unmanaged": "integer" }
+}
+```
+
+`providers` has one entry per registered provider (or per `--provider`), in
+registration order. `listed` is true when the provider was asked and
+answered; it is false for an unavailable provider, one that cannot enumerate
+(`reason` says so), and one whose listing failed (`error`, plus a
+`discover-failed` warning naming the `provider`; the other providers are still
+listed). `packages` are sorted by provider in registration order, then name.
+`name` is the provider's own name. `path` is what the provider reported or,
+failing that, the PATH entry attributed to the same provider; absent when
+neither says. `managed` is true only when the configuration has an entry with
+this `name` and this `provider`: an entry for the same name with another
+provider, or with no provider recorded yet, leaves it `false`.
+
 ### Install .
 
 `install .` reports the operation fields above plus `dependencies`, the
@@ -394,7 +443,7 @@ not observed; inside a virtualenv the planned effect is a non-destructive
 
 ```json
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "operation": "remove",
   "dry_run": false,
   "config_changed": true,
@@ -456,7 +505,7 @@ not observed; inside a virtualenv the planned effect is a non-destructive
 Every error is one JSON document on stderr:
 
 ```json
-{ "schema_version": 8, "error": "string" }
+{ "schema_version": 9, "error": "string" }
 ```
 
 A refusal is an error that a flag would have allowed. Nothing was changed. It
@@ -465,7 +514,7 @@ planned its work, `refused`:
 
 ```json
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "error": "string",
   "code": "destructive-unattended | elevated-refused | invoking-user-unresolved | privilege-drop-failed",
   "exit_code": 3,
@@ -497,7 +546,7 @@ and `4` the refusals above.
 
 ```json
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "error": "refusing to remove unattended: it would delete or replace something (ruff) and --yes (or --no-confirm) was given. Nothing was changed. Review the planned changes, then rerun with --allow-destructive to allow it",
   "code": "destructive-unattended",
   "exit_code": 3,
@@ -764,6 +813,16 @@ Version 8 adds; nothing a version 7 consumer read is removed or renamed.
    exit 3 and `destructive-unattended` unless `--allow-destructive`; an
    interactive run lists it with `!` before asking. A virtualenv is never
    required.
+
+## Migrating from schema 8 to 9
+
+Version 9 adds; nothing a version 8 consumer read is removed or renamed.
+
+1. The version number moved from 8 to 9.
+2. New command `inventory`, with its own payload (see "Inventory"):
+   `providers`, `packages`, `warnings` and `summary`.
+3. `discover-failed` is also raised by `inventory`, once per provider whose
+   listing failed.
 
 ## Versioning Policy
 
