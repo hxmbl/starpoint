@@ -42,7 +42,10 @@ config → desired state → provider resolution → current state → diff → 
   after it, `install --version 1.2.3` pins a version
 - `sync` drops every relocation from its plan (`withoutMoves`): a provider
   mismatch is a `provider-drift` warning pointing at `transition` and
-  `adopt`, so sync never removes software
+  `adopt`, so sync never removes software. Before that, `besideSystem` takes
+  out each entry with no provider whose only copy is the operating system's,
+  as the install of a managed copy beside it: asked about at a terminal
+  (default no), refused unattended with `duplicate-install` (exit 5)
 - `guardElevated` runs before dispatch; every command that changes anything is
   guarded, confirmed, audited, and locked (see below)
 

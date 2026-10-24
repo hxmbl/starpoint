@@ -109,6 +109,14 @@ An unattended sync (--yes, no_confirm, or no terminal) that would have to
 guess a provider for a package nothing decides is refused with
 provider-ambiguous (exit 5), naming the candidates.
 
+When an entry names no provider and the only copy on the machine is the
+operating system's, converging it would add a managed copy beside the
+system's. sync asks about each one first (default no); a no installs
+nothing. Unattended, the run is refused with duplicate-install (exit 5),
+as install is: run 'starpoint install <package> <provider>' for the managed
+copy, or set provider = "system" on the entry to keep the system's. An entry
+that names its provider is not asked about.
+
 sync never removes or moves software. When the configuration gives a package
 to one provider and another provider has it, that is reported as drift
 (provider-drift) with the two commands that settle it: 'starpoint transition

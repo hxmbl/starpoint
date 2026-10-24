@@ -110,7 +110,7 @@ consumer should act on the code and show the message. Codes in use:
 | `pin-conflict` | A newer version exists than the pin; the pin was kept. |
 | `pin-kept`, `already-current`, `update-unsupported`, `not-installed` | Why `update` left a package alone (severity `info`). |
 | `discover-failed` | A provider could not list its packages, so `prune` considered none of them, or `inventory` shows none of them (including a provider whose health check or listing did not answer within the 20-second bound). |
-| `duplicate-install` | `install` would add a second copy beside another provider's (or the operating system's); shown on the action before the confirmation. Unattended, the same condition is the `duplicate-install` refusal. |
+| `duplicate-install` | `install` would add a second copy beside another provider's (or the operating system's); shown on the action before the confirmation. `sync` raises it for an entry with no `provider` whose only copy is the operating system's: on the planned `install` of a managed copy (a dry run, or after a yes at the terminal), or on the run when the person said no (nothing installed; the message names `starpoint install <package> <provider>` and `provider = "system"`). Unattended, the same condition is the `duplicate-install` refusal. |
 | `provider-drift` | `sync` found a package installed through another provider than the configuration gives it. Nothing was moved or removed; the message names `starpoint transition <package>` and `starpoint adopt <package> <owner>`. |
 | `owner-ambiguous` | `adopt --all` found a name installed on request through more than one provider and nobody to ask; it was left out. |
 | `requested-unknown` | `inventory` could not ask a provider which of its packages were installed on purpose; they are all shown as `requested: unknown`. |
@@ -614,7 +614,7 @@ planned its work, `refused`:
 | `elevated-refused` | 4 | A command that changes anything ran as root or elevated, without `--allow-root` and without an interactive confirmation (only possible under sudo or doas at a terminal). `refused` is absent: the refusal happens before any planning. |
 | `invoking-user-unresolved` | 4 | Under sudo or doas from an ordinary user, that user's uid, gid or home could not be resolved (or HOME could not be pointed at it). Starpoint will not run their providers as root instead, and `--allow-root` does not change that. `refused` is absent. |
 | `privilege-drop-failed` | 4 | Under sudo or doas from an ordinary user, a process could not actually be started as that user (Starpoint runs `id -u` as them before changing anything and checks they can write their home): no right to switch users, a uid the system rejects, an unwritable home. `--allow-root` does not change it. `refused` is absent. |
-| `duplicate-install` | 5 | An unattended `install` would add a second copy: another provider already has the software (`candidates` names it, whoever chose the target provider), or only the operating system has it and Starpoint picked the provider (`candidates` is `["system"]`). Rerun with `--allow-duplicate`, name the provider for a managed copy beside the system's, or use `adopt`/`transition`. `refused` holds the planned install. |
+| `duplicate-install` | 5 | An unattended `install` would add a second copy: another provider already has the software (`candidates` names it, whoever chose the target provider), or only the operating system has it and Starpoint picked the provider (`candidates` is `["system"]`). Rerun with `--allow-duplicate`, name the provider for a managed copy beside the system's, or use `adopt`/`transition`. `refused` holds the planned install. An unattended `sync` is refused with the same code when an entry with no `provider` is installed only by the operating system, so converging it would add a managed copy nobody asked for: `package` is the first such entry (the message names all), `candidates` is `["system"]`, and `refused` holds the planned installs (`refused.operation` is `sync`). Run `starpoint install <package> <provider>` for the managed copy, or set `provider = "system"` on the entry to keep the system's. An entry that names its provider is never refused for this. |
 | `provider-ambiguous` | 5 | An unattended `sync` would install a package with no recorded provider whose provider is ambiguous. `package` is the first such package (the message names all), `candidates` the providers that could own it. Record a `provider` or install it with the provider named. `refused` holds the planned actions. |
 | `owner-ambiguous` | 5 | `adopt <package>` without a provider found the software installed through more than one provider and had no terminal to ask on. `package` names it and `candidates` the providers that have it; name the owner (`starpoint adopt <package> <provider>`). `refused` is absent. |
 
@@ -939,6 +939,15 @@ Version 9 adds; nothing a version 8 consumer read is removed or renamed.
     `reported`.
 11. `doctor` gains `unmanaged` (see "Doctor: unmanaged software"). Doctor
     now also lists every available provider's packages once to count them.
+12. Behaviour: `sync`, for an entry with no `provider` that only the
+    operating system has, no longer reports `provider-drift` (no
+    configuration gave it a provider to drift from). A dry run plans the
+    `install` of a managed copy through the resolved provider, carrying a
+    `duplicate-install` warning; at a terminal sync asks about each such
+    entry, default no, and installs only after a yes; unattended, the run is
+    refused with `duplicate-install` (exit 5, `candidates: ["system"]`).
+    The system's copy is never removed or moved. An entry that names a
+    provider behaves as before.
 
 ## Versioning Policy
 
