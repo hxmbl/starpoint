@@ -110,6 +110,7 @@ consumer should act on the code and show the message. Codes in use:
 | `pin-conflict` | A newer version exists than the pin; the pin was kept. |
 | `pin-kept`, `already-current`, `update-unsupported`, `not-installed` | Why `update` left a package alone (severity `info`). |
 | `discover-failed` | A provider could not list its packages, so `prune` considered none of them, or `inventory` shows none of them (including a provider whose health check or listing did not answer within the 20-second bound). |
+| `requested-unknown` | `inventory` could not ask a provider which of its packages were installed on purpose; they are all shown as `requested: unknown`. |
 | `prune-skipped` | An orphan (installed, declared nowhere) that `prune` left alone, with its `package` and `provider`; the message gives the reason: it lives outside the invoking user's home directory (a system npm prefix, the interpreter's own site-packages), or it is a package manager (any registered provider, `corepack`, `starpoint`). Severity `info`; reported by dry runs and real runs alike. |
 | `pip-outside-virtualenv` | `install .` runs `pip install -r requirements.txt` outside any virtualenv, so it installs into the user's site-packages (as root, the system's) and may upgrade or downgrade packages other software depends on. Its effect is destructive; creating a virtualenv (`python3 -m venv .venv`) makes Starpoint install there instead. |
 | `toolchain-missing` | `install .` found the project's toolchain absent. |
@@ -373,7 +374,8 @@ nothing, writes no configuration and leaves no audit entry. It reports:
       "reason": "string | null",
       "listed": "boolean",
       "count": "integer",
-      "error": "string | null"
+      "error": "string | null",
+      "requested": "reported | listing | unknown | null"
     }
   ],
   "packages": [
@@ -383,11 +385,12 @@ nothing, writes no configuration and leaves no audit entry. It reports:
       "version": "string | null",
       "path": "string | null",
       "scope": "global | user | project | null",
-      "managed": "boolean"
+      "managed": "boolean",
+      "requested": "requested | dependency | unknown"
     }
   ],
   "warnings": ["Warning"],
-  "summary": { "packages": "integer", "managed": "integer", "unmanaged": "integer" }
+  "summary": { "packages": "integer", "managed": "integer", "unmanaged": "integer", "requested": "integer" }
 }
 ```
 
@@ -409,6 +412,19 @@ failing that, the PATH entry attributed to the same provider; absent when
 neither says. `managed` is true only when the configuration has an entry with
 this `name` and this `provider`: an entry for the same name with another
 provider, or with no provider recorded yet, leaves it `false`.
+
+`requested` says whether the user asked for the package, as the provider
+knows it. A provider's `requested` says how it knows (present only when it
+was listed):
+
+| Provider `requested` | Providers | Meaning |
+| --- | --- | --- |
+| `reported` | apt (`apt-mark showmanual`), dnf (`dnf repoquery --installed --queryformat '%{name} %{reason}\n'`), pacman (`pacman -Qqe`), brew (`brew list --formula --installed-on-request`; casks: each cask's install receipt) | The tool records why each package is installed. A package is `requested` or `dependency`, or `unknown` where the record does not say. dnf: only the `user` reason is `requested` and only `dependency` or `weak-dependency` (DNF 5: `Dependency`, `Weak Dependency`) is `dependency`; `group`, `unknown`/`None`, `clean` and DNF 5's `External User` are `unknown` (`--userinstalled` is not used: it also returns group and module-profile packages and unknown reasons). brew: with an older Homebrew that lacks that flag, `brew leaves --installed-on-request` names some requested formulae and the rest are `unknown`, never `dependency`; when the cask list cannot be read, only names `brew list --formula` confirms as formulae can be `dependency`, the rest are `unknown`. brew casks: `brew info --json=v2` carries no install reason for casks, so the reason is `installed_on_request` in the cask's install receipt (`<caskroom>/<token>/.metadata/INSTALL_RECEIPT.json`, written by Homebrew 4.4.0 and later; an early receipt's `installed_as_dependency: true` also means `dependency`). A cask with no receipt (installed before 4.4.0), or whose receipt says neither, is `dependency` when another installed cask depends on it (from the other casks' receipts or `brew info --json=v2 --installed --cask`), and otherwise `unknown`; a cask is never assumed `requested`. |
+| `listing` | uv, cargo, npm, pnpm, go, rustup, nix, flatpak | What the tool lists is only what was installed on purpose (uv tools, `cargo install`, global packages at depth 0, installed Go binaries, toolchains, the Nix profile, Flatpak applications without runtimes), so every package is `requested`, except a package manager itself (any provider name, `corepack`, `starpoint`), which is `unknown`. |
+| `unknown` | pip, gem, yarn, snap, system | The listing mixes requested software with dependencies and the tool has no record to tell them apart; every package is `unknown`. |
+
+When a `reported` provider's question fails, its packages are all `unknown`
+and the warning `requested-unknown` names the provider.
 
 ### Install .
 
@@ -831,6 +847,7 @@ Version 9 adds; nothing a version 8 consumer read is removed or renamed.
 3. `discover-failed` is also raised by `inventory`, once per provider whose
    health check or listing failed or did not answer within the 20-second
    bound.
+4. `Warning.code` gains `requested-unknown`.
 
 ## Versioning Policy
 
