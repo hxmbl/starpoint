@@ -75,7 +75,9 @@ func (e *Env) confirmChanges(changes []change, opts engine.Options) error {
 		if c.after != "" {
 			fmt.Fprintf(e.promptOut(), "      then: %s\n", e.palPrompt.Dim(c.after))
 		}
-		report.WriteEffects(e.promptOut(), e.palPrompt, c.effects, true, e.Verbose, "      ")
+		// Every effect, not only the destructive ones: a question about
+		// changing the machine must not hide any of the changes behind a count.
+		report.WriteEffects(e.promptOut(), e.palPrompt, c.effects, true, true, "      ")
 		for _, w := range c.warnings {
 			if w.Severity == model.SeverityInfo && !e.Verbose {
 				continue
@@ -138,7 +140,11 @@ func (e *Env) declined() bool { return e.confirmAsked && !e.lastConfirm }
 // the software is already present through Homebrew and is simply being recorded,
 // the install turns into an adoption with no mutation at all — and it is worth
 // telling them that instead of silently doing nothing.
-func installChange(pkg model.Package, resolution model.Resolution, adopted *model.Installation, preview model.PlannedAction) change {
+//
+// overrode is true when the provider was named by the user against Starpoint's
+// own choice. Picking the offered default at the provider question is not that,
+// and saying "not the one Starpoint would choose" then would be false.
+func installChange(pkg model.Package, resolution model.Resolution, adopted *model.Installation, preview model.PlannedAction, overrode bool) change {
 	verb := "Install"
 	target := pkg.Spec()
 	after := ""
@@ -147,7 +153,7 @@ func installChange(pkg model.Package, resolution model.Resolution, adopted *mode
 		after = "no software is installed or removed; the existing copy is recorded as owned by " +
 			resolution.Provider
 	}
-	if resolution.Forced {
+	if resolution.Forced && overrode {
 		after = strings.TrimSpace(after + " " +
 			"the provider is the one you asked for, not the one Starpoint would choose")
 	}
@@ -178,19 +184,36 @@ func removeChange(pkg model.Package, resolution model.Resolution, preview model.
 // surveyNote returns the line to print when a survey found nothing, and whether
 // it should be printed at all.
 //
-// "none found on installed providers" is deliberately not an error. A package can
-// perfectly well be installable by a provider that does not have it yet — that is
-// the normal case — and the honest statement is that no provider claims it, not
-// that Starpoint cannot install it.
-func surveyNote(s engine.Survey) (string, bool) {
+// "No provider has it" is deliberately not an error. A package can perfectly well
+// be installable by a provider that does not have it yet — that is the normal
+// case for an install — so it is worded as the plain fact it is, "not installed
+// yet", rather than as a failed search. withUnaskable adds the providers that are
+// installed but cannot list what they have, because they weaken the claim; that
+// qualification matters where "not found" is the answer (info), and is detail
+// for --verbose where an install plan follows.
+func surveyNote(s engine.Survey, withUnaskable bool) (string, bool) {
 	if s.Any() {
 		return "", false
 	}
-	line := "none found on installed providers"
-	if unaskable := s.Unaskable(); len(unaskable) > 0 {
-		line += fmt.Sprintf(" (not asked: %s)", strings.Join(unaskable, ", "))
+	line := "not installed by any provider yet"
+	if withUnaskable {
+		line += unaskableNote(s)
 	}
 	return line, true
+}
+
+// unaskableNote qualifies a "no provider has it" claim with the providers that
+// are installed but could not be asked, or is empty when every one was asked.
+func unaskableNote(s engine.Survey) string {
+	unaskable := s.Unaskable()
+	if len(unaskable) == 0 {
+		return ""
+	}
+	verb := "cannot"
+	if len(unaskable) == 1 {
+		return fmt.Sprintf(" (%s %s list what it has installed, so it was not checked)", unaskable[0], verb)
+	}
+	return fmt.Sprintf(" (%s %s list what they have installed, so they were not checked)", strings.Join(unaskable, ", "), verb)
 }
 
 // surveyDuplicates names the providers that have the software *other than* the
@@ -224,7 +247,12 @@ func (e *Env) lookup(ctx context.Context, eng *engine.Engine, pkg model.Package,
 		// just be noise in the middle of a document.
 		return s
 	}
-	if line, show := surveyNote(s); show {
+	// Nothing having it yet is the normal start of an install, and the
+	// confirmation that follows already says what will be installed and by
+	// whom. Saying it first, before any plan, read like an error, so it is only
+	// spelled out — with the providers that could not be asked — under
+	// --verbose.
+	if line, show := surveyNote(s, true); show && e.Verbose {
 		fmt.Fprintf(e.Stdout, "%s: %s\n", e.palOut.Bold(pkg.Name), e.palOut.Dim(line))
 	}
 	if line, show := surveyDuplicates(s, pkg.Provider); show {

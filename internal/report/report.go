@@ -1355,10 +1355,10 @@ func (w *Writer) writeLookup(s engine.Survey) error {
 			fmt.Fprintf(w.out, "    %s%s\n", o.Provider, w.p.Dim(version))
 		}
 	} else {
-		fmt.Fprintln(w.out, "    "+w.p.Yellow("none found on installed providers"))
+		fmt.Fprintln(w.out, "    "+w.p.Yellow("no provider has it installed"))
 	}
 	if unaskable := s.Unaskable(); len(unaskable) > 0 {
-		fmt.Fprintf(w.out, "    %s\n", w.p.Dim("not asked: "+strings.Join(unaskable, ", ")))
+		fmt.Fprintf(w.out, "    %s\n", w.p.Dim("not checked (cannot list what they have installed): "+strings.Join(unaskable, ", ")))
 	}
 	if absent := s.NotInstalled(); len(absent) > 0 {
 		fmt.Fprintf(w.out, "    %s\n", w.p.Dim("not installed: "+strings.Join(absent, ", ")))

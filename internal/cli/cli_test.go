@@ -763,7 +763,7 @@ func TestInfoForUnmanagedButInstalledSoftware(t *testing.T) {
 	if code == 0 {
 		t.Fatal("info for software that is neither configured nor present should fail")
 	}
-	if !strings.Contains(errOut, "none found on installed providers") {
+	if !strings.Contains(errOut, "no provider has it installed") {
 		t.Errorf("the refusal should say what was asked, got: %s", errOut)
 	}
 }
@@ -776,7 +776,7 @@ func TestInfoRefusalNamesProvidersItCouldNotAsk(t *testing.T) {
 	h.apt.Caps.Discover = false
 
 	_, _, errOut := h.run("info", "definitely-not-on-this-machine-xyz")
-	if !strings.Contains(errOut, "not asked: apt") {
+	if !strings.Contains(errOut, "apt cannot list what it has installed, so it was not checked") {
 		t.Errorf("the refusal should qualify its claim: %s", errOut)
 	}
 }
