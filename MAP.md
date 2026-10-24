@@ -153,6 +153,8 @@ config → desired state → provider resolution → current state → diff → 
 - Optional interfaces carry the rest: `Verifier` (run the executable),
   `ContextAwareProvider` (install into a project directory),
   `ExecutableMappingProvider` (attributed system binaries),
+  `RequestedReporter` and `RequestedByConstruction` (installed on request
+  versus pulled in as a dependency, for `inventory` and `adopt --all`),
   `ExecutableDirProvider` (uv and pip overlap on `~/.local/bin`, which
   matters mid-transition), `StateDirProvider` (whose caches to give back after
   an elevated run), `LatestVersionProvider` (a pin that is satisfied vs one

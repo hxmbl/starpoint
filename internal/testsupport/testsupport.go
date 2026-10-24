@@ -477,3 +477,35 @@ func WriteExecutable(t *testing.T, path, content string) {
 		t.Fatalf("chmod %s: %v", path, err)
 	}
 }
+
+// RequestedFake is a FakeProvider that also answers provider.RequestedReporter:
+// Marks says which names were requested (true) or dependencies (false); a
+// name left out is unknown. Err makes the question fail.
+type RequestedFake struct {
+	*FakeProvider
+	Marks map[string]bool
+	Err   error
+}
+
+var _ provider.RequestedReporter = (*RequestedFake)(nil)
+
+// Requested implements provider.RequestedReporter.
+func (f *RequestedFake) Requested(_ context.Context, installed []model.Installation) (map[string]bool, error) {
+	if f.Err != nil {
+		return nil, f.Err
+	}
+	out := map[string]bool{}
+	for _, inst := range installed {
+		if v, ok := f.Marks[inst.Name]; ok {
+			out[inst.Name] = v
+		}
+	}
+	return out, nil
+}
+
+// ListingFake is a FakeProvider whose listing holds only requested software,
+// as provider.RequestedByConstruction says.
+type ListingFake struct{ *FakeProvider }
+
+// DiscoverListsOnlyRequested implements provider.RequestedByConstruction.
+func (ListingFake) DiscoverListsOnlyRequested() bool { return true }

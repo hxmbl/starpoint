@@ -11,6 +11,7 @@ import (
 	"github.com/hxmbl/starpoint/internal/config"
 	"github.com/hxmbl/starpoint/internal/model"
 	"github.com/hxmbl/starpoint/internal/report"
+	"github.com/hxmbl/starpoint/internal/testsupport"
 )
 
 type inventoryDoc struct {
@@ -135,5 +136,73 @@ func TestInventoryReportsAFailingProviderAndContinues(t *testing.T) {
 		if p.Name == "apt" && p.Available {
 			t.Errorf("apt is unavailable in the harness: %+v", p)
 		}
+	}
+}
+
+type requestedDoc struct {
+	Providers []struct {
+		Name      string `json:"name"`
+		Requested string `json:"requested"`
+	} `json:"providers"`
+	Packages []struct {
+		Provider  string `json:"provider"`
+		Name      string `json:"name"`
+		Requested string `json:"requested"`
+	} `json:"packages"`
+	Warnings []model.Warning `json:"warnings"`
+}
+
+// Inventory says, per package, whether it was asked for: what a provider
+// reports, everything a requested-only listing holds (except package
+// managers themselves), and unknown for a provider that cannot say.
+func TestInventoryShowsRequestedVersusDependency(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	h.brew.With(model.Installation{Name: "jq"}).With(model.Installation{Name: "oniguruma"}).With(model.Installation{Name: "odd"})
+	h.env.Registry.Register(&testsupport.RequestedFake{FakeProvider: h.brew, Marks: map[string]bool{"jq": true, "oniguruma": false}})
+	h.uv.With(model.Installation{Name: "ruff"})
+	h.env.Registry.Register(testsupport.ListingFake{FakeProvider: h.uv})
+	h.npm.With(model.Installation{Name: "npm"}).With(model.Installation{Name: "corepack"}).With(model.Installation{Name: "typescript"})
+	h.env.Registry.Register(testsupport.ListingFake{FakeProvider: h.npm})
+	h.cargo.With(model.Installation{Name: "ripgrep"})
+	var doc requestedDoc
+	h.decode(h.mustRun("inventory", "--json"), &doc)
+	got := map[string]string{}
+	for _, p := range doc.Packages {
+		got[p.Provider+"/"+p.Name] = p.Requested
+	}
+	want := map[string]string{
+		"brew/jq": "requested", "brew/oniguruma": "dependency", "brew/odd": "unknown",
+		"uv/ruff": "requested", "npm/typescript": "requested", "npm/npm": "unknown", "npm/corepack": "unknown",
+		"cargo/ripgrep": "unknown",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s requested = %q, want %q", k, got[k], v)
+		}
+	}
+	src := map[string]string{}
+	for _, p := range doc.Providers {
+		src[p.Name] = p.Requested
+	}
+	if src["brew"] != "reported" || src["uv"] != "listing" || src["cargo"] != "unknown" {
+		t.Errorf("provider requested sources: %v", src)
+	}
+}
+
+func TestInventoryRequestedFailureIsUnknownWithAWarning(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	h.brew.With(model.Installation{Name: "jq"})
+	h.env.Registry.Register(&testsupport.RequestedFake{FakeProvider: h.brew, Err: errors.New("no leaves")})
+	var doc requestedDoc
+	h.decode(h.mustRun("inventory", "--provider", "brew", "--json"), &doc)
+	if len(doc.Packages) != 1 || doc.Packages[0].Requested != "unknown" {
+		t.Errorf("a failed question leaves every package unknown: %+v", doc.Packages)
+	}
+	found := false
+	for _, w := range doc.Warnings {
+		found = found || (w.Code == model.WarnRequestedUnknown && w.Provider == "brew")
+	}
+	if !found {
+		t.Errorf("expected requested-unknown for brew: %+v", doc.Warnings)
 	}
 }
