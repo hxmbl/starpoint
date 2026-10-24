@@ -41,7 +41,7 @@ import (
 )
 
 // Version is the build version, overridable at link time.
-var Version = "0.1.0"
+var Version = "0.2.0"
 
 // ErrUsage signals that usage should be printed.
 var ErrUsage = errors.New("usage")
