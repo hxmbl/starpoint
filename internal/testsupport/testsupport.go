@@ -134,6 +134,8 @@ type FakeProvider struct {
 	UpdateError  error
 	// InstalledError makes Installed fail.
 	InstalledError error
+	// DiscoverError makes Discover fail.
+	DiscoverError error
 	// InstallPath is where Install puts the software. Tests set it so the paths a
 	// fake reports line up with the PATH a fake locator resolves, which matters
 	// whenever a test is exercising verification.
@@ -246,6 +248,9 @@ func (f *FakeProvider) Health(context.Context) provider.Health {
 func (f *FakeProvider) Discover(context.Context) ([]model.Installation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.DiscoverError != nil {
+		return nil, f.DiscoverError
+	}
 	names := make([]string, 0, len(f.Items))
 	for n := range f.Items {
 		names = append(names, n)

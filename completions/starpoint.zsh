@@ -6,7 +6,7 @@
 _starpoint() {
   local -a commands globals providers flags
   local cmd word
-  commands=(init sync list ls info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover logging logs help)
+  commands=(init sync list ls inventory info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover logging logs help)
   globals=(--json --provider --force --context --verbose --color --allow-destructive --allow-root --version --help)
   providers=(apt brew cargo dnf flatpak gem go nix npm pacman pip pnpm rustup snap system uv yarn)
 
@@ -32,6 +32,7 @@ _starpoint() {
     init) flags=(--force) ;;
     sync) flags=(--dry-run --no-confirm) ;;
     list|ls) flags=(--managed --provider) ;;
+    inventory) flags=(--provider) ;;
     info|show) flags=() ;;
     explain) flags=(--provider) ;;
     doctor) flags=(--all) ;;

@@ -3,7 +3,7 @@
 #   cp completions/starpoint.fish ~/.config/fish/completions/
 #
 # Keep in sync with internal/cli/help.go (commandFlags); a test checks it.
-set -l commands init sync list ls info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover logging logs help
+set -l commands init sync list ls inventory info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover logging logs help
 set -l providers apt brew cargo dnf flatpak gem go nix npm pacman pip pnpm rustup snap system uv yarn
 
 complete -c starpoint -f

@@ -261,7 +261,12 @@ func (w *Writer) JSON() bool { return w.asJSON }
 // `replace` of Python packages with a `pip-outside-virtualenv` warning, which
 // an unattended run refuses without --allow-destructive. Every existing field
 // keeps its meaning.
-const SchemaVersion = 8
+//
+// Version 9 is the onboarding pass: the read-only `inventory` command, which
+// lists every package each provider reports and whether the configuration
+// manages it (matched by provider and name). Every existing field keeps its
+// meaning.
+const SchemaVersion = 9
 
 // respond emits one flat JSON object: schema_version plus the given fields.
 //
