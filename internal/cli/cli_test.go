@@ -529,9 +529,12 @@ func TestRemoveDryRun(t *testing.T) {
 	}
 }
 
+// ripgrep has no recorded provider and several could own it, so these runs
+// are at a terminal, where the confirmation names the choice; an unattended
+// sync refuses to guess (TestSyncRefusesAnAmbiguousChoiceUnattended).
 func TestSyncConvergesAndIsIdempotent(t *testing.T) {
 	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"ripgrep\"\n")
-	out := h.mustRun("sync", "--no-confirm")
+	out := h.mustRun("sync")
 	if !strings.Contains(out, "install") {
 		t.Errorf("the plan should be shown:\n%s", out)
 	}
@@ -542,7 +545,7 @@ func TestSyncConvergesAndIsIdempotent(t *testing.T) {
 		t.Errorf("ownership should be recorded:\n%s", h.configBody())
 	}
 
-	second := h.mustRun("sync", "--no-confirm")
+	second := h.mustRun("sync")
 	if !strings.Contains(second, "In sync") {
 		t.Errorf("a converged machine should say so:\n%s", second)
 	}
@@ -666,7 +669,7 @@ func TestSyncWithConfirmationProceeds(t *testing.T) {
 func TestSyncPartialFailureIsReported(t *testing.T) {
 	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"ripgrep\"\n")
 	h.brew.InstallError = &provider.Error{Provider: brew.Name, Kind: provider.ErrNetwork, Message: "index unreachable"}
-	code, out, errOut := h.run("sync", "--no-confirm")
+	code, out, errOut := h.run("sync")
 	if code == 0 {
 		t.Fatal("a failure must produce a nonzero exit code")
 	}
@@ -1298,7 +1301,7 @@ func TestSyncJSONReportsTheMachineAfterTheRun(t *testing.T) {
 		t.Fatalf("before the run ripgrep is missing: %+v", dry)
 	}
 
-	got := decodeSync(t, h.mustRun("sync", "--no-confirm", "--json"))
+	got := decodeSync(t, h.mustRun("sync", "--json"))
 	if !got.Converged {
 		t.Errorf("after installing everything the sync converged: %+v", got)
 	}
@@ -1313,7 +1316,7 @@ func TestSyncJSONReportsTheMachineAfterTheRun(t *testing.T) {
 func TestSyncJSONIsNotConvergedAfterAFailure(t *testing.T) {
 	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"ripgrep\"\n")
 	h.brew.InstallError = &provider.Error{Provider: brew.Name, Kind: provider.ErrNetwork, Message: "index unreachable"}
-	_, out, _ := h.run("sync", "--no-confirm", "--json")
+	_, out, _ := h.run("sync", "--json")
 	if got := decodeSync(t, out); got.Converged {
 		t.Errorf("a failed install is not converged: %s", out)
 	}

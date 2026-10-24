@@ -188,7 +188,7 @@ is printed for you to run.
 | `starpoint list [--managed] [--provider <name>]` | Show managed software, its location, scope and provider (alias: `ls`) |
 | `starpoint info <package>` | Show one package's state in detail (alias: `show`) |
 | `starpoint explain <package>` | Explain how Starpoint resolves ownership |
-| `starpoint install <package> [provider]` | Install and record (aliases: `add`, `i`); `--version`, `--channel`, `--project`, `--dry-run`, `--no-confirm` |
+| `starpoint install <package> [provider]` | Install and record (aliases: `add`, `i`); `--version`, `--channel`, `--project`, `--dry-run`, `--no-confirm`. Never adds a second copy silently: unattended, a copy another provider has (or, unless you name the provider, one only the OS has) is refused with `duplicate-install` unless `--allow-duplicate` |
 | `starpoint install .` | Install the current project's declared packages and dependencies; record its toolchain in the project config |
 | `starpoint remove <package> [provider]` | Uninstall and delete from config (aliases: `uninstall`, `rm`); `--dry-run`, `--no-confirm`, `--allow-empty` |
 | `starpoint update [--self] [--dry-run] [--no-confirm]` | Update managed software; asks before moving past a pin (alias: `upgrade`) |

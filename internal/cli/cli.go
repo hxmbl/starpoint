@@ -986,6 +986,9 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 	if err := env.guardDestructive("sync", guardOpts, plan.Actions); err != nil {
 		return err
 	}
+	if err := env.guardAmbiguous("sync", guardOpts, plan.Actions); err != nil {
+		return err
+	}
 	if !dryRun && !noConfirm && len(plan.Actions) > 0 && env.Confirm != nil {
 		ok, err := confirmPlan(env, plan)
 		if err != nil {
@@ -1541,11 +1544,12 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 	}
 
 	var (
-		dryRun    bool
-		noConfirm bool
-		version   string
-		channel   string
-		asProject bool
+		dryRun         bool
+		noConfirm      bool
+		version        string
+		channel        string
+		asProject      bool
+		allowDuplicate bool
 	)
 	var names []string
 	for i := 0; i < len(args); i++ {
@@ -1568,6 +1572,8 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 			i++
 		case "--project":
 			asProject = true
+		case "--allow-duplicate":
+			allowDuplicate = true
 		default:
 			if err := rejectOption("install", args[i]); err != nil {
 				return err
@@ -1674,6 +1680,14 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		preview, err := eng.AddPreview(ctx, doc, pkg, opts)
 		if err != nil {
 			return err
+		}
+		if adopted == nil && preview.Action == model.ActionInstall {
+			if err := env.guardDuplicate(pkg, resolution.Provider, survey, preview, opts, allowDuplicate); err != nil {
+				return err
+			}
+			if w := duplicateWarning(pkg.Name, resolution.Provider, survey); w != nil {
+				preview.Warnings = append(preview.Warnings, *w)
+			}
 		}
 		jobs = append(jobs, job{pkg: pkg, change: installChange(pkg, resolution, adopted, preview), survey: survey, preview: preview})
 	}
