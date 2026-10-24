@@ -40,6 +40,9 @@ config → desired state → provider resolution → current state → diff → 
   sentence to a user
 - `--help` and `--version` only mean Starpoint's own before the subcommand:
   after it, `install --version 1.2.3` pins a version
+- `sync` drops every relocation from its plan (`withoutMoves`): a provider
+  mismatch is a `provider-drift` warning pointing at `transition` and
+  `adopt`, so sync never removes software
 - `guardElevated` runs before dispatch; every command that changes anything is
   guarded, confirmed, audited, and locked (see below)
 

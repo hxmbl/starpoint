@@ -100,8 +100,14 @@ Options:
 `,
 	"sync": `Usage: starpoint sync [--dry-run] [--no-confirm]
 
-Make the installed state match the configuration: install what is missing,
-move software between providers, and reconcile pinned versions.
+Make the installed state match the configuration: install what is missing
+and reconcile pinned versions. The plan is shown and confirmed first.
+
+sync never removes or moves software. When the configuration gives a package
+to one provider and another provider has it, that is reported as drift
+(provider-drift) with the two commands that settle it: 'starpoint transition
+<package>' moves it, 'starpoint adopt <package> <owner>' records the owner
+that really has it.
 
 Options:
   --dry-run, -n       Show what would change; change nothing

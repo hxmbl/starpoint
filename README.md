@@ -96,9 +96,11 @@ configuration nor requirements.txt is reported rather than guessed at.
 
 `provider` is the ownership decision. Once written it is authoritative: `sync`
 converges on it instead of re-deciding. If you deliberately move software to a
-different provider by editing that field, Starpoint understands it as a
-transition — it installs the new copy, verifies it, and only then removes the
-old one. It never installs a second copy and leaves the first behind.
+different provider by editing that field, `sync` reports the mismatch as drift
+(`provider-drift`) and changes nothing; `starpoint transition <package>` makes
+the move — it installs the new copy, verifies it, and only then removes the
+old one — and `starpoint adopt <package> <provider>` instead records the
+provider that really has it. `sync` never removes software.
 
 `version` is a hard pin. Starpoint will not move it on its own. If a provider
 cannot deliver it, Starpoint reports the conflict instead of editing the
@@ -177,7 +179,7 @@ is printed for you to run.
 | Command | Purpose |
 | --- | --- |
 | `starpoint init [--force]` | Create `~/.starpoint.toml`; exits 1 without changing anything if it exists, `--force` replaces it |
-| `starpoint sync [--dry-run] [--no-confirm]` | Converge the machine onto the configuration |
+| `starpoint sync [--dry-run] [--no-confirm]` | Converge the machine onto the configuration: install what is missing and reconcile pins. Never removes or moves software; a provider mismatch is reported as drift |
 | `starpoint transition [pkg...] [--all] [--dry-run] [--no-confirm]` | Show or perform provider transitions (alias: `move`) |
 | `starpoint transition --reverse <package>` | Reverse the most recent transition when safe |
 | `starpoint doctor [--all]` | Inspect Starpoint, config, providers, ownership, inconsistencies, PATH |
@@ -545,8 +547,11 @@ one is confirmed working:
 - **A provider that cannot remove** gets a completed transition with the leftover
   named, not a failure. Ownership did move; `doctor` reports the duplicate.
 
-`sync` performs transitions too, and `sync --dry-run` shows them with their phase
-and evidence. `--json` exposes the whole record for other tools.
+`sync` does not perform transitions: a package whose configured provider is
+not the one that has it is reported as a `provider-drift` warning naming
+`starpoint transition <package>` and `starpoint adopt <package> <owner>`, and
+it stays unconverged. `starpoint transition` shows every pending move with its
+phase and evidence, and `--json` exposes the whole record for other tools.
 
 ### rustup and Cargo are different providers
 

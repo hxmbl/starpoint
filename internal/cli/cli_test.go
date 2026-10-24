@@ -595,16 +595,43 @@ func TestSyncReportsUnfixableVersionConflict(t *testing.T) {
 	}
 }
 
-func TestSyncHandlesProviderTransition(t *testing.T) {
+// sync never moves or removes software. A provider mismatch is drift: it is
+// reported with the two commands that settle it, nothing is installed or
+// removed, and the package stays unconverged. Moving it is transition's job.
+func TestSyncReportsProviderDriftAndMovesNothing(t *testing.T) {
 	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"ripgrep\"\nprovider = \"uv\"\n")
 	h.brew.With(model.Installation{Name: "ripgrep", Version: "14.1.0", Path: "/opt/homebrew/bin/rg"})
-	out := h.mustRun("sync", "--no-confirm", "--allow-destructive")
-	if !strings.Contains(out, "relocate") {
-		t.Errorf("the transition should be named:\n%s", out)
+	for _, args := range [][]string{{"sync", "--no-confirm", "--allow-destructive"}, {"sync"}} {
+		h.questions = nil
+		out := h.mustRun(args...)
+		if strings.Contains(out, "relocate") {
+			t.Errorf("%v: sync must not plan a move:\n%s", args, out)
+		}
+		if !strings.Contains(out, "starpoint transition ripgrep") || !strings.Contains(out, "starpoint adopt ripgrep brew") {
+			t.Errorf("%v: the drift should name both ways to settle it:\n%s", args, out)
+		}
+		if h.asked() {
+			t.Errorf("%v: nothing to change, so nothing to ask", args)
+		}
 	}
+	if len(h.uv.InstallCalls) != 0 || len(h.brew.RemoveCalls) != 0 {
+		t.Errorf("sync moved software: uv installs=%d brew removes=%d", len(h.uv.InstallCalls), len(h.brew.RemoveCalls))
+	}
+	got := decodeSync(t, h.mustRun("sync", "--no-confirm", "--json"))
+	if got.Converged {
+		t.Error("a package owned by the wrong provider is not converged")
+	}
+	found := false
+	for _, w := range got.Warnings {
+		found = found || (w.Code == model.WarnProviderDrift && w.Package == "ripgrep")
+	}
+	if !found {
+		t.Errorf("expected a provider-drift warning: %+v", got.Warnings)
+	}
+	// transition is still how it moves.
+	h.mustRun("transition", "ripgrep", "--no-confirm", "--allow-destructive")
 	if len(h.uv.InstallCalls) != 1 || len(h.brew.RemoveCalls) != 1 {
-		t.Errorf("expected a move: uv installs=%d brew removes=%d",
-			len(h.uv.InstallCalls), len(h.brew.RemoveCalls))
+		t.Errorf("transition should move it: uv installs=%d brew removes=%d", len(h.uv.InstallCalls), len(h.brew.RemoveCalls))
 	}
 }
 
@@ -1254,7 +1281,8 @@ func TestInstallDotWithContextRecordsProjectContext(t *testing.T) {
 
 // syncJSON is the part of `sync --json` a caller decides on.
 type syncJSON struct {
-	Converged bool `json:"converged"`
+	Converged bool            `json:"converged"`
+	Warnings  []model.Warning `json:"warnings"`
 	States    []struct {
 		Status string `json:"status"`
 	} `json:"states"`
