@@ -32,6 +32,7 @@ import (
 	"github.com/hxmbl/starpoint/internal/project"
 	"github.com/hxmbl/starpoint/internal/provider"
 	"github.com/hxmbl/starpoint/internal/providers"
+	"github.com/hxmbl/starpoint/internal/providers/system"
 	"github.com/hxmbl/starpoint/internal/recovery"
 	"github.com/hxmbl/starpoint/internal/report"
 	"github.com/hxmbl/starpoint/internal/resolve"
@@ -1139,6 +1140,30 @@ func cmdInventory(ctx context.Context, env *Env, w *report.Writer, args []string
 	return w.Inventory(inv)
 }
 
+// unmanagedCounts is doctor's drift hint: per provider, what it has that no
+// configuration entry records with it. The operating system's software is
+// left out, since Starpoint never manages it.
+func unmanagedCounts(inv engine.Inventory) []report.UnmanagedCount {
+	out := []report.UnmanagedCount{}
+	index := map[string]int{}
+	for _, it := range inv.Items {
+		if it.Managed || it.Provider == system.Name {
+			continue
+		}
+		i, ok := index[it.Provider]
+		if !ok {
+			i = len(out)
+			index[it.Provider] = i
+			out = append(out, report.UnmanagedCount{Provider: it.Provider})
+		}
+		out[i].Count++
+		if it.Requested == engine.RequestedYes {
+			out[i].Requested++
+		}
+	}
+	return out
+}
+
 func filterManaged(states []model.State) []model.State {
 	var out []model.State
 	for _, st := range states {
@@ -1280,6 +1305,7 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 	rep := report.DoctorReport{
 		Starpoint:     report.StarpointInfo{Version: Version},
 		Providers:     []report.ProviderHealth{},
+		Unmanaged:     []report.UnmanagedCount{},
 		PATHInventory: env.loc().OnPath(),
 		ShowAllPATH:   showAll,
 		Healthy:       true,
@@ -1326,6 +1352,7 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 		rep.Providers = append(rep.Providers, ph)
 	}
 	sort.Slice(rep.Providers, func(i, j int) bool { return rep.Providers[i].Name < rep.Providers[j].Name })
+	rep.Unmanaged = unmanagedCounts(eng.Inventory(ctx, doc, nil))
 
 	writable := isWritable(globalPath)
 	rep.Config = report.DocumentInfo(doc, globalPath, writable)

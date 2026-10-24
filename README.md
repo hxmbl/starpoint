@@ -182,7 +182,7 @@ is printed for you to run.
 | `starpoint sync [--dry-run] [--no-confirm]` | Converge the machine onto the configuration: install what is missing, reconcile pins, and record the owner of entries that are installed but have no provider yet (a config-only change). Never removes or moves software; a provider mismatch is reported as drift |
 | `starpoint transition [pkg...] [--all] [--dry-run] [--no-confirm]` | Show or perform provider transitions (alias: `move`) |
 | `starpoint transition --reverse <package>` | Reverse the most recent transition when safe |
-| `starpoint doctor [--all]` | Inspect Starpoint, config, providers, ownership, inconsistencies, PATH |
+| `starpoint doctor [--all]` | Inspect Starpoint, config, providers, ownership, inconsistencies, PATH; counts unmanaged software per provider and points at `starpoint adopt` (information, not a problem) |
 | `starpoint inventory [--provider <name>]` | List every package each provider reports, managed or not, matched by provider and name; observes only (Health and Discover), works with no configuration, writes nothing — not even the audit log, and an elevated run chowns nothing; each provider gets 20 s to answer; says per package whether it was installed on request, as a dependency, or unknown |
 | `starpoint adopt <package> [provider]`, `starpoint adopt --all` | Record the owner of software that is already installed; never installs, removes or moves anything. `--all` takes everything a provider says was installed on request; dependencies, unclassifiable packages and system software stay unmanaged. `--dry-run`, `--no-confirm` |
 | `starpoint list [--managed] [--provider <name>]` | Show managed software, its location, scope and provider (alias: `ls`) |

@@ -444,6 +444,20 @@ was listed):
 When a `reported` provider's question fails, its packages are all `unknown`
 and the warning `requested-unknown` names the provider.
 
+### Doctor: unmanaged software
+
+`doctor` gains `unmanaged`, one entry per provider that has software no
+configuration entry records with it (the `system` provider is left out):
+
+```json
+{ "unmanaged": [{ "provider": "string", "count": "integer", "requested": "integer" }] }
+```
+
+`count` is every unmanaged package the provider lists; `requested` is how
+many of them it says were installed on request, which is what
+`adopt --all` would record. It is information, never a `problem`, and never
+affects `healthy`. Always an array (empty when everything is managed).
+
 ### Adopt
 
 `adopt` reports the operation fields above (`operation: "adopt"`) plus:
@@ -923,6 +937,8 @@ Version 9 adds; nothing a version 8 consumer read is removed or renamed.
     no action. A `record` action with a configuration change reports
     `result: "applied"`; one without (an unsatisfiable pin) still reports
     `reported`.
+11. `doctor` gains `unmanaged` (see "Doctor: unmanaged software"). Doctor
+    now also lists every available provider's packages once to count them.
 
 ## Versioning Policy
 
