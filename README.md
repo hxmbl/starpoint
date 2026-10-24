@@ -228,8 +228,8 @@ change is marked destructive. Pass `--allow-destructive` to mean it. The
 refusal exits 3 and prints every planned action and effect; under `--json` the
 error document carries `code: "destructive-unattended"` and the whole plan, so
 an agent calling Starpoint sees exactly what would have happened. Interactive
-runs are unchanged: the confirmation step already lists every destructive
-effect. Dry runs are never refused.
+runs are unchanged: the confirmation step already lists every effect, the
+destructive ones marked `!`. Dry runs are never refused.
 
 ```
 $ starpoint remove ruff --yes
@@ -381,9 +381,11 @@ replaced or deleted in the places the provider writes to, commands that start
 or stop resolving on PATH, shell profiles that changed, and the configuration
 entries edited. Effects are observed on disk before and after each step, not
 inferred, and anything that removes or overwrites something is marked
-destructive. Before asking for confirmation, and in every human-readable result,
-destructive effects are listed with a `!`; `--dry-run` lists every effect;
-`--verbose` lists every effect of a real run too. Warnings carry a stable code
+destructive. Before asking for confirmation every effect is listed, because a
+question about changing the machine must not hide any of the changes behind a
+count; destructive ones are marked with a `!`. In a human-readable result,
+destructive effects are always listed and the rest are counted; `--dry-run`
+lists every effect, and `--verbose` lists every effect of a real run too. Warnings carry a stable code
 and are attached to the package they concern. Running as root, or as an
 elevated Windows administrator, is reported on every changing command, saying
 whose environment the run acts on.
@@ -478,13 +480,24 @@ About to change your machine:
       then: no software is installed or removed; the existing copy is recorded as owned by gem
 ```
 
-`none found on installed providers` is not an error — a package can perfectly well
-be installable by a provider that does not have it yet — but it is stated plainly,
-and qualified when a provider is installed yet unable to enumerate its inventory,
-because that weakens the claim.
+No provider having it yet is not an error — it is the normal start of an
+install — so an ordinary run says nothing about it: the confirmation already
+says what will be installed and by whom. `--verbose` states it plainly
+(`neofetch: not installed by any provider yet`), and names any provider that is
+installed yet unable to enumerate its inventory, because that weakens the claim.
+`starpoint info` always gives that qualification, since "no provider has it" is
+its whole answer there.
 
 When nothing on the machine and nothing about the name settles who should own
-it, Starpoint asks. That includes the common case of one system package manager
+it, Starpoint asks. The project you run it in only settles it for a name with
+that ecosystem's own shape: inside a Go repository `starpoint install
+golang.org/x/tools/gopls` goes to `go`, but `starpoint install neofetch` is
+resolved exactly as it would be anywhere else — a Go project says what the
+project is written in, not where your tools come from, and `go install` cannot
+install a bare name at all. (An npm scoped name, `@scope/name`, is the Node
+equivalent; Rust, Python and Ruby names have no shape to check.) When the
+question is asked anyway, the project's own provider is offered first among the
+alternatives, and `go` is never offered for a name that is not a module path. That includes the common case of one system package manager
 beside language providers: `starpoint install cowsay` on a machine with apt, uv
 and npm offers apt as the default but asks, because "the Debian package" and "the
 PyPI package" are different choices. Without a terminal the command fails and

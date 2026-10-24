@@ -1078,7 +1078,8 @@ func confirmPlan(env *Env, plan model.Plan) (bool, error) {
 		if a.Note != "" {
 			fmt.Fprintf(env.promptOut(), "             %s\n", env.palPrompt.Dim(a.Note))
 		}
-		report.WriteEffects(env.promptOut(), env.palPrompt, a.Effects, true, env.Verbose, "             ")
+		// Every effect: the question must not hide a change behind a count.
+		report.WriteEffects(env.promptOut(), env.palPrompt, a.Effects, true, true, "             ")
 	}
 	return env.Confirm("Proceed?")
 }
@@ -1274,8 +1275,7 @@ func cmdInfo(ctx context.Context, env *Env, w *report.Writer, args []string) err
 	// Nothing anywhere. The refusal says which providers were asked, because
 	// "not found" from a tool that could not ask some of its own providers is a
 	// different claim from "not found".
-	line, _ := surveyNote(survey)
-	return fmt.Errorf("%s is not in the configuration and %s", name, line)
+	return fmt.Errorf("%s is not in the configuration and no provider has it installed%s", name, unaskableNote(survey))
 }
 
 // joinProviders names a run of providers.
@@ -1692,28 +1692,37 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		// asking everyone tells them apart.
 		survey := env.lookup(ctx, eng, pkg, opts, w.JSON())
 
+		// overrode is whether the provider is the user's call against
+		// Starpoint's own: named on the command line, or picked at the question
+		// instead of the offered default.
+		overrode := pkg.Provider != ""
 		// An ambiguous provider choice is worth one question, not a guess. With no
 		// way to ask, the command fails rather than picking one silently.
 		if pkg.Provider == "" {
-			chosen, err := env.askProvider(ctx, eng, doc, opts, pkg)
+			chosen, offered, err := env.askProvider(ctx, eng, doc, opts, pkg)
 			if err != nil {
 				return err
 			}
 			if chosen != "" {
 				pkg.Provider = chosen
 				pkg.Reason = "provider chosen interactively"
+				overrode = chosen != offered
 			}
 		}
 
-		resolution, adopted, err := eng.Preview(ctx, doc, pkg, opts)
-		if err != nil {
-			return err
-		}
 		// The preview is what the question shows: every effect the install is
 		// expected to have, from the same derivation the install itself uses.
+		// The resolution and any adoption come from the same preview rather
+		// than a second derivation: each one asks every provider in turn
+		// whether it has the package, and that is most of an install's wait.
 		preview, err := eng.AddPreview(ctx, doc, pkg, opts)
 		if err != nil {
 			return err
+		}
+		resolution := preview.State.Res
+		var adopted *model.Installation
+		if preview.Action == model.ActionAdopt {
+			adopted = preview.State.Desired
 		}
 		if adopted == nil && preview.Action == model.ActionInstall {
 			if err := env.guardDuplicate(pkg, resolution.Provider, survey, preview, opts, allowDuplicate); err != nil {
@@ -1723,7 +1732,7 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 				preview.Warnings = append(preview.Warnings, *w)
 			}
 		}
-		jobs = append(jobs, job{pkg: pkg, change: installChange(pkg, resolution, adopted, preview), survey: survey, preview: preview})
+		jobs = append(jobs, job{pkg: pkg, change: installChange(pkg, resolution, adopted, preview, overrode), survey: survey, preview: preview})
 	}
 
 	// One question for the whole command, describing every change it would make.
@@ -1789,23 +1798,26 @@ func reportInstall(w *report.Writer, dryRun bool, results []*engine.Result, surv
 	return w.Operation("install", dryRun, results, map[string]any{"lookup": surveys})
 }
 
-// askProvider presents the ambiguous candidates to the user.
-func (e *Env) askProvider(ctx context.Context, eng *engine.Engine, doc *config.Document, opts engine.Options, pkg model.Package) (string, error) {
+// askProvider presents the ambiguous candidates to the user. It returns the
+// provider chosen and the default that was offered, so the caller can tell
+// accepting Starpoint's suggestion from overruling it.
+func (e *Env) askProvider(ctx context.Context, eng *engine.Engine, doc *config.Document, opts engine.Options, pkg model.Package) (string, string, error) {
 	dec := eng.Decide(ctx, doc, pkg, opts)
 	if !dec.Ambiguous || len(dec.Alternatives) == 0 {
 		// Nothing worth asking about: leave the decision to the resolver so the
 		// recorded reason explains itself.
-		return "", nil
+		return "", "", nil
 	}
 	options := append([]string{dec.Provider}, dec.Alternatives...)
 	if e.Choose == nil {
-		return "", fmt.Errorf(
+		return "", "", fmt.Errorf(
 			"%s could be provided by %s and there is no terminal to ask on; rerun with --provider <name>",
 			pkg.Name, strings.Join(options, " or "))
 	}
 	question := fmt.Sprintf("%s could be provided by %s. Which provider should own it?",
 		pkg.Name, strings.Join(options, ", "))
-	return e.Choose(question, options)
+	chosen, err := e.Choose(question, options)
+	return chosen, dec.Provider, err
 }
 
 // dependencyReport is what `install .` did about the project's dependencies.
@@ -2530,7 +2542,8 @@ func confirmTransitions(ctx context.Context, env *Env, eng *engine.Engine, sel t
 			fmt.Fprintf(env.promptOut(), "      %s\n", env.palPrompt.Dim(t.Advice))
 		}
 		effects, warnings := eng.PlannedTransitionEffects(ctx, t)
-		report.WriteEffects(env.promptOut(), env.palPrompt, effects, true, env.Verbose, "      ")
+		// Every effect: the question must not hide a change behind a count.
+		report.WriteEffects(env.promptOut(), env.palPrompt, effects, true, true, "      ")
 		for _, w := range warnings {
 			fmt.Fprintf(env.promptOut(), "      %s [%s]: %s\n", report.SeverityLabel(env.palPrompt, w.Severity), w.Code, w.Message)
 		}
@@ -2938,7 +2951,7 @@ func cmdPrune(ctx context.Context, env *Env, w *report.Writer, args []string, al
 		fmt.Fprintln(listing, env.palPrompt.Bold("These packages are not declared in any configuration and would be removed:"))
 		for _, a := range preview.Applied {
 			fmt.Fprintf(listing, "  %s via %s\n", a.State.Package.Name, a.State.Res.Provider)
-			report.WriteEffects(listing, env.palPrompt, a.Effects, true, env.Verbose, "    ")
+			report.WriteEffects(listing, env.palPrompt, a.Effects, true, true, "    ")
 		}
 		for _, warn := range preview.Warnings {
 			if warn.Code == model.WarnPruneSkipped {
@@ -3251,7 +3264,9 @@ func cmdTransitionReverse(ctx context.Context, env *Env, w *report.Writer, eng *
 			fmt.Fprintf(env.Stdout, "      %s\n", env.palOut.Dim(t.Note))
 		}
 		effects, warnings := eng.PlannedTransitionEffects(ctx, reversing[i])
-		report.WriteEffects(env.Stdout, env.palOut, effects, true, dryRun || env.Verbose, "      ")
+		// The list the reversal is confirmed against, so it is never collapsed
+		// into a count.
+		report.WriteEffects(env.Stdout, env.palOut, effects, true, true, "      ")
 		for _, w := range warnings {
 			fmt.Fprintf(env.Stdout, "      %s [%s]: %s\n", report.SeverityLabel(env.palOut, w.Severity), w.Code, w.Message)
 		}

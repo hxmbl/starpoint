@@ -9,6 +9,7 @@ import (
 	"github.com/hxmbl/starpoint/internal/providers/brew"
 	"github.com/hxmbl/starpoint/internal/providers/cargo"
 	"github.com/hxmbl/starpoint/internal/providers/flatpak"
+	"github.com/hxmbl/starpoint/internal/providers/golang"
 	"github.com/hxmbl/starpoint/internal/providers/npm"
 	"github.com/hxmbl/starpoint/internal/providers/rustup"
 	"github.com/hxmbl/starpoint/internal/providers/system"
@@ -634,5 +635,119 @@ func TestIsAppID(t *testing.T) {
 		if isAppID(name) {
 			t.Errorf("%q is not an application ID", name)
 		}
+	}
+}
+
+// goProjectSpecs is a macOS-like machine standing in a Go repository: one
+// system package manager, Go, and other language providers beside it.
+func goProjectSpecs() []spec {
+	return []spec{
+		{name: brew.Name, kind: provider.KindBrew, caps: fullCaps(model.ScopeUser), available: true},
+		{name: uv.Name, kind: provider.KindPython, caps: fullCaps(model.ScopeUser), available: true},
+		{name: cargo.Name, kind: provider.KindRust, caps: fullCaps(model.ScopeUser), available: true},
+		{name: npm.Name, kind: provider.KindNode, caps: fullCaps(model.ScopeUser), available: true},
+		{name: golang.Name, kind: provider.KindGo, caps: fullCaps(model.ScopeUser), available: true},
+	}
+}
+
+// Standing in a Go repository is not evidence that a system tool should come
+// from `go install`, which cannot even install a bare name. neofetch typed in a
+// Go project resolves exactly as it would anywhere else.
+func TestBareNameInAGoProjectGoesToTheSystemManager(t *testing.T) {
+	reg, health := buildRegistry(t, goProjectSpecs()...)
+	r := New(reg)
+	expl := r.Explain(Input{Package: model.Package{Name: "neofetch"}, Available: health, Ecosystem: provider.KindGo})
+	got := expl.Final
+	if got.Provider != brew.Name {
+		t.Fatalf("neofetch in a Go project should resolve to the system package manager, got %+v", got)
+	}
+	for _, alt := range got.Alternatives {
+		if alt == golang.Name {
+			t.Errorf("go cannot install a bare name and must not be offered for it: %+v", got)
+		}
+	}
+	for _, step := range expl.Steps {
+		if step.Rule == "project ecosystem" {
+			if step.Applied {
+				t.Errorf("the project ecosystem must not decide for a bare name: %+v", step)
+			}
+			if !strings.Contains(step.Reason, "not a Go module path") {
+				t.Errorf("the skipped rule should say why, got %q", step.Reason)
+			}
+		}
+	}
+
+	// And it is the same answer as outside the project.
+	outside := r.Resolve(Input{Package: model.Package{Name: "neofetch"}, Available: health})
+	if outside.Provider != got.Provider || outside.Ambiguous != got.Ambiguous {
+		t.Errorf("the project should not change a bare name's resolution: inside %+v, outside %+v", got, outside)
+	}
+}
+
+func TestGoModulePathInAGoProjectGoesToGo(t *testing.T) {
+	reg, health := buildRegistry(t, goProjectSpecs()...)
+	got := New(reg).Resolve(Input{
+		Package:   model.Package{Name: "golang.org/x/tools/gopls"},
+		Available: health,
+		Ecosystem: provider.KindGo,
+	})
+	if got.Provider != golang.Name || got.Ambiguous {
+		t.Fatalf("a module path in a Go project belongs to go, got %+v", got)
+	}
+	if !strings.Contains(got.Reason, "Go project") {
+		t.Errorf("reason = %q", got.Reason)
+	}
+}
+
+// With only a system manager and go, a bare name is not a question at all:
+// go is not a real alternative for it.
+func TestGoIsNotAnAlternativeForABareName(t *testing.T) {
+	reg, health := buildRegistry(t,
+		spec{name: brew.Name, kind: provider.KindBrew, caps: fullCaps(model.ScopeUser), available: true},
+		spec{name: golang.Name, kind: provider.KindGo, caps: fullCaps(model.ScopeUser), available: true},
+	)
+	got := New(reg).Resolve(Input{Package: model.Package{Name: "neofetch"}, Available: health, Ecosystem: provider.KindGo})
+	if got.Provider != brew.Name || got.Ambiguous {
+		t.Fatalf("brew is the only plausible home for neofetch, got %+v", got)
+	}
+}
+
+// A Rust project's bare names fall through too: nothing confirms a crate by that
+// name exists without a registry lookup. The question that follows offers the
+// project's own provider first among the alternatives.
+func TestBareNameInARustProjectIsAskedWithCargoOfferedFirst(t *testing.T) {
+	reg, health := buildRegistry(t, goProjectSpecs()...)
+	got := New(reg).Resolve(Input{Package: model.Package{Name: "cargo-watch"}, Available: health, Ecosystem: provider.KindRust})
+	if got.Provider != brew.Name || !got.Ambiguous {
+		t.Fatalf("a bare name in a Rust project should be asked about with the system manager as default, got %+v", got)
+	}
+	if len(got.Alternatives) == 0 || got.Alternatives[0] != cargo.Name {
+		t.Errorf("cargo should be the first alternative in a Rust project, got %v", got.Alternatives)
+	}
+}
+
+func TestScopedNPMNameInANodeProjectGoesToNPM(t *testing.T) {
+	reg, health := buildRegistry(t, goProjectSpecs()...)
+	got := New(reg).Resolve(Input{Package: model.Package{Name: "@angular/cli"}, Available: health, Ecosystem: provider.KindNode})
+	if got.Provider != npm.Name {
+		t.Fatalf("a scoped npm package in a Node project belongs to npm, got %+v", got)
+	}
+}
+
+// The explicit and existing-owner rules still outrank the project.
+func TestExplicitAndExistingStillBeatTheProject(t *testing.T) {
+	reg, health := buildRegistry(t, goProjectSpecs()...)
+	r := New(reg)
+	got := r.Resolve(Input{Package: model.Package{Name: "golang.org/x/tools/gopls", Provider: brew.Name}, Available: health, Ecosystem: provider.KindGo})
+	if got.Provider != brew.Name || !got.Forced {
+		t.Errorf("an explicit provider wins, got %+v", got)
+	}
+	got = r.Resolve(Input{
+		Package:   model.Package{Name: "golang.org/x/tools/gopls"},
+		Existing:  &model.Installation{Name: "gopls", Provider: brew.Name, Path: "/opt/homebrew/bin/gopls"},
+		Available: health, Ecosystem: provider.KindGo,
+	})
+	if got.Provider != brew.Name {
+		t.Errorf("an existing owner keeps it, got %+v", got)
 	}
 }

@@ -8,22 +8,41 @@ import (
 	"github.com/hxmbl/starpoint/internal/providers/uv"
 )
 
-func TestInstallSaysWhenNoProviderHasTheSoftware(t *testing.T) {
+func TestInstallDoesNotOpenWithANotFoundLine(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")
 	h.ask(true)
 
 	out := h.mustRun("install", "ruff")
-	if !strings.Contains(out, "none found on installed providers") {
-		t.Errorf("the lookup result should be reported:\n%s", out)
+	// Nothing having it yet is the normal start of an install. Announcing it
+	// before the plan read like an error ("none found ...") followed by a
+	// successful install, so an ordinary run says nothing about it.
+	for _, unwanted := range []string{"none found", "not installed by any provider", "not asked"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("an ordinary install should not open with %q:\n%s", unwanted, out)
+		}
 	}
 	if len(h.uv.InstallCalls) != 1 {
 		t.Errorf("not being present yet is normal; it should still install: %d", len(h.uv.InstallCalls))
 	}
 }
 
+func TestVerboseInstallSaysPlainlyThatNothingHasItYet(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	h.ask(true)
+
+	out := h.mustRun("--verbose", "install", "ruff")
+	if !strings.Contains(out, "ruff: not installed by any provider yet") {
+		t.Errorf("--verbose should state the lookup result plainly:\n%s", out)
+	}
+	if strings.Contains(out, "none found") {
+		t.Errorf("the old wording read like an error:\n%s", out)
+	}
+}
+
 // A provider that is installed but cannot enumerate its inventory weakens the
-// claim, and the wording has to admit that rather than overstate it.
-func TestTheNotFoundMessageAdmitsWhatCouldNotBeAsked(t *testing.T) {
+// claim. That qualification is detail for --verbose when an install follows,
+// and is not mentioned otherwise.
+func TestTheNotFoundMessageAdmitsWhatCouldNotBeAskedUnderVerbose(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")
 	h.ask(true)
 	// apt is present in the harness registry and can be made to be installed yet
@@ -33,8 +52,13 @@ func TestTheNotFoundMessageAdmitsWhatCouldNotBeAsked(t *testing.T) {
 	h.apt.Caps.Discover = false
 
 	out := h.mustRun("install", "ruff")
-	if !strings.Contains(out, "not asked: apt") {
-		t.Errorf("the message should name what could not be asked:\n%s", out)
+	if strings.Contains(out, "apt cannot list") || strings.Contains(out, "not asked") {
+		t.Errorf("an ordinary install should not mention providers it could not ask:\n%s", out)
+	}
+
+	out = h.mustRun("--verbose", "install", "black")
+	if !strings.Contains(out, "apt cannot list what it has installed, so it was not checked") {
+		t.Errorf("--verbose should name what could not be asked:\n%s", out)
 	}
 }
 
@@ -288,9 +312,9 @@ func TestJSONOutputCarriesNoProse(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")
 	h.ask(true)
 
-	out := h.mustRun("--json", "install", "ruff", uv.Name)
+	out := h.mustRun("--json", "--verbose", "install", "ruff", uv.Name)
 	// The survey line is human output; a JSON consumer gets the document.
-	if strings.Contains(out, "none found on installed providers") {
+	if strings.Contains(out, "not installed by any provider") {
 		t.Errorf("prose must not be mixed into JSON:\n%s", out)
 	}
 	if !strings.Contains(out, `"actions"`) {

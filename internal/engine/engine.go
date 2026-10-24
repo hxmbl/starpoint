@@ -271,19 +271,36 @@ func (e *Engine) Plan(ctx context.Context, doc *config.Document, opts Options) (
 // needs a fresh look — a long-running process, or a test that changes the
 // machine mid-command — can build a new Engine. A probe cut short by ctx is
 // not memoised: a cancelled deadline is not a verdict on the provider.
+//
+// The probes that are not memoised yet run concurrently. Each one is a
+// subprocess (or several), they do not depend on each other, and asking a
+// dozen package managers one after another made the first step of every
+// command wait for the sum of them rather than the slowest; `inventory`
+// already probes the same providers side by side.
 func (e *Engine) health(ctx context.Context) map[string]provider.Health {
 	out := map[string]provider.Health{}
+	var (
+		mu sync.Mutex
+		wg sync.WaitGroup
+	)
 	for _, p := range e.reg.All() {
 		if h, ok := e.cachedHealth(p); ok {
 			out[p.Name()] = h
 			continue
 		}
-		h := p.Health(ctx)
-		if ctx.Err() == nil {
-			e.rememberHealth(p.Name(), h)
-		}
-		out[p.Name()] = h
+		wg.Add(1)
+		go func(p provider.Provider) {
+			defer wg.Done()
+			h := p.Health(ctx)
+			if ctx.Err() == nil {
+				e.rememberHealth(p.Name(), h)
+			}
+			mu.Lock()
+			out[p.Name()] = h
+			mu.Unlock()
+		}(p)
 	}
+	wg.Wait()
 	return out
 }
 

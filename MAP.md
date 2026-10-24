@@ -59,8 +59,10 @@ config → desired state → provider resolution → current state → diff → 
   would have happened; nothing was changed, and the refusal is audited
 - An unattended run (`--yes`, no terminal, or a piped answer) that would delete
   or replace anything is refused unless `--allow-destructive`; an interactive
-  run is not guarded here — its confirmation lists every destructive effect,
-  marked `!`, before asking
+  run is not guarded here — its confirmation lists every effect, the
+  destructive ones marked `!`, before asking; a Proceed? question never
+  collapses effects into a count (result summaries still do, unless
+  `--verbose` or a dry run)
 
 **`internal/cli/confirm.go` and `prompt.go`** - Asking before changing
 - Any machine-touching step becomes a `change` (verb, target, provider, the
@@ -142,8 +144,15 @@ config → desired state → provider resolution → current state → diff → 
   working install because a scoring function prefers another is exactly the
   duplicate-install failure mode this project exists to avoid); otherwise an
   ecosystem-native provider beats a general-purpose system manager
+- The ecosystem of the project in the current directory is a weak signal:
+  it only decides for a name with that ecosystem's shape (a Go module path, an
+  npm `@scope/name`). A bare name like `neofetch` typed in a Go repository
+  falls through to the system package manager as it would anywhere else, and
+  `go` is never offered as an alternative for a name that is not a module path
+  (`golang.LooksLikeModulePath`)
 - When the rules produce no clear winner it reports the ambiguity —
-  confidence, alternatives — rather than guessing, and the CLI asks
+  confidence, alternatives — rather than guessing, and the CLI asks (the
+  current project's provider is offered first among the alternatives)
 - The hints are deliberately small: `rg` maps to Rust, `ripgrep` does not,
   because `brew install ripgrep` is what almost everyone means
 
@@ -221,7 +230,8 @@ user, an unknown directory is root, as it always was
 - Provider health is memoised per Engine: probing is a subprocess per
   provider, a single `install` asks for it several times over, and every step
   of a command must reason about the same machine rather than three slightly
-  different samples of it. Only a probe that finished on its own is kept; one
+  different samples of it. The first probe of each provider runs concurrently
+  with the others. Only a probe that finished on its own is kept; one
   cut short by a deadline or cancellation is asked again next time
 - Also `Duplicates`, `Shadowed`, `Explain`, `Discovery` and `Prune` (installs
   no longer in the configuration)
@@ -448,7 +458,7 @@ That is the whole direct set, on purpose; each addition needs a reason.
 
 ## Testing
 
-73 test files, roughly half the tree, in every internal package. `make check`
+93 test files, roughly half the tree, in every internal package. `make check`
 (gofmt, vet, full suite) is the commit gate.
 
 - `internal/testsupport` - `FakeRunner` (scripted commands, recorded calls) and
