@@ -109,8 +109,8 @@ consumer should act on the code and show the message. Codes in use:
 | `transition-left-behind` | Ownership moved but the previous provider's copy is still present. |
 | `pin-conflict` | A newer version exists than the pin; the pin was kept. |
 | `pin-kept`, `already-current`, `update-unsupported`, `not-installed` | Why `update` left a package alone (severity `info`). |
-|| `discover-failed` | A provider could not list its packages, so `prune` considered none of them, or `inventory` shows none of them (including a provider whose health check or listing did not answer within the 20-second bound). |
-|| `owner-ambiguous` | `adopt --all` found a name installed on request through more than one provider and nobody to ask; it was left out. |
+| `discover-failed` | A provider could not list its packages, so `prune` considered none of them, or `inventory` shows none of them (including a provider whose health check or listing did not answer within the 20-second bound). |
+| `owner-ambiguous` | `adopt --all` found a name installed on request through more than one provider and nobody to ask; it was left out. |
 | `requested-unknown` | `inventory` could not ask a provider which of its packages were installed on purpose; they are all shown as `requested: unknown`. |
 | `prune-skipped` | An orphan (installed, declared nowhere) that `prune` left alone, with its `package` and `provider`; the message gives the reason: it lives outside the invoking user's home directory (a system npm prefix, the interpreter's own site-packages), or it is a package manager (any registered provider, `corepack`, `starpoint`). Severity `info`; reported by dry runs and real runs alike. |
 | `pip-outside-virtualenv` | `install .` runs `pip install -r requirements.txt` outside any virtualenv, so it installs into the user's site-packages (as root, the system's) and may upgrade or downgrade packages other software depends on. Its effect is destructive; creating a virtualenv (`python3 -m venv .venv`) makes Starpoint install there instead. |
@@ -876,12 +876,8 @@ Version 9 adds; nothing a version 8 consumer read is removed or renamed.
 2. New command `inventory`, with its own payload (see "Inventory"):
    `providers`, `packages`, `warnings` and `summary`.
 3. `discover-failed` is also raised by `inventory`, once per provider whose
-<<<<<<< HEAD
    health check or listing failed or did not answer within the 20-second
    bound.
-4. `Warning.code` gains `requested-unknown`.
-=======
-   listing failed.
 4. `Warning.code` gains `requested-unknown` and `owner-ambiguous`.
 5. New command `adopt`, with the operation fields plus `skipped` and
    `left_unmanaged` (see "Adopt"); `refused.operation` gains `adopt`.
@@ -892,7 +888,6 @@ Version 9 adds; nothing a version 8 consumer read is removed or renamed.
    toolchain) never records a package the chosen provider neither reports
    nor owns on PATH; version 8 wrote such an entry with a
    `recorded-not-installed` warning.
->>>>>>> 17083b8 (Add adopt: record the owner of installed software without touching it)
 
 ## Versioning Policy
 
