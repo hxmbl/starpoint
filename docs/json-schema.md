@@ -355,6 +355,12 @@ such as `running-elevated`, name no package and appear only at the top level.
 }
 ```
 
+An entry with no `provider` whose software is already installed through the
+provider resolution settles on (not `system`, and not an ambiguous choice)
+gets a `record` action: one configuration change setting `provider` (and
+`reason` when empty), no machine effect, `result: "applied"` once written.
+It is confirmed like any other change, and the next run has nothing to do.
+
 `sync` never removes or moves software. A package whose configured provider
 is not the one that has it produces no action and no `transitions` entry: it
 keeps the status `provider-differs`, so `converged` is false, and the warning
@@ -911,6 +917,12 @@ Version 9 adds; nothing a version 8 consumer read is removed or renamed.
    `install` that would silently add a second copy, and an unattended `sync`
    that would pick a provider for an ambiguous package, are refused where
    version 8 went ahead. `install --allow-duplicate` is new.
+10. Behaviour: `sync` plans a `record` action (configuration only) for an
+    installed entry with no provider recorded, so `converged` is false in a
+    dry run until it is written. Version 8 left such an entry unrecorded with
+    no action. A `record` action with a configuration change reports
+    `result: "applied"`; one without (an unsatisfiable pin) still reports
+    `reported`.
 
 ## Versioning Policy
 

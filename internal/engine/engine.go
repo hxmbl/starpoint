@@ -578,6 +578,28 @@ func (e *Engine) actionFor(st model.State, available map[string]provider.Health)
 	}
 
 	switch st.Status {
+	case model.StatusCorrect:
+		// Installed, by the provider resolution settled on, with no owner
+		// recorded yet. Nothing on the machine changes; recording the owner
+		// is a configuration change, shown and confirmed like any other, so
+		// the next run reads a decision instead of re-deriving one. The
+		// operating system's copy is never recorded: Starpoint does not
+		// manage it.
+		if st.Package.Provider != "" || st.Desired == nil || st.Res.Provider == system.Name || st.Res.Ambiguous {
+			return model.PlannedAction{}, false
+		}
+		pkg := st.Package
+		pkg.Provider = st.Res.Provider
+		if pkg.Reason == "" {
+			pkg.Reason = "already installed through " + st.Res.Provider
+		}
+		return model.PlannedAction{
+			Action:       model.ActionRecord,
+			State:        st,
+			ConfigChange: &model.ConfigEdit{File: st.Package.Origin.Path, Upsert: &pkg},
+			Note:         "already installed through " + st.Res.Provider + "; records it as the owner",
+		}, true
+
 	case model.StatusMissing:
 		if !prov.Capabilities().Install {
 			return model.PlannedAction{}, false
