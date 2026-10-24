@@ -216,6 +216,36 @@ func IsModulePath(name string) bool {
 	return strings.Contains(name, "/") || strings.Contains(name, ".")
 }
 
+// LooksLikeModulePath reports whether a name has the shape of a remote Go
+// module path, such as golang.org/x/tools/gopls or github.com/user/tool: at
+// least two slash-separated elements, the first of which is a host name with a
+// dot in it, which is what `go install path@version` requires for anything
+// outside the standard library.
+//
+// It is stricter than IsModulePath on purpose. IsModulePath accepts anything
+// with a dot or a slash, because a recorded entry is the user's own statement;
+// this is for deciding whether a name nobody attributed to Go could be Go's at
+// all, where "python3.12" or "user/tap/formula" must not count.
+func LooksLikeModulePath(name string) bool {
+	path := name
+	if at := strings.LastIndex(path, "@"); at > 0 {
+		path = path[:at]
+	}
+	host, rest, ok := strings.Cut(path, "/")
+	if !ok || rest == "" || strings.ContainsAny(path, " \t\\") {
+		return false
+	}
+	if !strings.Contains(host, ".") || strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") || strings.HasPrefix(host, "@") {
+		return false
+	}
+	for _, part := range strings.Split(rest, "/") {
+		if part == "" {
+			return false
+		}
+	}
+	return true
+}
+
 // goVersion normalises a requested version into the form Go modules use.
 //
 // `go install` wants `path@v1.2.3`, but a user who wrote `gopls@v0.16.1` has

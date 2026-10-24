@@ -298,3 +298,26 @@ func TestExecutableDirWithoutGoFallsBackToTheEnvironment(t *testing.T) {
 		t.Errorf("GOBIN: got %q", got)
 	}
 }
+
+func TestLooksLikeModulePath(t *testing.T) {
+	cases := map[string]bool{
+		"golang.org/x/tools/gopls":             true,
+		"github.com/user/tool":                 true,
+		"github.com/user/tool/cmd/tool@v1.2.3": true,
+		"example.com/tool":                     true,
+		"neofetch":                             false,
+		"python3.12":                           false, // a dot is not a host
+		"user/tap/formula":                     false, // a brew tap, no host
+		"@scope/name":                          false, // an npm scope
+		"golang.org":                           false, // a host alone is not a module
+		"golang.org/":                          false,
+		"golang.org//x":                        false,
+		".hidden/x":                            false,
+		"":                                     false,
+	}
+	for name, want := range cases {
+		if got := LooksLikeModulePath(name); got != want {
+			t.Errorf("LooksLikeModulePath(%q) = %v, want %v", name, got, want)
+		}
+	}
+}

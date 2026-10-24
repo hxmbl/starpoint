@@ -12,8 +12,11 @@
 //  3. Otherwise, prefer the ecosystem-native provider over a general-purpose
 //     system package manager. `ruff` is a Python tool; brew has a copy of it,
 //     but uv is the right home. A name that identifies its own ecosystem by
-//     shape (a Flatpak reverse-DNS application ID) and the ecosystem of the
-//     project Starpoint runs in are the same kind of signal.
+//     shape (a Flatpak reverse-DNS application ID) is the same kind of signal.
+//     The ecosystem of the project Starpoint runs in is a weaker one: it only
+//     counts for a name that could belong to that ecosystem (a Go module path in
+//     a Go project), never for a bare name like neofetch, which says nothing
+//     about the project it was typed in.
 //
 // When those rules do not produce a clear winner the resolver reports ambiguity
 // rather than guessing, so the CLI can ask a useful question.
@@ -28,6 +31,7 @@ import (
 	"github.com/hxmbl/starpoint/internal/model"
 	"github.com/hxmbl/starpoint/internal/provider"
 	"github.com/hxmbl/starpoint/internal/providers/flatpak"
+	"github.com/hxmbl/starpoint/internal/providers/golang"
 	"github.com/hxmbl/starpoint/internal/providers/rustup"
 	"github.com/hxmbl/starpoint/internal/providers/system"
 )
@@ -368,10 +372,19 @@ func (r *Resolver) Explain(in Input) Explanation {
 		record("ecosystem hint", "skipped", "", "package name does not suggest a specific ecosystem", false)
 	}
 
-	// The project's ecosystem is the next signal. Running inside a Rust project
-	// is good evidence that a Rust binary is wanted, and it costs nothing to use
-	// it — but it stays below an explicit provider and an existing owner.
-	if in.Ecosystem != "" {
+	// The project's ecosystem is the next signal, and a weak one. Being inside a
+	// Go repository says what the repository is written in, not where the tools
+	// a person installs from it should come from: `starpoint install neofetch`
+	// typed in a Go project is a request for neofetch, and `go install neofetch`
+	// is not even a valid command. So the project only decides for a name that
+	// is plausible in its ecosystem — one that has the ecosystem's own shape.
+	// Every other name falls through to the system package manager below,
+	// exactly as it would outside the project. It stays below an explicit
+	// provider and an existing owner either way.
+	if in.Ecosystem != "" && !plausibleIn(in.Ecosystem, in.Package.Name) {
+		record("project ecosystem", "skipped", "", fmt.Sprintf("the current project is a %s project, but %s is not a %s",
+			kindName(in.Ecosystem), in.Package.Name, ecosystemShape(in.Ecosystem)), false)
+	} else if in.Ecosystem != "" {
 		if eco, ok := ecosystems[in.Ecosystem]; ok {
 			for _, name := range eco.preferred {
 				if !allowed(name) || !available(name, in.Available) {
@@ -406,7 +419,7 @@ func (r *Resolver) Explain(in Input) Explanation {
 		// choice between "the OS package" and "the PyPI/npm/crates package" is
 		// exactly the ambiguity the spec says to ask about, so it is reported
 		// as such with the system manager as the default answer.
-		languages := languageCandidates(candidates, systemCandidates)
+		languages := preferProject(languageCandidates(in.Package.Name, candidates, systemCandidates), in.Ecosystem)
 		if len(languages) > 0 {
 			final = model.Resolution{
 				Provider: systemCandidates[0],
@@ -496,9 +509,14 @@ func (r *Resolver) candidates(in Input) []string {
 
 // languageCandidates returns the candidates that are neither system package
 // managers nor a toolchain-only owner, sorted. rustup installs toolchains, not
-// arbitrary software, so it is never a plausible home for an unrecognised name.
-func languageCandidates(candidates, system []string) []string {
+// arbitrary software, so it is never a plausible home for an unrecognised name;
+// nor is go for anything but a module path, because `go install neofetch` is
+// not a command Go can carry out.
+func languageCandidates(name string, candidates, system []string) []string {
 	skip := map[string]bool{rustup.Name: true}
+	if !golang.LooksLikeModulePath(name) {
+		skip[golang.Name] = true
+	}
 	for _, s := range system {
 		skip[s] = true
 	}
@@ -510,6 +528,75 @@ func languageCandidates(candidates, system []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// preferProject moves the current project's own providers to the front of a
+// list of alternatives, best first, keeping the rest in order. The project's
+// ecosystem does not decide for a name it cannot vouch for, but when the user
+// is asked anyway, the providers of the project they are standing in are the
+// likeliest second choice and are offered first.
+func preferProject(alternatives []string, kind provider.Kind) []string {
+	eco, ok := ecosystems[kind]
+	if !ok || len(alternatives) < 2 {
+		return alternatives
+	}
+	out := make([]string, 0, len(alternatives))
+	taken := map[string]bool{}
+	for _, name := range eco.preferred {
+		for _, alt := range alternatives {
+			if alt == name && !taken[alt] {
+				out = append(out, alt)
+				taken[alt] = true
+			}
+		}
+	}
+	for _, alt := range alternatives {
+		if !taken[alt] {
+			out = append(out, alt)
+		}
+	}
+	return out
+}
+
+// plausibleIn reports whether a package name could belong to an ecosystem by
+// its shape alone, which is the only evidence the project's ecosystem can add
+// to a name nothing else recognises.
+//
+// Only Go and Node have a shape to check: a Go module path
+// (golang.org/x/tools/gopls) and an npm scoped package (@scope/name) cannot be
+// anything else. A bare name in a Rust, Python or Ruby project could just as
+// well be a system tool, and none of those providers can confirm a name exists
+// in its registry without a network round trip, so the project alone does not
+// settle it.
+func plausibleIn(kind provider.Kind, name string) bool {
+	switch kind {
+	case provider.KindGo:
+		return golang.LooksLikeModulePath(name)
+	case provider.KindNode:
+		return isScopedNPMName(name)
+	}
+	return false
+}
+
+// ecosystemShape names the shape plausibleIn looks for, for the explanation of
+// a skipped project rule.
+func ecosystemShape(kind provider.Kind) string {
+	switch kind {
+	case provider.KindGo:
+		return "Go module path (such as golang.org/x/tools/gopls)"
+	case provider.KindNode:
+		return "scoped npm package (such as @scope/name)"
+	}
+	return "name only " + kindName(kind) + " could provide"
+}
+
+// isScopedNPMName reports whether a name is an npm scoped package, @scope/name.
+func isScopedNPMName(name string) bool {
+	if !strings.HasPrefix(name, "@") {
+		return false
+	}
+	scope, pkg, ok := strings.Cut(name[1:], "/")
+	return ok && scope != "" && pkg != "" && !strings.ContainsAny(pkg, "/ ")
 }
 
 // existingReason explains who already has the software. Some providers report a
