@@ -48,7 +48,7 @@ var commandFlags = map[string][]string{
 	"init":       {"--force"},
 	"sync":       {"--dry-run", "--no-confirm"},
 	"list":       {"--managed", "--provider"},
-	"inventory":  {"--provider", "--format", "--pin-versions"},
+	"inventory":  {"--provider", "--format", "--pin-versions", "--portability"},
 	"adopt":      {"--all", "--provider", "--dry-run", "--no-confirm"},
 	"info":       {},
 	"explain":    {"--provider"},
@@ -135,6 +135,7 @@ Options:
 `,
 	"inventory": `Usage: starpoint inventory [--provider <name>]...
        starpoint inventory --format toml [package...] [--pin-versions] [--provider <name>]...
+       starpoint inventory --portability [--provider <name>]...
 
 List every package each available provider reports as installed: provider,
 the provider's own name for it, version, scope, path, and whether the
@@ -161,10 +162,21 @@ name the provider that reports them, carry scope only when it differs from
 where that provider installs, and are unpinned unless --pin-versions is given
 (and the provider can install a chosen version).
 
+--portability prints an estimate of how much of this machine's selected
+software Starpoint could reproduce on another machine: the configuration's
+entries, and what a provider says was installed on request, each marked
+reproducible, unknown (no provider, two providers, or a provider that cannot
+say it was asked for) or unsupported (the operating system's own, a provider
+that cannot install, a pin or channel the provider cannot honour), with the
+reason. Dependencies and system software are counted and left out. It is an
+estimate from what the providers here report, not a promise about another
+machine, and it changes nothing.
+
 Options:
   --provider <name>   Only this provider (repeatable)
   --format <format>   table (default) or toml
   --pin-versions      With --format toml, pin each observed version
+  --portability       Summarise how reproducible the selected software is
   --json              Machine-readable output
 `,
 	"adopt": `Usage: starpoint adopt <package>... [provider]

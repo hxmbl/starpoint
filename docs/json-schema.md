@@ -4,9 +4,11 @@ This document describes Starpoint's machine-readable output envelope and payload
 
 ## Schema Version
 
-Current schema version: `9`
+Current schema version: `10`
 
-All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 9, ...command fields }`; errors are `{ "schema_version": 9, "error": "..." }` on stderr, and a refusal adds `code`, `exit_code` and, when the command had a plan, `refused` (see "Errors and refusals").
+All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 10, ...command fields }`; errors are `{ "schema_version": 10, "error": "..." }` on stderr, and a refusal adds `code`, `exit_code` and, when the command had a plan, `refused` (see "Errors and refusals").
+
+Version 10 adds `inventory --portability`, a read-only estimate of how much of the selected software on this machine Starpoint could reproduce on another one, with the reason for each entry that it could not. Every field a version 9 consumer read keeps its meaning. See "Migrating from schema 9 to 10".
 
 Version 9 is the onboarding pass: Starpoint as an ownership ledger over the package managers already on the machine. It adds the read-only `inventory` command (every package each provider reports, managed or not). Every field a version 8 consumer read keeps its meaning. See "Migrating from schema 8 to 9".
 
@@ -384,7 +386,7 @@ nothing, writes no configuration and leaves no audit entry. It reports:
 
 ```json
 {
-  "schema_version": 9,
+  "schema_version": 10,
   "providers": [
     {
       "name": "string",
@@ -443,6 +445,64 @@ was listed):
 
 When a `reported` provider's question fails, its packages are all `unknown`
 and the warning `requested-unknown` names the provider.
+
+### Inventory: portability
+
+`starpoint inventory --portability [--provider <name>]...` (schema 10) reads
+the same observation and the configuration, and estimates how much of the
+selected software Starpoint could reproduce on another machine. It is just as
+read-only as `inventory`: no provider is asked anything more, nothing is
+resolved, nothing is written. It cannot be combined with `--format toml`.
+
+```json
+{
+  "schema_version": 10,
+  "portability": {
+    "note": "string",
+    "declared":   { "total": "integer", "reproducible": "integer", "unknown": "integer", "unsupported": "integer" },
+    "discovered": { "total": "integer", "reproducible": "integer", "unknown": "integer", "unsupported": "integer" },
+    "overall":    { "total": "integer", "reproducible": "integer", "unknown": "integer", "unsupported": "integer" },
+    "dependencies": "integer",
+    "system": "integer",
+    "entries": [
+      {
+        "name": "string",
+        "provider": "string | null",
+        "source": "declared | discovered",
+        "status": "reproducible | unknown | unsupported",
+        "code": "unknown-provider | ambiguous-identity | missing-metadata | unsupported-provider | pin-unavailable | channel-unsupported | null",
+        "reason": "string | null",
+        "candidates": ["string"]
+      }
+    ],
+    "warnings": ["Warning"]
+  },
+  "warnings": ["Warning"]
+}
+```
+
+The selection is every configuration entry (`declared`) plus undeclared
+software a provider reports that is not a dependency and not the operating
+system's own (`discovered`): what it says was installed on request, and what
+it cannot classify. Dependencies and system packages are only counted.
+`entries` lists declared entries first, then discovered ones, each by name.
+
+| `code` | `status` | Meaning |
+| --- | --- | --- |
+| `unknown-provider` | `unknown` | A declared entry with no `provider` that no provider here reports. |
+| `ambiguous-identity` | `unknown` | Several providers report the name and nothing records which copy is wanted (`candidates` names them). |
+| `missing-metadata` | `unknown` | Undeclared software whose provider cannot say it was installed on purpose (`requested: "unknown"`). |
+| `unsupported-provider` | `unsupported` | `system`, a provider Starpoint does not have, or one that cannot install. |
+| `pin-unavailable` | `unsupported` | A declared `version` its provider cannot install on request. |
+| `channel-unsupported` | `unsupported` | A declared `channel` its provider has no notion of. |
+
+A declared entry without a `provider` is judged with the one non-system
+provider that reports it here (shown as `provider`). `note` always says this
+is an estimate from what the providers on this machine report, not a
+guarantee: the other machine's operating system, architecture, package
+sources and available versions decide what can actually be installed. A
+provider that could not list leaves a `discover-failed` warning, in both
+`warnings`, and the summary is incomplete.
 
 ### Doctor: unmanaged software
 
@@ -522,7 +582,7 @@ not observed; inside a virtualenv the planned effect is a non-destructive
 
 ```json
 {
-  "schema_version": 9,
+  "schema_version": 10,
   "operation": "remove",
   "dry_run": false,
   "config_changed": true,
@@ -584,7 +644,7 @@ not observed; inside a virtualenv the planned effect is a non-destructive
 Every error is one JSON document on stderr:
 
 ```json
-{ "schema_version": 9, "error": "string" }
+{ "schema_version": 10, "error": "string" }
 ```
 
 A refusal is an error that a flag would have allowed. Nothing was changed. It
@@ -593,7 +653,7 @@ planned its work, `refused`:
 
 ```json
 {
-  "schema_version": 9,
+  "schema_version": 10,
   "error": "string",
   "code": "destructive-unattended | elevated-refused | invoking-user-unresolved | privilege-drop-failed | owner-ambiguous | duplicate-install | provider-ambiguous",
   "exit_code": 3,
@@ -633,7 +693,7 @@ Exit status for every command: `0` success, `1` failure, `2` usage error, `3`,
 
 ```json
 {
-  "schema_version": 9,
+  "schema_version": 10,
   "error": "refusing to remove unattended: it would delete or replace something (ruff) and --yes (or --no-confirm) was given. Nothing was changed. Review the planned changes, then rerun with --allow-destructive to allow it",
   "code": "destructive-unattended",
   "exit_code": 3,
@@ -948,6 +1008,15 @@ Version 9 adds; nothing a version 8 consumer read is removed or renamed.
     refused with `duplicate-install` (exit 5, `candidates: ["system"]`).
     The system's copy is never removed or moved. An entry that names a
     provider behaves as before.
+
+## Migrating from schema 9 to 10
+
+Version 10 adds; nothing a version 9 consumer read is removed or renamed.
+
+1. The version number moved from 9 to 10.
+2. `inventory --portability` is new, with its own payload: `portability`
+   and `warnings` (see "Inventory: portability"). Plain `inventory` returns
+   the same payload as in version 9.
 
 ## Versioning Policy
 

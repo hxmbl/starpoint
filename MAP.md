@@ -263,6 +263,14 @@ user, an unknown directory is root, as it always was
 - `report.CaptureTOML` puts that account in a comment header and
   `config.EncodeManifest` writes schema and packages only, never [settings]
 
+**`internal/engine/portability.go`** - `starpoint inventory --portability`
+- Another reading of the inventory plus the configuration: declared entries
+  and undeclared non-dependency software, each `reproducible`, `unknown`
+  (`unknown-provider`, `ambiguous-identity`, `missing-metadata`) or
+  `unsupported` (`unsupported-provider`, `pin-unavailable`,
+  `channel-unsupported`) from provider capabilities alone. Always labelled
+  an estimate; writes nothing
+
 **`internal/engine/survey.go`** - One round of concurrent "do you have this?"
 - `SurveyTimeout` is 20 seconds; a hung package manager costs the timeout, not
   the run — and providers that cannot enumerate are skipped rather than asked
