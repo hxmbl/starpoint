@@ -6,7 +6,7 @@ This document describes Starpoint's machine-readable output envelope and payload
 
 Current schema version: `10`
 
-All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Every response is `{ "schema_version": 10, ...command fields }`; errors are `{ "schema_version": 10, "error": "..." }` on stderr, and a refusal adds `code`, `exit_code` and, when the command had a plan, `refused` (see "Errors and refusals").
+All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Renaming the executable from `starpoint` to `str` changed nothing here: the envelope, every code and the `doctor` payload's `starpoint` object (which describes Starpoint itself) are the same under either name, and so is the version. Every response is `{ "schema_version": 10, ...command fields }`; errors are `{ "schema_version": 10, "error": "..." }` on stderr, and a refusal adds `code`, `exit_code` and, when the command had a plan, `refused` (see "Errors and refusals").
 
 Version 10 adds `inventory --portability`, a read-only estimate of how much of the selected software on this machine Starpoint could reproduce on another one, with the reason for each entry that it could not. Every field a version 9 consumer read keeps its meaning. See "Migrating from schema 9 to 10".
 
@@ -112,8 +112,8 @@ consumer should act on the code and show the message. Codes in use:
 | `pin-conflict` | A newer version exists than the pin; the pin was kept. |
 | `pin-kept`, `already-current`, `update-unsupported`, `not-installed` | Why `update` left a package alone (severity `info`). |
 | `discover-failed` | A provider could not list its packages, so `prune` considered none of them, or `inventory` shows none of them (including a provider whose health check or listing did not answer within the 20-second bound). |
-| `duplicate-install` | `install` would add a second copy beside another provider's (or the operating system's); shown on the action before the confirmation. `sync` raises it for an entry with no `provider` whose only copy is the operating system's: on the planned `install` of a managed copy (a dry run, or after a yes at the terminal), or on the run when the person said no (nothing installed; the message names `starpoint install <package> <provider>` and `provider = "system"`). Unattended, the same condition is the `duplicate-install` refusal. |
-| `provider-drift` | `sync` found a package installed through another provider than the configuration gives it. Nothing was moved or removed; the message names `starpoint transition <package>` and `starpoint adopt <package> <owner>`. |
+| `duplicate-install` | `install` would add a second copy beside another provider's (or the operating system's); shown on the action before the confirmation. `sync` raises it for an entry with no `provider` whose only copy is the operating system's: on the planned `install` of a managed copy (a dry run, or after a yes at the terminal), or on the run when the person said no (nothing installed; the message names `str install <package> <provider>` and `provider = "system"`). Unattended, the same condition is the `duplicate-install` refusal. |
+| `provider-drift` | `sync` found a package installed through another provider than the configuration gives it. Nothing was moved or removed; the message names `str transition <package>` and `str adopt <package> <owner>`. |
 | `owner-ambiguous` | `adopt --all` found a name installed on request through more than one provider and nobody to ask; it was left out. |
 | `requested-unknown` | `inventory` could not ask a provider which of its packages were installed on purpose; they are all shown as `requested: unknown`. |
 | `prune-skipped` | An orphan (installed, declared nowhere) that `prune` left alone, with its `package` and `provider`; the message gives the reason: it lives outside the invoking user's home directory (a system npm prefix, the interpreter's own site-packages), or it is a package manager (any registered provider, `corepack`, `str` or `starpoint`). Severity `info`; reported by dry runs and real runs alike. |
@@ -368,7 +368,7 @@ is not the one that has it produces no action and no `transitions` entry: it
 keeps the status `provider-differs`, so `converged` is false, and the warning
 `provider-drift` names the package, the configured `provider`, and in its
 message the provider that has it and the commands that settle it
-(`starpoint transition <package>`, `starpoint adopt <package> <owner>`).
+(`str transition <package>`, `str adopt <package> <owner>`).
 `transitions` is therefore always empty for `sync`; `transition` reports
 moves.
 
@@ -379,7 +379,7 @@ now satisfied.
 
 ### Inventory
 
-`starpoint inventory [--provider <name>]...` only observes: providers are
+`str inventory [--provider <name>]...` only observes: providers are
 probed for health and asked to list what they have installed (Discover),
 nothing else. It works with no configuration, resolves nothing, installs
 nothing, writes no configuration and leaves no audit entry. It reports:
@@ -448,7 +448,7 @@ and the warning `requested-unknown` names the provider.
 
 ### Inventory: portability
 
-`starpoint inventory --portability [--provider <name>]...` (schema 10) reads
+`str inventory --portability [--provider <name>]...` (schema 10) reads
 the same observation and the configuration, and estimates how much of the
 selected software Starpoint could reproduce on another machine. It is just as
 read-only as `inventory`: no provider is asked anything more, nothing is
@@ -578,7 +578,7 @@ not observed; inside a virtualenv the planned effect is a non-destructive
 
 ### Example: a destructive removal
 
-`starpoint remove ruff --yes --allow-destructive --json`, where uv had linked ruff into `~/.local/bin`:
+`str remove ruff --yes --allow-destructive --json`, where uv had linked ruff into `~/.local/bin`:
 
 ```json
 {
@@ -674,9 +674,9 @@ planned its work, `refused`:
 | `elevated-refused` | 4 | A command that changes anything ran as root or elevated, without `--allow-root` and without an interactive confirmation (only possible under sudo or doas at a terminal). `refused` is absent: the refusal happens before any planning. |
 | `invoking-user-unresolved` | 4 | Under sudo or doas from an ordinary user, that user's uid, gid or home could not be resolved (or HOME could not be pointed at it). Starpoint will not run their providers as root instead, and `--allow-root` does not change that. `refused` is absent. |
 | `privilege-drop-failed` | 4 | Under sudo or doas from an ordinary user, a process could not actually be started as that user (Starpoint runs `id -u` as them before changing anything and checks they can write their home): no right to switch users, a uid the system rejects, an unwritable home. `--allow-root` does not change it. `refused` is absent. |
-| `duplicate-install` | 5 | An unattended `install` would add a second copy: another provider already has the software (`candidates` names it, whoever chose the target provider), or only the operating system has it and Starpoint picked the provider (`candidates` is `["system"]`). Rerun with `--allow-duplicate`, name the provider for a managed copy beside the system's, or use `adopt`/`transition`. `refused` holds the planned install. An unattended `sync` is refused with the same code when an entry with no `provider` is installed only by the operating system, so converging it would add a managed copy nobody asked for: `package` is the first such entry (the message names all), `candidates` is `["system"]`, and `refused` holds the planned installs (`refused.operation` is `sync`). Run `starpoint install <package> <provider>` for the managed copy, or set `provider = "system"` on the entry to keep the system's. An entry that names its provider is never refused for this. |
+| `duplicate-install` | 5 | An unattended `install` would add a second copy: another provider already has the software (`candidates` names it, whoever chose the target provider), or only the operating system has it and Starpoint picked the provider (`candidates` is `["system"]`). Rerun with `--allow-duplicate`, name the provider for a managed copy beside the system's, or use `adopt`/`transition`. `refused` holds the planned install. An unattended `sync` is refused with the same code when an entry with no `provider` is installed only by the operating system, so converging it would add a managed copy nobody asked for: `package` is the first such entry (the message names all), `candidates` is `["system"]`, and `refused` holds the planned installs (`refused.operation` is `sync`). Run `str install <package> <provider>` for the managed copy, or set `provider = "system"` on the entry to keep the system's. An entry that names its provider is never refused for this. |
 | `provider-ambiguous` | 5 | An unattended `sync` would install a package with no recorded provider whose provider is ambiguous. `package` is the first such package (the message names all), `candidates` the providers that could own it. Record a `provider` or install it with the provider named. `refused` holds the planned actions. `install` raises the same refusal when the provider is ambiguous, none was named, and there is no terminal to ask on (stdin is not a terminal); `package` is the package and `candidates` the providers that could own it, and there is no `refused` plan, because the install was never planned for a provider. Name the provider. A dry run is never refused. (Before, `install` exited 1 with a plain error here.) |
-| `owner-ambiguous` | 5 | `adopt <package>` without a provider found the software installed through more than one provider and had no terminal to ask on. `package` names it and `candidates` the providers that have it; name the owner (`starpoint adopt <package> <provider>`). `refused` is absent. |
+| `owner-ambiguous` | 5 | `adopt <package>` without a provider found the software installed through more than one provider and had no terminal to ask on. `package` names it and `candidates` the providers that have it; name the owner (`str adopt <package> <provider>`). `refused` is absent. |
 
 Exit 5 is the decision refusal: a choice only the user can make was needed
 and nobody could be asked. Such a refusal carries `package` and `candidates`.
@@ -689,7 +689,7 @@ Exit status for every command: `0` success, `1` failure, `2` usage error, `3`,
 
 ### Example: an unattended removal refused
 
-`starpoint remove ruff --yes --json`:
+`str remove ruff --yes --json`:
 
 ```json
 {
@@ -735,7 +735,7 @@ Exit status for every command: `0` success, `1` failure, `2` usage error, `3`,
 
 ### Example: a user-level provider run as the invoking user
 
-`sudo starpoint install ruff --provider uv --allow-root --yes --json`, run by
+`sudo str install ruff --provider uv --allow-root --yes --json`, run by
 alice (uid 1000). uv runs as alice, so what it writes is hers from the start
 and there is nothing to fix:
 
@@ -755,7 +755,7 @@ and there is nothing to fix:
 ### Example: ownership and permission fixes
 
 A system provider still runs as root, and what it creates in shared locations
-is widened. `sudo starpoint install prettier --provider npm --allow-root --yes
+is widened. `sudo str install prettier --provider npm --allow-root --yes
 --json` with npm's prefix at `/usr/local` (root's) reports:
 
 ```json
