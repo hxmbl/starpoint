@@ -72,7 +72,7 @@ func isHelpFlag(a string) bool { return a == "--help" || a == "-h" }
 
 // wantsHelp reports whether a subcommand's arguments ask for its help.
 //
-// Help is honoured anywhere after the subcommand. `starpoint add --help` used to
+// Help is honoured anywhere after the subcommand. `str add --help` used to
 // plan an install of a package called "--help"; with --no-confirm it would have
 // run one. A help flag is never a package name.
 func wantsHelp(args []string) bool {
@@ -86,7 +86,7 @@ func wantsHelp(args []string) bool {
 
 // commandHelp is the help text for each canonical command.
 var commandHelp = map[string]string{
-	"init": `Usage: starpoint init [--force]
+	"init": `Usage: str init [--force]
 
 Create the global configuration at ~/.starpoint.toml.
 
@@ -98,7 +98,7 @@ Options:
   --allow-root   Let it run as root or elevated
   --json         Machine-readable output
 `,
-	"sync": `Usage: starpoint sync [--dry-run] [--no-confirm]
+	"sync": `Usage: str sync [--dry-run] [--no-confirm]
 
 Make the installed state match the configuration: install what is missing,
 reconcile pinned versions, and record the owner of an entry that is already
@@ -113,14 +113,14 @@ When an entry names no provider and the only copy on the machine is the
 operating system's, converging it would add a managed copy beside the
 system's. sync asks about each one first (default no); a no installs
 nothing. Unattended, the run is refused with duplicate-install (exit 5),
-as install is: run 'starpoint install <package> <provider>' for the managed
+as install is: run 'str install <package> <provider>' for the managed
 copy, or set provider = "system" on the entry to keep the system's. An entry
 that names its provider is not asked about.
 
 sync never removes or moves software. When the configuration gives a package
 to one provider and another provider has it, that is reported as drift
-(provider-drift) with the two commands that settle it: 'starpoint transition
-<package>' moves it, 'starpoint adopt <package> <owner>' records the owner
+(provider-drift) with the two commands that settle it: 'str transition
+<package>' moves it, 'str adopt <package> <owner>' records the owner
 that really has it.
 
 Options:
@@ -133,9 +133,9 @@ Options:
   --json              Machine-readable output
   --verbose, -v       List every effect, not only what is removed or overwritten
 `,
-	"inventory": `Usage: starpoint inventory [--provider <name>]...
-       starpoint inventory --format toml [package...] [--pin-versions] [--provider <name>]...
-       starpoint inventory --portability [--provider <name>]...
+	"inventory": `Usage: str inventory [--provider <name>]...
+       str inventory --format toml [package...] [--pin-versions] [--provider <name>]...
+       str inventory --portability [--provider <name>]...
 
 List every package each available provider reports as installed: provider,
 the provider's own name for it, version, scope, path, and whether the
@@ -179,8 +179,8 @@ Options:
   --portability       Summarise how reproducible the selected software is
   --json              Machine-readable output
 `,
-	"adopt": `Usage: starpoint adopt <package>... [provider]
-       starpoint adopt --all [--provider <name>]
+	"adopt": `Usage: str adopt <package>... [provider]
+       str adopt --all [--provider <name>]
 
 Record who owns software that is already installed. Adopting never
 installs, uninstalls or moves anything: the provider keeps managing the
@@ -212,7 +212,7 @@ Options:
   --allow-root        Let it run as root or elevated
   --json              Machine-readable output
 `,
-	"list": `Usage: starpoint list [--managed] [--provider <name>]
+	"list": `Usage: str list [--managed] [--provider <name>]
 
 Show the software in the configuration, where it is installed and who owns it,
 plus PATH executables whose owner is unknown.
@@ -224,7 +224,7 @@ Options:
   --provider <name>   Only entries owned by this provider
   --json              Machine-readable output
 `,
-	"info": `Usage: starpoint info <package>
+	"info": `Usage: str info <package>
 
 Show one package in detail: where it is installed, which provider has it, which
 provider the configuration wants, and its status.
@@ -234,7 +234,7 @@ Aliases: show
 Options:
   --json    Machine-readable output
 `,
-	"explain": `Usage: starpoint explain <package>
+	"explain": `Usage: str explain <package>
 
 Show every rule the provider resolver evaluated for a package and which one
 decided the outcome.
@@ -243,7 +243,7 @@ Options:
   --provider <name>   Restrict the candidates, as install would
   --json              Machine-readable output
 `,
-	"doctor": `Usage: starpoint doctor [--all]
+	"doctor": `Usage: str doctor [--all]
 
 Check Starpoint, its configuration, providers, ownership, transitions and PATH.
 
@@ -255,8 +255,8 @@ Options:
   --all, -a    List the whole PATH inventory
   --json       Machine-readable output
 `,
-	"install": `Usage: starpoint install <package>[@version] [provider] [options]
-       starpoint install .
+	"install": `Usage: str install <package>[@version] [provider] [options]
+       str install .
 
 Install software and record it, with the provider that owns it, in the
 configuration. Starpoint picks the provider and asks when the choice is
@@ -264,7 +264,7 @@ ambiguous. With no terminal to ask on, an ambiguous choice is refused with
 provider-ambiguous (exit 5), naming the candidates; nothing is installed.
 A provider may be named before or after the package.
 
-'starpoint install .' installs what the project in the current directory
+'str install .' installs what the project in the current directory
 needs: the packages declared in its .starpoint.toml, its toolchain (recorded in
 the project's .starpoint.toml), and its dependencies through the ecosystem's
 own tool (npm ci / pnpm install / yarn install, uv sync / pip install -r,
@@ -279,7 +279,7 @@ has the software (or, when Starpoint picks the provider, only the operating
 system has it), the confirmation says so first; an unattended run is refused
 with duplicate-install (exit 5) unless --allow-duplicate is given. Naming the
 provider is enough to ask for a managed copy beside the system's. To record
-the copy that is already there instead, use 'starpoint adopt'.
+the copy that is already there instead, use 'str adopt'.
 
 Aliases: add, i
 
@@ -297,12 +297,12 @@ Options:
   --verbose, -v        List every effect, not only what is removed or overwritten
 
 Examples:
-  starpoint install ruff
-  starpoint install ripgrep brew
-  starpoint install ripgrep@14.1.0 --provider brew
-  starpoint install .
+  str install ruff
+  str install ripgrep brew
+  str install ripgrep@14.1.0 --provider brew
+  str install .
 `,
-	"remove": `Usage: starpoint remove <package> [provider] [options]
+	"remove": `Usage: str remove <package> [provider] [options]
 
 Uninstall software and delete it from the configuration.
 
@@ -321,7 +321,7 @@ Options:
   --json               Machine-readable output
   --verbose, -v        List every effect, not only what is removed or overwritten
 `,
-	"transition": `Usage: starpoint transition [package...] [options]
+	"transition": `Usage: str transition [package...] [options]
 
 With no packages, show pending moves of ownership between providers and how
 far each has got. With packages, perform those moves: install the new copy,
@@ -339,7 +339,7 @@ Options:
   --json               Machine-readable output
   --verbose, -v        List every effect, not only what is removed or overwritten
 `,
-	"update": `Usage: starpoint update [--self] [--dry-run] [--no-confirm]
+	"update": `Usage: str update [--self] [--dry-run] [--no-confirm]
 
 Update managed software. A version pinned in the configuration is respected:
 when a newer version exists, Starpoint explains the conflict and asks whether
@@ -357,7 +357,7 @@ Options:
   --json               Machine-readable output
   --verbose, -v        List every effect, not only what is removed or overwritten
 `,
-	"runs": `Usage: starpoint runs [--package <name>] [--directory <dir>]
+	"runs": `Usage: str runs [--package <name>] [--directory <dir>]
 
 Show the history of package operations Starpoint performed.
 
@@ -368,7 +368,7 @@ Options:
   --directory <dir>    Only operations run in this directory
   --json               Machine-readable output
 `,
-	"prune": `Usage: starpoint prune [--dry-run] [--no-confirm]
+	"prune": `Usage: str prune [--dry-run] [--no-confirm]
 
 Remove orphaned user-scoped software that Starpoint-managed providers can
 enumerate and remove. Configured packages and system/global software are never
@@ -387,7 +387,7 @@ Options:
   --json               Machine-readable output
   --verbose, -v        List every effect, not only what is removed or overwritten
 `,
-	"recover": `Usage: starpoint recover [--discard] [--no-confirm]
+	"recover": `Usage: str recover [--discard] [--no-confirm]
 
 Inspect files left behind by an interrupted run. Read-only unless --discard is
 given; a file that is the only copy of a configuration is never discarded.
@@ -398,7 +398,7 @@ Options:
   --allow-root         Let --discard run as root or elevated
   --json               Machine-readable output
 `,
-	"logging": `Usage: starpoint logging [prune | config]
+	"logging": `Usage: str logging [prune | config]
 
 Show what Starpoint logs, how long it keeps it, and whether the system's own log
 rotation has been pointed at it. Every command records what it did, and records
@@ -417,7 +417,7 @@ Options:
 Retention is set with retention_days in ~/.starpoint.toml and defaults to 30.
 It applies to the audit log, the transition history and the run history.
 `,
-	"help": `Usage: starpoint help [command]
+	"help": `Usage: str help [command]
 
 Show general help, or help for one command.
 `,

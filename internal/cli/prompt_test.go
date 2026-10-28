@@ -88,7 +88,7 @@ func TestConfirmWithNoAnswerNamesTheFlagToUse(t *testing.T) {
 }
 
 func TestConfirmReadsAScriptedAnswer(t *testing.T) {
-	// `yes | starpoint sync` is a legitimate way to script this.
+	// `yes | str sync` is a legitimate way to script this.
 	var out bytes.Buffer
 	got, err := PromptConfirm(bytes.NewReader([]byte("yes\n")), &out)("Proceed?")
 	if err != nil || !got {

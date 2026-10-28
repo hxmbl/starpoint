@@ -385,7 +385,7 @@ func (r *Resolver) Explain(in Input) Explanation {
 
 	// The project's ecosystem is the next signal, and a weak one. Being inside a
 	// Go repository says what the repository is written in, not where the tools
-	// a person installs from it should come from: `starpoint install neofetch`
+	// a person installs from it should come from: `str install neofetch`
 	// typed in a Go project is a request for neofetch, and `go install neofetch`
 	// is not even a valid command. So the project only decides for a name that
 	// is plausible in its ecosystem — one that has the ecosystem's own shape.

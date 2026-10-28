@@ -237,7 +237,7 @@ func surveyDuplicates(s engine.Survey, chosen string) (string, bool) {
 // lookup asks every provider at once and reports what it found.
 //
 // This runs for an install because a package's real owner is usually something
-// nobody asked about: `starpoint install ripgrep` on a machine where Homebrew owns
+// nobody asked about: `str install ripgrep` on a machine where Homebrew owns
 // it should say so, and asking all the providers at once is the only way to know
 // that without waiting for each in turn.
 func (e *Env) lookup(ctx context.Context, eng *engine.Engine, pkg model.Package, opts engine.Options, jsonMode bool) engine.Survey {

@@ -222,7 +222,7 @@ func classify(op string, res exec.Result) error {
 		strings.Contains(text, "no such package"):
 		return shell.NotFound(Name, op, "npm could not find this package in the registry")
 	case strings.Contains(text, "eexist"), strings.Contains(text, "already exists"):
-		return shell.Err(Name, op, provider.ErrConflict, "the package is already installed; use starpoint update", nil)
+		return shell.Err(Name, op, provider.ErrConflict, "the package is already installed; use str update", nil)
 	case strings.Contains(text, "eacces"), strings.Contains(text, "permission denied"):
 		return shell.Err(Name, op, provider.ErrPermission, "npm needs write access to its global prefix", nil)
 	case strings.Contains(text, "enetunreach"), strings.Contains(text, "eai_again"),

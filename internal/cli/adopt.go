@@ -230,7 +230,7 @@ func (e *Env) chooseOwner(name string, owners []string, opts engine.Options) (st
 		Code: CodeOwnerAmbiguous,
 		Exit: ExitRefusedDecision,
 		Message: fmt.Sprintf("%s is installed through %s and nothing says which one owns it; "+
-			"name the owner: 'starpoint adopt %s <provider>'. Nothing was changed", name, strings.Join(owners, " and "), name),
+			"name the owner: 'str adopt %s <provider>'. Nothing was changed", name, strings.Join(owners, " and "), name),
 		Command:    "adopt",
 		Package:    name,
 		Candidates: owners,
@@ -284,8 +284,8 @@ func (e *Env) adoptAll(ctx context.Context, eng *engine.Engine, doc *config.Docu
 		items := byName[name]
 		if entry, ok := doc.Package(name); ok && entry.Provider != "" {
 			skipped = append(skipped, adoptSkip{Package: name, Provider: items[0].Provider,
-				Reason: "the configuration records it with " + entry.Provider + "; run 'starpoint transition " + name +
-					"' to move it there, or 'starpoint adopt " + name + " " + items[0].Provider + "' to record this copy"})
+				Reason: "the configuration records it with " + entry.Provider + "; run 'str transition " + name +
+					"' to move it there, or 'str adopt " + name + " " + items[0].Provider + "' to record this copy"})
 			continue
 		}
 		owner := items[0].Provider
@@ -299,7 +299,7 @@ func (e *Env) adoptAll(ctx context.Context, eng *engine.Engine, doc *config.Docu
 				if r, ok := asRefusal(err); ok {
 					warnings = append(warnings, model.Warning{Severity: model.SeverityWarn, Code: CodeOwnerAmbiguous,
 						Package: name, Message: r.Message})
-					skipped = append(skipped, adoptSkip{Package: name, Reason: "installed through " + strings.Join(owners, " and ") + "; name the owner with 'starpoint adopt " + name + " <provider>'"})
+					skipped = append(skipped, adoptSkip{Package: name, Reason: "installed through " + strings.Join(owners, " and ") + "; name the owner with 'str adopt " + name + " <provider>'"})
 					continue
 				}
 				return nil, nil, nil, nil, err

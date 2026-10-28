@@ -411,7 +411,7 @@ func Run(ctx context.Context, env *Env, args []string) int {
 	}
 
 	// Global flags are accepted anywhere on the line, because users write
-	// `starpoint sync --json` and `starpoint --json sync` interchangeably and
+	// `str sync --json` and `str --json sync` interchangeably and
 	// neither should be a syntax error.
 	var (
 		asJSON     bool
@@ -471,7 +471,7 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		w.SetContextWarnings(*warn)
 	}
 
-	// `starpoint <command> --help` is help for that command, wherever the flag
+	// `str <command> --help` is help for that command, wherever the flag
 	// sits. It must be decided before dispatch: a command that took it as an
 	// argument would treat it as a package name.
 	if canonicalCommand(cmd) != "" && wantsHelp(cmdArgs) {
@@ -711,7 +711,7 @@ func leadingArgs(args []string) []string {
 }
 
 // extractVerbose removes --verbose and -v wherever they appear. They are
-// global like --json: `starpoint remove ruff -v` and `starpoint -v remove ruff`
+// global like --json: `str remove ruff -v` and `str -v remove ruff`
 // mean the same thing.
 func extractVerbose(args []string, verbose *bool) []string {
 	out := args[:0:0]
@@ -797,11 +797,11 @@ func parseColorMode(value string) (color.Mode, error) {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprint(w, `starpoint — declarative orchestration for the software on your machine
+	fmt.Fprint(w, `str — Starpoint, declarative orchestration for the software on your machine
 
 Usage:
-  starpoint <command> [options]
-  starpoint <command> --help      Help for one command
+  str <command> [options]
+  str <command> --help      Help for one command
 
 Commands:
   init [--force]                 Create the global configuration (~/.starpoint.toml)
@@ -834,13 +834,13 @@ Commands:
   help [command]                 Show this help, or help for one command
 
 A provider may be named after the package names, or with --provider:
-  starpoint install ripgrep brew
-  starpoint install brew ripgrep
-  starpoint install ripgrep --provider brew
+  str install ripgrep brew
+  str install brew ripgrep
+  str install ripgrep --provider brew
 
 A version may be written inline, the way package managers write it:
-  starpoint install ripgrep@14.1.0 brew
-  starpoint install @types/node@5.0.0 npm
+  str install ripgrep@14.1.0 brew
+  str install @types/node@5.0.0 npm
 
 Global options:
   --json               Machine-readable output
@@ -883,17 +883,17 @@ because a decision only you can make was needed and there was no terminal to
 ask on (the refusal names the candidates). Nothing is changed by a refusal.
 
 Examples:
-  starpoint init
-  starpoint install ruff
-  starpoint install ripgrep@14.1.0 brew
-  starpoint install .
-  starpoint sync --dry-run
-  starpoint update --dry-run
-  starpoint transition
-  starpoint list --json
-  starpoint explain ruff
-  starpoint doctor --all
-  starpoint runs --package ruff
+  str init
+  str install ruff
+  str install ripgrep@14.1.0 brew
+  str install .
+  str sync --dry-run
+  str update --dry-run
+  str transition
+  str list --json
+  str explain ruff
+  str doctor --all
+  str runs --package ruff
 `)
 }
 
@@ -920,9 +920,9 @@ func cmdInit(ctx context.Context, env *Env, w *report.Writer, args []string, for
 	}
 	if existing.Exists && !force {
 		// Declining is a failure from the caller's point of view: a script that
-		// runs `starpoint init` expecting a fresh configuration must be able to
+		// runs `str init` expecting a fresh configuration must be able to
 		// tell that it did not get one.
-		return fmt.Errorf("%s already exists; use 'starpoint init --force' to replace it", path)
+		return fmt.Errorf("%s already exists; use 'str init --force' to replace it", path)
 	}
 
 	raw := existing.Raw
@@ -980,7 +980,7 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 		defer unlock()
 	}
 	if !doc.Global.Exists && len(doc.Global.Raw.Packages) == 0 {
-		w.Warn("no configuration found; run 'starpoint init' first")
+		w.Warn("no configuration found; run 'str init' first")
 	}
 
 	plan, _, err := eng.Plan(ctx, doc, opts)
@@ -1065,7 +1065,7 @@ func withoutMoves(plan model.Plan) model.Plan {
 			Package:  st.Package.Name,
 			Provider: st.Res.Provider,
 			Message: fmt.Sprintf("the configuration gives %s to %s, but %s has it%s; sync does not move or remove software. "+
-				"Run 'starpoint transition %s' to move it to %s, or 'starpoint adopt %s %s' to record %s as its owner",
+				"Run 'str transition %s' to move it to %s, or 'str adopt %s %s' to record %s as its owner",
 				st.Package.Name, st.Res.Provider, current, where, st.Package.Name, st.Res.Provider, st.Package.Name, current, current),
 		})
 	}
@@ -1292,11 +1292,11 @@ func cmdInfo(ctx context.Context, env *Env, w *report.Writer, args []string) err
 	// is exactly what a user asking "where did this come from?" needs to avoid.
 	survey := eng.Survey(ctx, model.Package{Name: name}, opts)
 	owners := survey.Owners()
-	// The desired provider is what `starpoint add` would record, which is the
+	// The desired provider is what `str add` would record, which is the
 	// same decision explain shows. Reporting the current owner here instead
 	// made info and explain contradict each other.
 	desired := eng.Decide(ctx, doc, model.Package{Name: name}, opts)
-	adopt := "run 'starpoint add " + name + "' to record it"
+	adopt := "run 'str add " + name + "' to record it"
 	if desired.Provider != "" {
 		adopt += " (it would be recorded with " + desired.Provider + ")"
 	}
@@ -1328,7 +1328,7 @@ func cmdInfo(ctx context.Context, env *Env, w *report.Writer, args []string) err
 			Status:  model.StatusUnmanaged,
 			Notes: []string{
 				"present at " + found.Path + " but Starpoint cannot tell which provider installed it",
-				"run 'starpoint add " + name + " --provider <name>' to record ownership",
+				"run 'str add " + name + " --provider <name>' to record ownership",
 			},
 		}, map[string]any{"lookup": survey})
 	}
@@ -1400,7 +1400,7 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 	if exe, err := os.Executable(); err == nil {
 		rep.Starpoint.Path = exe
 		// Report who installed Starpoint, so `doctor` can point at the right
-		// provider for `starpoint update --self`.
+		// provider for `str update --self`.
 		if found := env.loc().Locate(filepath.Base(exe)); found.Installation != nil {
 			rep.Starpoint.Provider = found.Installation.Provider
 		}
@@ -1430,7 +1430,7 @@ func cmdDoctor(ctx context.Context, env *Env, w *report.Writer, args []string) e
 	if !doc.Global.Exists {
 		rep.Problems = append(rep.Problems, model.Warning{
 			Severity: model.SeverityWarn,
-			Message:  "no global configuration found at " + globalPath + "; run 'starpoint init'",
+			Message:  "no global configuration found at " + globalPath + "; run 'str init'",
 		})
 	}
 	if !writable {
@@ -1699,7 +1699,7 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 		opts.Allowed = append(opts.Allowed, named)
 	}
 
-	// `starpoint install .` is "install what this project needs", and it has no
+	// `str install .` is "install what this project needs", and it has no
 	// package name to look up or ask about.
 	if len(names) == 1 && (names[0] == "." || names[0] == "./") && named == "" {
 		res, deps, err := installProject(ctx, env, eng, doc, opts, proj, version, channel, w.JSON())
@@ -1726,7 +1726,7 @@ func cmdInstall(ctx context.Context, env *Env, w *report.Writer, args []string, 
 			return fmt.Errorf(
 				"%s looks like a version number, not a package name. "+
 					"Name the software and pin the version instead, for example: "+
-					"'starpoint install <package> --version %s', or 'starpoint install stable --version %s' "+
+					"'str install <package> --version %s', or 'str install stable --version %s' "+
 					"for a release channel's toolchain", raw, raw, raw)
 		}
 
@@ -1900,7 +1900,7 @@ type dependencyReport struct {
 	Effects []model.Effect `json:"effects"`
 }
 
-// installProject handles `starpoint install .`.
+// installProject handles `str install .`.
 //
 // "Install what this project needs" is three things, in order:
 //
@@ -1920,7 +1920,7 @@ type dependencyReport struct {
 func installProject(ctx context.Context, env *Env, eng *engine.Engine, doc *config.Document, opts engine.Options,
 	proj *project.Info, version, channel string, asJSON bool) (*engine.Result, *dependencyReport, error) {
 	if proj == nil || proj.Kind == project.KindUnknown {
-		return nil, nil, fmt.Errorf("no project detected here; run 'starpoint install <package>' to name software explicitly")
+		return nil, nil, fmt.Errorf("no project detected here; run 'str install <package>' to name software explicitly")
 	}
 	// Narration goes to stderr under --json so stdout stays one JSON document.
 	out := env.Stdout
@@ -2253,7 +2253,7 @@ func (e *Env) runInDir(ctx context.Context, dir string, stdout, stderr io.Writer
 		if exec.IsDropError(err) {
 			return err
 		}
-		return fmt.Errorf("%s is not on PATH; install it (for example 'starpoint install %s') and run this again", name, name)
+		return fmt.Errorf("%s is not on PATH; install it (for example 'str install %s') and run this again", name, name)
 	}
 	if id == nil && e.privileges != nil && e.privileges.RootEnv != nil {
 		// The installer stays root (the project is not the invoking user's),
@@ -2815,7 +2815,7 @@ func updateSelf(ctx context.Context, env *Env, opts engine.Options) ([]model.Pla
 	reg := env.registry()
 	p, ok := reg.Get(found.Installation.Provider)
 	if !ok {
-		return nil, fmt.Errorf("starpoint is provided by %q, which this build cannot update", found.Installation.Provider)
+		return nil, fmt.Errorf("this copy of Starpoint was installed by %q, which this build cannot update", found.Installation.Provider)
 	}
 	if !p.Capabilities().Update {
 		return nil, fmt.Errorf("provider %q cannot update software; update Starpoint manually", p.Name())
@@ -3114,7 +3114,7 @@ func cmdRecover(env *Env, w *report.Writer, args []string) error {
 				"Starpoint will not modify configuration while these are present.\n"+
 					"The configuration itself is intact: it is only replaced by an\n"+
 					"atomic rename, so it was never left half-written. Run\n"+
-					"'starpoint recover --discard' to remove the leftover files.")
+					"'str recover --discard' to remove the leftover files.")
 		}
 		return nil
 	}

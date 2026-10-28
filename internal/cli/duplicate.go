@@ -47,7 +47,7 @@ func duplicateWarning(name, target string, survey engine.Survey) *model.Warning 
 	switch {
 	case len(others) > 0:
 		msg = fmt.Sprintf("%s is already installed through %s; this installs a second copy through %s. "+
-			"'starpoint adopt %s %s' records the existing copy instead, and 'starpoint transition' moves it",
+			"'str adopt %s %s' records the existing copy instead, and 'str transition' moves it",
 			name, strings.Join(others, " and "), target, name, others[0])
 	case systemHas:
 		msg = fmt.Sprintf("the operating system already provides %s; this installs a managed copy through %s beside it", name, target)
@@ -79,13 +79,13 @@ func (e *Env) guardDuplicate(pkg model.Package, target string, survey engine.Sur
 	case len(others) > 0:
 		candidates = others
 		msg = fmt.Sprintf("refusing to install a second copy of %s through %s unattended: %s already has it. "+
-			"Record that copy with 'starpoint adopt %s %s', move it with 'starpoint transition', "+
+			"Record that copy with 'str adopt %s %s', move it with 'str transition', "+
 			"or pass --allow-duplicate if two copies are what you want. Nothing was changed",
 			pkg.Name, target, strings.Join(others, " and "), pkg.Name, others[0])
 	case systemHas && !explicit:
 		candidates = []string{system.Name}
 		msg = fmt.Sprintf("refusing to install %s through %s unattended: the operating system already provides it. "+
-			"Name the provider ('starpoint install %s %s') to ask for a managed copy, or pass --allow-duplicate. Nothing was changed",
+			"Name the provider ('str install %s %s') to ask for a managed copy, or pass --allow-duplicate. Nothing was changed",
 			pkg.Name, target, pkg.Name, target)
 	default:
 		return nil
@@ -121,7 +121,7 @@ func (e *Env) guardAmbiguous(command string, opts engine.Options, actions []mode
 	}
 	candidates := append([]string{first.State.Res.Provider}, first.State.Res.Alternatives...)
 	msg := fmt.Sprintf("refusing to %s unattended: nothing says which provider should own %s (%s could). "+
-		"Set provider in the configuration or install it with 'starpoint install <package> <provider>'. Nothing was changed",
+		"Set provider in the configuration or install it with 'str install <package> <provider>'. Nothing was changed",
 		command, strings.Join(names, ", "), strings.Join(candidates, ", "))
 	e.audit(auditlog.Entry{Event: auditlog.EventGuard, Command: command, Result: "refused", Detail: CodeProviderAmbiguous + ": " + msg})
 	return &RefusalError{Code: CodeProviderAmbiguous, Exit: ExitRefusedDecision, Message: msg, Command: command,
@@ -134,7 +134,7 @@ func (e *Env) guardAmbiguous(command string, opts engine.Options, actions []mode
 // command stops before anything changes and says how to make the choice.
 func (e *Env) refuseAmbiguousInstall(pkg model.Package, candidates []string) error {
 	msg := fmt.Sprintf("refusing to install %s: it could be provided by %s and there is no terminal to ask which. "+
-		"Name the provider ('starpoint install %s <provider>' or --provider <name>). Nothing was changed",
+		"Name the provider ('str install %s <provider>' or --provider <name>). Nothing was changed",
 		pkg.Name, strings.Join(candidates, ", "), pkg.Name)
 	e.audit(auditlog.Entry{Event: auditlog.EventGuard, Command: "install", Result: "refused", Detail: CodeProviderAmbiguous + ": " + msg})
 	return &RefusalError{Code: CodeProviderAmbiguous, Exit: ExitRefusedDecision, Message: msg, Command: "install",
@@ -192,7 +192,7 @@ func (e *Env) guardBesideSystem(command string, opts engine.Options, beside []mo
 	name, target := first.State.Package.Name, first.State.Res.Provider
 	msg := fmt.Sprintf("refusing to %s unattended: only the operating system provides %s, and the configuration names no provider, "+
 		"so converging would install a managed copy beside the system's that nobody asked for. "+
-		"Run 'starpoint install %s %s' for a managed copy, or set provider = \"system\" on the entry to keep the operating system's. Nothing was changed",
+		"Run 'str install %s %s' for a managed copy, or set provider = \"system\" on the entry to keep the operating system's. Nothing was changed",
 		command, strings.Join(names, ", "), name, target)
 	actions := changeActions(model.ActionInstall, beside)
 	e.audit(auditlog.Entry{Event: auditlog.EventGuard, Command: command, Result: "refused",
@@ -231,7 +231,7 @@ func (e *Env) decideBesideSystem(opts engine.Options, plan model.Plan, beside []
 		plan.Warnings = append(plan.Warnings, model.Warning{Severity: model.SeverityWarn, Code: CodeDuplicateInstall,
 			Package: name, Provider: target,
 			Message: fmt.Sprintf("left %s to the operating system%s; no managed copy was installed. "+
-				"'starpoint install %s %s' adds one, and provider = \"system\" on the entry keeps the system's without asking again",
+				"'str install %s %s' adds one, and provider = \"system\" on the entry keeps the system's without asking again",
 				name, systemPath(a), name, target)})
 	}
 	return plan, nil

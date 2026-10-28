@@ -39,7 +39,7 @@ type Engine struct {
 	// healthCache makes provider probing happen once per Engine.
 	//
 	// Probing is the dominant cost of every command: it runs a subprocess per
-	// provider, and a single `starpoint install` reaches for the answer several
+	// provider, and a single `str install` reaches for the answer several
 	// times over. Memoising it turns three full sweeps into one and, more
 	// importantly, makes every step of a command reason about the same machine
 	// state rather than three slightly different samples of it.

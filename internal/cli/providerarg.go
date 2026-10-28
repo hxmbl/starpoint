@@ -13,8 +13,8 @@ import (
 // `--provider brew` stays supported; this is the short form, and the trailing
 // position reads best because the package name is the subject:
 //
-//	starpoint install ripgrep brew
-//	starpoint install brew ripgrep
+//	str install ripgrep brew
+//	str install brew ripgrep
 //
 // The rules are deliberately narrow, because a token that names a provider is
 // very often also the name of a package — `install brew` has to keep installing

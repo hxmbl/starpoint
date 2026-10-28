@@ -49,7 +49,7 @@ func TestLeadingProviderIsNotTakenAsThePackageName(t *testing.T) {
 }
 
 // A single token is a package name even when it happens to be spelled like a
-// provider. `starpoint install brew` must install the software called brew.
+// provider. `str install brew` must install the software called brew.
 func TestASingleProviderShapedTokenIsAPackageName(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")
 	h.ask(true)

@@ -15,7 +15,7 @@ type InventorySummary struct {
 	Requested int `json:"requested"`
 }
 
-// Inventory renders `starpoint inventory`: every package each provider
+// Inventory renders `str inventory`: every package each provider
 // reports, and whether the configuration manages it.
 func (w *Writer) Inventory(inv engine.Inventory) error {
 	sum := InventorySummary{Packages: len(inv.Items)}

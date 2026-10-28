@@ -306,7 +306,7 @@ func flatten(v any) map[string]any {
 	return m
 }
 
-// ListItem is one row of `starpoint list`.
+// ListItem is one row of `str list`.
 type ListItem struct {
 	Name     string `json:"name"`
 	Path     string `json:"path,omitempty"`
@@ -319,7 +319,7 @@ type ListItem struct {
 	Channel  string `json:"channel,omitempty"`
 }
 
-// List renders `starpoint list`.
+// List renders `str list`.
 func (w *Writer) List(states []model.State, pathInventory ...[]locator.Found) error {
 	var unaccounted []locator.Found
 	if len(pathInventory) > 0 {
@@ -361,7 +361,7 @@ func (w *Writer) List(states []model.State, pathInventory ...[]locator.Found) er
 		return w.respond(payload)
 	}
 	if len(items) == 0 {
-		fmt.Fprintln(w.out, w.p.Dim("No software in the configuration yet. Add some with: starpoint install <package>"))
+		fmt.Fprintln(w.out, w.p.Dim("No software in the configuration yet. Add some with: str install <package>"))
 		return nil
 	}
 	if len(items) > 0 {
@@ -379,7 +379,7 @@ func (w *Writer) List(states []model.State, pathInventory ...[]locator.Found) er
 	}
 	if len(unaccounted) > 0 {
 		if len(items) == 0 {
-			fmt.Fprintln(w.out, "\nNo software in the configuration yet. Add some with: starpoint install <package>")
+			fmt.Fprintln(w.out, "\nNo software in the configuration yet. Add some with: str install <package>")
 		}
 		fmt.Fprintln(w.out, "\n"+w.section("PATH executables with unknown ownership"))
 		rows := [][]string{{"BINARY", "LOCATION", "DETAIL"}}
@@ -398,7 +398,7 @@ func (w *Writer) List(states []model.State, pathInventory ...[]locator.Found) er
 	return nil
 }
 
-// Info renders `starpoint info <package>`.
+// Info renders `str info <package>`.
 //
 // extra carries the optional companions of a package: a pending "transition"
 // when ownership is moving, or the provider "lookup" survey that explained an
@@ -461,7 +461,7 @@ func (w *Writer) Info(st model.State, extra map[string]any) error {
 	return nil
 }
 
-// SyncResult is the machine-readable shape of `starpoint sync`.
+// SyncResult is the machine-readable shape of `str sync`.
 type SyncResult struct {
 	DryRun        bool               `json:"dry_run"`
 	Converged     bool               `json:"converged"`
@@ -634,7 +634,7 @@ func dedupeTransitions(in []model.Transition) []model.Transition {
 	return out
 }
 
-// Transitions renders `starpoint transition`.
+// Transitions renders `str transition`.
 func (w *Writer) Transitions(ts []model.Transition, dryRun bool) error {
 	if w.asJSON {
 		return w.respond(map[string]any{
@@ -737,7 +737,7 @@ func (w *Writer) writeTransitions(ts []model.Transition) {
 	}
 }
 
-// writeTransitionDetail renders the transition section of `starpoint info`
+// writeTransitionDetail renders the transition section of `str info`
 // when a pending ownership move applies, showing the phases and the evidence
 // rather than a bare status. The JSON form is folded into Info's response.
 func (w *Writer) writeTransitionDetail(t model.Transition) error {
@@ -782,7 +782,7 @@ type ProviderHealth struct {
 	Capabilities provider.Capabilities `json:"capabilities"`
 }
 
-// DoctorReport is the machine-readable shape of `starpoint doctor`.
+// DoctorReport is the machine-readable shape of `str doctor`.
 type DoctorReport struct {
 	Starpoint     StarpointInfo    `json:"starpoint"`
 	Config        ConfigInfo       `json:"config"`
@@ -830,7 +830,7 @@ type ConfigInfo struct {
 	Writable     bool     `json:"writable"`
 }
 
-// Doctor renders `starpoint doctor`.
+// Doctor renders `str doctor`.
 func (w *Writer) Doctor(rep DoctorReport) error {
 	if w.asJSON {
 		return w.respond(flatten(rep))
@@ -906,7 +906,7 @@ func (w *Writer) Doctor(rep DoctorReport) error {
 			fmt.Fprintf(w.out, "  %s: %d unmanaged, %d installed on request\n", u.Provider, u.Count, u.Requested)
 		}
 		if requested > 0 {
-			fmt.Fprintf(w.out, "  %s\n", w.p.Dim("Review with 'starpoint adopt --all --dry-run'; 'starpoint adopt' records an owner without changing anything installed."))
+			fmt.Fprintf(w.out, "  %s\n", w.p.Dim("Review with 'str adopt --all --dry-run'; 'str adopt' records an owner without changing anything installed."))
 		}
 	}
 
@@ -973,7 +973,7 @@ func (w *Writer) pathSummary(rep DoctorReport) error {
 			fmt.Fprintf(w.out, "    ... and %d more\n", more)
 		}
 	}
-	fmt.Fprintln(w.out, w.p.Dim("  Run 'starpoint doctor --all' for every entry; --json always includes the full inventory."))
+	fmt.Fprintln(w.out, w.p.Dim("  Run 'str doctor --all' for every entry; --json always includes the full inventory."))
 	return nil
 }
 
@@ -1055,7 +1055,7 @@ func (w *Writer) Result(op string, res *engine.Result) error {
 	return nil
 }
 
-// Update renders the machine-readable result of `starpoint update`. It shares
+// Update renders the machine-readable result of `str update`. It shares
 // install and remove's operation fields and adds the pin conflicts that update
 // can report but the others cannot.
 func (w *Writer) Update(res *engine.Result) error {
@@ -1071,7 +1071,7 @@ func (w *Writer) Update(res *engine.Result) error {
 	return w.respond(fields)
 }
 
-// Prune renders `starpoint prune`.
+// Prune renders `str prune`.
 //
 // A dry run is only useful if it says what would go, so both the human and the
 // machine forms list the candidates, with every file that would go with them.
@@ -1140,7 +1140,7 @@ func (w *Writer) Prune(res *engine.Result, dryRun bool) error {
 	return nil
 }
 
-// Init renders the outcome of `starpoint init`.
+// Init renders the outcome of `str init`.
 func (w *Writer) Init(path string, created, replaced bool) error {
 	if w.asJSON {
 		return w.respond(map[string]any{"path": path, "created": created, "replaced": replaced})

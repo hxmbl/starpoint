@@ -58,7 +58,7 @@ func TestSyncRefusesAManagedCopyBesideTheSystemsUnattended(t *testing.T) {
 		doc.Refused.Actions[0].Provider != "brew" {
 		t.Errorf("the refusal carries the planned install of a managed copy: %+v", doc.Refused)
 	}
-	if !strings.Contains(doc.Error, "starpoint install zsh brew") || !strings.Contains(doc.Error, `provider = "system"`) {
+	if !strings.Contains(doc.Error, "str install zsh brew") || !strings.Contains(doc.Error, `provider = "system"`) {
 		t.Errorf("the message names both ways to settle it: %s", doc.Error)
 	}
 	h.nothingTouched(before)
@@ -105,7 +105,7 @@ func TestSyncAsksBeforeAManagedCopyBesideTheSystemsAndNoInstallsNothing(t *testi
 		!strings.Contains(h.questions[0], "through brew") {
 		t.Errorf("sync should ask about the managed copy, got %q", h.questions)
 	}
-	if !strings.Contains(out+errOut, "starpoint install zsh brew") {
+	if !strings.Contains(out+errOut, "str install zsh brew") {
 		t.Errorf("a no says how to get the copy later:\n%s\n%s", out, errOut)
 	}
 	h.nothingTouched(before)

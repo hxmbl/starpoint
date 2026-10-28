@@ -172,7 +172,7 @@ func (p *Provider) Toolchains(ctx context.Context) []toolchain {
 		return nil
 	}
 	// The verbose form is used because it prints the toolchain directory, which
-	// is the honest "where is this installed" answer for `starpoint list`.
+	// is the honest "where is this installed" answer for `str list`.
 	res, err := p.runner.Run(ctx, "rustup", "toolchain", "list", "-v")
 	if err != nil || res.Failed() {
 		return nil

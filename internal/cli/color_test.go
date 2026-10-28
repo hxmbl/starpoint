@@ -100,10 +100,10 @@ func TestColorRejectsAnUnknownValue(t *testing.T) {
 	} {
 		code, _, errOut := h.run(args...)
 		if code != 2 {
-			t.Errorf("starpoint %s exited %d, want 2", strings.Join(args, " "), code)
+			t.Errorf("str %s exited %d, want 2", strings.Join(args, " "), code)
 		}
 		if !strings.Contains(errOut, "auto, always or never") {
-			t.Errorf("starpoint %s should explain the accepted values:\n%s", strings.Join(args, " "), errOut)
+			t.Errorf("str %s should explain the accepted values:\n%s", strings.Join(args, " "), errOut)
 		}
 	}
 }

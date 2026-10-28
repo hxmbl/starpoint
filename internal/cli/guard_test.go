@@ -215,7 +215,7 @@ func TestSyncTransitionAndPruneAreGuardedToo(t *testing.T) {
 		// sync never moves software, so an unattended sync has nothing
 		// destructive to refuse: it reports the drift and changes nothing.
 		code, out, errOut := h.run("sync", "--yes")
-		if code != 0 || !strings.Contains(out, "starpoint transition ripgrep") {
+		if code != 0 || !strings.Contains(out, "str transition ripgrep") {
 			t.Fatalf("an unattended sync reports drift and succeeds, got %d\n%s\n%s", code, out, errOut)
 		}
 		if len(h.brew.RemoveCalls)+len(h.uv.InstallCalls) != 0 {
