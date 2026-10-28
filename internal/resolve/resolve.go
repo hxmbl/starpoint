@@ -18,8 +18,11 @@
 //     a Go project), never for a bare name like neofetch, which says nothing
 //     about the project it was typed in.
 //
-// When those rules do not produce a clear winner the resolver reports ambiguity
-// rather than guessing, so the CLI can ask a useful question.
+// When those rules do not produce a clear winner, the user's configured
+// provider preference (`[settings] providers`, best first) breaks the tie if
+// one of the tied providers is on it and can honour the entry. Otherwise the
+// resolver reports ambiguity rather than guessing, so the CLI can ask a
+// useful question.
 package resolve
 
 import (
@@ -54,6 +57,14 @@ type Input struct {
 	Ecosystem provider.Kind
 	// Locator is used to inspect PATH when Existing is not already known.
 	Locator *locator.Locator
+	// Preferred is `[settings] providers`: the user's providers, best first.
+	// It is a tie-breaker, not a decision. It never outranks an explicit
+	// provider, an existing owner or a known owner, never widens the
+	// candidates (a preferred provider must be one the resolver already
+	// found able to install the package), and never picks a provider that
+	// cannot honour the entry's version pin, channel or scope. It only
+	// settles a choice the resolver would otherwise have to ask about.
+	Preferred []string
 }
 
 // ecosystem describes the affinity a provider has for a class of software.
@@ -429,8 +440,7 @@ func (r *Resolver) Explain(in Input) Explanation {
 				Ambiguous:    true,
 				Alternatives: languages,
 			}
-			record("system package manager", "ambiguous", systemCandidates[0], final.Reason, true)
-			return Explanation{Package: in.Package, Final: final, Steps: steps}
+			return r.settle(in, final, "system package manager", steps)
 		}
 		final = model.Resolution{
 			Provider:     systemCandidates[0],
@@ -449,8 +459,7 @@ func (r *Resolver) Explain(in Input) Explanation {
 			Ambiguous:    true,
 			Alternatives: systemCandidates[1:],
 		}
-		record("system package manager", "ambiguous", systemCandidates[0], final.Reason, true)
-		return Explanation{Package: in.Package, Final: final, Steps: steps}
+		return r.settle(in, final, "system package manager", steps)
 	}
 	record("system package manager", "skipped", "", "no system package managers available", false)
 
@@ -467,8 +476,7 @@ func (r *Resolver) Explain(in Input) Explanation {
 			Ambiguous:    true,
 			Alternatives: r.others(candidates, candidates[0]),
 		}
-		record("fallback", "ambiguous", candidates[0], final.Reason, true)
-		return Explanation{Package: in.Package, Final: final, Steps: steps}
+		return r.settle(in, final, "fallback", steps)
 	}
 	final = model.Resolution{
 		Provider:   candidates[0],
@@ -477,6 +485,94 @@ func (r *Resolver) Explain(in Input) Explanation {
 	}
 	record("fallback", "selected", candidates[0], final.Reason, true)
 	return Explanation{Package: in.Package, Final: final, Steps: steps}
+}
+
+// settle finishes an ambiguous resolution. The rule that found the tie is
+// recorded as ambiguous; then the configured preference is consulted. The
+// first preferred provider that is one of the tied providers, is available
+// and allowed, and can honour the entry's pin, channel and scope decides.
+// Without one, the ambiguity stands and the CLI asks, or refuses unattended,
+// exactly as before.
+func (r *Resolver) settle(in Input, tied model.Resolution, rule string, steps []Step) Explanation {
+	steps = append(steps, Step{Rule: rule, Outcome: "ambiguous", Provider: tied.Provider, Reason: tied.Reason, Applied: len(in.Preferred) == 0})
+	if len(in.Preferred) == 0 {
+		return Explanation{Package: in.Package, Final: tied, Steps: steps}
+	}
+	pool := append([]string{tied.Provider}, tied.Alternatives...)
+	inPool := map[string]bool{}
+	for _, name := range pool {
+		inPool[name] = true
+	}
+	allowedSet := map[string]bool{}
+	for _, n := range in.Allowed {
+		allowedSet[n] = true
+	}
+	var passed []string
+	for _, name := range in.Preferred {
+		if !inPool[name] {
+			continue
+		}
+		if len(allowedSet) > 0 && !allowedSet[name] {
+			passed = append(passed, name+" (not allowed for this command)")
+			continue
+		}
+		h, ok := in.Available[name]
+		if !ok || !h.Available {
+			passed = append(passed, name+" (not available)")
+			continue
+		}
+		if why := unsupported(in.Package, h.Capabilities); why != "" {
+			passed = append(passed, name+" ("+why+")")
+			continue
+		}
+		reason := fmt.Sprintf("%s is the first provider in [settings] providers (%s) that can install it; %s",
+			name, strings.Join(in.Preferred, ", "), lowerFirst(tied.Reason))
+		final := model.Resolution{
+			Provider:     name,
+			Reason:       reason,
+			Confidence:   model.ConfidenceHigh,
+			Alternatives: r.others(pool, name),
+		}
+		steps = append(steps, Step{Rule: "configured preference", Outcome: "selected", Provider: name, Reason: reason, Applied: true})
+		return Explanation{Package: in.Package, Final: final, Steps: steps}
+	}
+	why := fmt.Sprintf("none of [settings] providers (%s) is one of the tied providers (%s)",
+		strings.Join(in.Preferred, ", "), strings.Join(pool, ", "))
+	if len(passed) > 0 {
+		why = fmt.Sprintf("no preferred provider can settle it: %s", strings.Join(passed, "; "))
+	}
+	steps[len(steps)-1].Applied = true
+	steps = append(steps, Step{Rule: "configured preference", Outcome: "skipped", Reason: why, Applied: false})
+	return Explanation{Package: in.Package, Final: tied, Steps: steps}
+}
+
+// unsupported says why a provider cannot honour what the entry asks for, or
+// "" when it can: a version pin needs PinVersion, a channel needs Channels,
+// project scope needs installation in a directory, and global or user scope
+// must be where the provider installs.
+func unsupported(pkg model.Package, caps provider.Capabilities) string {
+	switch {
+	case !caps.Install:
+		return "cannot install"
+	case pkg.Version != "" && !caps.PinVersion:
+		return "cannot pin version " + pkg.Version
+	case pkg.Channel != "" && !caps.Channels:
+		return "has no channels"
+	case pkg.Scope == model.ScopeProject && !caps.ProjectInstall && !caps.CanInstallInContext:
+		return "cannot install into a project"
+	case (pkg.Scope == model.ScopeGlobal || pkg.Scope == model.ScopeUser) && caps.DefaultScope != "" && caps.DefaultScope != pkg.Scope:
+		return fmt.Sprintf("installs at %s scope, not %s", caps.DefaultScope, pkg.Scope)
+	}
+	return ""
+}
+
+// lowerFirst lowercases the first byte of a reason so it reads on after a
+// semicolon.
+func lowerFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToLower(s[:1]) + s[1:]
 }
 
 // candidates lists the providers that can act, filtered by availability and the

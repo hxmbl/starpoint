@@ -2805,6 +2805,7 @@ func (e *Env) setup(ctx context.Context, allowed []string) (*config.Document, *e
 	}
 	opts := engine.Options{
 		Allowed:    append(append([]string{}, e.restrict...), allowed...),
+		Preferred:  doc.Settings().Providers,
 		Dir:        e.WorkDir,
 		ConfigPath: path,
 	}
