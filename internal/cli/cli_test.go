@@ -281,7 +281,7 @@ func TestUnknownCommandFails(t *testing.T) {
 func TestVersionFlag(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")
 	out := h.mustRun("--version")
-	if !strings.Contains(out, "starpoint") {
+	if !strings.HasPrefix(out, "str ") {
 		t.Errorf("unexpected version output: %s", out)
 	}
 }

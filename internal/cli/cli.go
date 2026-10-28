@@ -54,6 +54,9 @@ type Env struct {
 	Stdin  io.Reader
 	// WorkDir is the directory commands run in.
 	WorkDir string
+	// Name is the executable name the program was started under: str, or
+	// starpoint during the transition. Empty means str.
+	Name string
 	// GlobalConfig overrides ~/.starpoint.toml.
 	GlobalConfig string
 	// Registry supplies providers. Nil means the built-in set.
@@ -444,7 +447,7 @@ func Run(ctx context.Context, env *Env, args []string) int {
 			printUsage(env.Stdout)
 			return 0
 		case "--version", "-V":
-			fmt.Fprintf(env.Stdout, "starpoint %s\n", Version)
+			fmt.Fprintf(env.Stdout, "%s %s\n", env.commandName(), Version)
 			return 0
 		}
 	}
