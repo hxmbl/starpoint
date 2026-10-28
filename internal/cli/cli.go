@@ -652,7 +652,7 @@ func (e *Env) applyRetention() {
 	days := retention.DefaultDays
 	if path, err := e.globalPath(); err == nil {
 		if doc, err := config.Load(config.LoadOptions{GlobalPath: path}); err == nil {
-			days = doc.Global.Raw.Settings.RetentionDays
+			days = doc.Global.Raw.Settings.Retention()
 		}
 	}
 	dir := e.stateDir()
