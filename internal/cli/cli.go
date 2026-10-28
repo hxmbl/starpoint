@@ -652,7 +652,7 @@ func (e *Env) applyRetention() {
 	days := retention.DefaultDays
 	if path, err := e.globalPath(); err == nil {
 		if doc, err := config.Load(config.LoadOptions{GlobalPath: path}); err == nil {
-			days = doc.Global.Raw.Settings.RetentionDays
+			days = doc.Global.Raw.Settings.Retention()
 		}
 	}
 	dir := e.stateDir()
@@ -963,6 +963,11 @@ func cmdSync(ctx context.Context, env *Env, w *report.Writer, args []string, all
 	if err != nil {
 		return err
 	}
+	// no_confirm in the configuration means what --no-confirm means, as it
+	// does for install, remove, update and prune. It makes the run
+	// unattended, so the unattended guards (destructive, ambiguous provider,
+	// managed copy beside the system's) apply to it exactly as to --yes.
+	noConfirm = noConfirm || doc.Settings().NoConfirm
 	if !dryRun {
 		path, _ := env.globalPath()
 		unlock, lockErr := env.acquireMutationLock(path, "sync")
@@ -1809,10 +1814,13 @@ func (e *Env) askProvider(ctx context.Context, eng *engine.Engine, doc *config.D
 		return "", "", nil
 	}
 	options := append([]string{dec.Provider}, dec.Alternatives...)
-	if e.Choose == nil {
-		return "", "", fmt.Errorf(
-			"%s could be provided by %s and there is no terminal to ask on; rerun with --provider <name>",
-			pkg.Name, strings.Join(options, " or "))
+	if e.Choose == nil || !e.interactive() {
+		if opts.DryRun {
+			// A dry run changes nothing, so it shows the resolver's own
+			// choice, marked ambiguous, rather than refusing.
+			return "", "", nil
+		}
+		return "", "", e.refuseAmbiguousInstall(pkg, options)
 	}
 	question := fmt.Sprintf("%s could be provided by %s. Which provider should own it?",
 		pkg.Name, strings.Join(options, ", "))

@@ -203,6 +203,13 @@ func classify(op string, res exec.Result) error {
 // For APT, most packages install an executable with the same name, but there are
 // exceptions (e.g., `python3` is in the `python3` package). This provides a basic
 // mapping for common packages.
+//
+// The keys are executables as Debian and Ubuntu install them, never package
+// names. Three packages ship their tool under a name of their own: ripgrep
+// installs /usr/bin/rg, fd-find installs /usr/bin/fdfind (fd is taken by
+// another Debian package), and bat installs /usr/bin/batcat (bat clashed with
+// bacula's console). An executable called `fd` or `bat` on PATH is a user's own
+// symlink or another provider's copy, not apt's.
 func (p *Provider) ExecutableToPackage() map[string]string {
 	return map[string]string{
 		"git":            "git",
@@ -217,9 +224,9 @@ func (p *Provider) ExecutableToPackage() map[string]string {
 		"gem":            "rubygems",
 		"java":           "default-jdk",
 		"javac":          "default-jdk",
-		"ripgrep":        "ripgrep",
-		"fd":             "fd-find",
-		"bat":            "bat",
+		"rg":             "ripgrep",
+		"fdfind":         "fd-find",
+		"batcat":         "bat",
 		"exa":            "exa",
 		"eza":            "eza",
 		"jq":             "jq",

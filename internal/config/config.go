@@ -64,7 +64,23 @@ type Settings struct {
 	// RetentionDays is how many days of records Starpoint keeps: its audit log,
 	// the transition history and the run history. Zero or negative means the
 	// default, never "keep nothing". It is read from the global file only.
-	RetentionDays int `toml:"retention_days,omitempty"`
+	//
+	// It is a pointer so that "not set" and "set to 0" stay different things
+	// through a rewrite of the file: the TOML encoder's omitempty never omits
+	// an int, so a plain int wrote `retention_days = 0` into every
+	// configuration Starpoint saved, and a value the user never wrote looked
+	// like one they had. Nil is omitted; an explicit value, zero included, is
+	// written back exactly as it was read. Read it through Retention.
+	RetentionDays *int `toml:"retention_days,omitempty"`
+}
+
+// Retention is the configured retention_days, or 0 when it is not set. Like a
+// configured zero or negative value, 0 means the default window.
+func (s Settings) Retention() int {
+	if s.RetentionDays == nil {
+		return 0
+	}
+	return *s.RetentionDays
 }
 
 // Default returns the settings Starpoint assumes when nothing is configured.

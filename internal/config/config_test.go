@@ -296,14 +296,14 @@ func TestStateDirDefaultsBesideTheDefaultConfiguration(t *testing.T) {
 func TestRetentionDaysIsReadFromTheSettingsTable(t *testing.T) {
 	dir := t.TempDir()
 	global := filepath.Join(dir, "g.toml")
-	_ = Write(global, Raw{Settings: Settings{RetentionDays: 45}})
-	if got := MustLoad(t, global).Settings().RetentionDays; got != 45 {
+	_ = Write(global, Raw{Settings: Settings{RetentionDays: intPtr(45)}})
+	if got := MustLoad(t, global).Settings().Retention(); got != 45 {
 		t.Errorf("retention_days = %d, want 45", got)
 	}
 
 	unset := filepath.Join(dir, "u.toml")
 	_ = Write(unset, Raw{})
-	if got := MustLoad(t, unset).Settings().RetentionDays; got != 0 {
+	if got := MustLoad(t, unset).Settings().Retention(); got != 0 {
 		t.Errorf("an unset retention must stay 0 so the default applies, got %d", got)
 	}
 }
@@ -314,12 +314,12 @@ func TestRetentionDaysIgnoresProjectFiles(t *testing.T) {
 	dir := t.TempDir()
 	global := filepath.Join(dir, "g.toml")
 	project := filepath.Join(dir, "p.toml")
-	_ = Write(global, Raw{Settings: Settings{RetentionDays: 45}})
-	_ = Write(project, Raw{Settings: Settings{RetentionDays: 1}})
+	_ = Write(global, Raw{Settings: Settings{RetentionDays: intPtr(45)}})
+	_ = Write(project, Raw{Settings: Settings{RetentionDays: intPtr(1)}})
 
 	doc := MustLoad(t, global)
 	doc.Projects = []File{mustProjectFile(t, project)}
-	if got := doc.Settings().RetentionDays; got != 45 {
+	if got := doc.Settings().Retention(); got != 45 {
 		t.Errorf("a project file changed the machine-wide retention window to %d", got)
 	}
 }
@@ -373,3 +373,47 @@ func mustProjectFile(t *testing.T, path string) File {
 
 // Execution tracking is now handled by the tracking package, not config.
 // See internal/tracking for execution record tests.
+
+func intPtr(n int) *int { return &n }
+
+// retention_days written as 0 is the user's own line and survives a rewrite;
+// an unset value is not invented. The TOML encoder never omits a plain int,
+// which used to put `retention_days = 0` into every file Starpoint saved.
+func TestRetentionDaysRoundTripsExactlyAsWritten(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string // the line expected after a rewrite, "" for none
+		value int
+	}{
+		{"unset", "schema = 1\n", "", 0},
+		{"explicit zero", "schema = 1\n\n[settings]\nretention_days = 0\n", "retention_days = 0", 0},
+		{"explicit window", "schema = 1\n\n[settings]\nretention_days = 45\n", "retention_days = 45", 45},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "g.toml")
+			if err := os.WriteFile(path, []byte(tc.input), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			doc := MustLoad(t, path)
+			if err := Write(path, doc.Global.Raw); err != nil {
+				t.Fatal(err)
+			}
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			has := strings.Contains(string(body), "retention_days")
+			switch {
+			case tc.want == "" && has:
+				t.Errorf("an unset retention_days was written:\n%s", body)
+			case tc.want != "" && !strings.Contains(string(body), tc.want):
+				t.Errorf("want %q after the rewrite:\n%s", tc.want, body)
+			}
+			if got := MustLoad(t, path).Settings().Retention(); got != tc.value {
+				t.Errorf("Retention() = %d, want %d", got, tc.value)
+			}
+		})
+	}
+}

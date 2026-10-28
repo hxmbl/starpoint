@@ -66,7 +66,7 @@ func (e *Env) retentionWindow() (int, string) {
 	if err != nil {
 		return retention.DefaultDays, "default"
 	}
-	if days := doc.Global.Raw.Settings.RetentionDays; days > 0 {
+	if days := doc.Global.Raw.Settings.Retention(); days > 0 {
 		return days, "config"
 	}
 	return retention.DefaultDays, "default"
