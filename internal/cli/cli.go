@@ -1127,8 +1127,44 @@ func cmdList(ctx context.Context, env *Env, w *report.Writer, args []string) err
 // not. It only observes: providers are asked for their health and their
 // package lists, and nothing is resolved, installed, recorded or logged.
 func cmdInventory(ctx context.Context, env *Env, w *report.Writer, args []string, only []string) error {
-	if len(args) > 0 {
-		return fmt.Errorf("%w: unknown argument %q for inventory", ErrUsage, args[0])
+	var (
+		format string
+		pin    bool
+		names  []string
+	)
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--format":
+			if i+1 >= len(args) {
+				return fmt.Errorf("%w: --format needs a value (table or toml)", ErrUsage)
+			}
+			format = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--format="):
+			format = strings.TrimPrefix(a, "--format=")
+		case a == "--pin-versions":
+			pin = true
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("%w: unknown option %q for inventory", ErrUsage, a)
+		default:
+			names = append(names, a)
+		}
+	}
+	switch format {
+	case "", "table":
+		format = "table"
+	case "toml":
+		if w.JSON() {
+			return fmt.Errorf("%w: --format toml and --json are two different outputs; pick one", ErrUsage)
+		}
+	default:
+		return fmt.Errorf("%w: unknown --format %q for inventory (table or toml)", ErrUsage, format)
+	}
+	if format != "toml" && (len(names) > 0 || pin) {
+		if len(names) > 0 {
+			return fmt.Errorf("%w: unknown argument %q for inventory (package names select what --format toml captures)", ErrUsage, names[0])
+		}
+		return fmt.Errorf("%w: --pin-versions only applies to --format toml", ErrUsage)
 	}
 	reg := env.registry()
 	for _, name := range only {
@@ -1149,7 +1185,13 @@ func cmdInventory(ctx context.Context, env *Env, w *report.Writer, args []string
 	for _, warn := range doc.Warnings {
 		env.warn(warn)
 	}
-	inv := env.newEngine().Inventory(ctx, doc, only)
+	eng := env.newEngine()
+	inv := eng.Inventory(ctx, doc, only)
+	if format == "toml" {
+		// Capture is a rendering of the same observation: it writes the
+		// manifest to stdout and nothing anywhere else.
+		return w.CaptureTOML(eng.Capture(inv, doc, engine.CaptureOptions{Names: names, PinVersions: pin}))
+	}
 	return w.Inventory(inv)
 }
 
