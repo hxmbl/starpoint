@@ -1128,9 +1128,10 @@ func cmdList(ctx context.Context, env *Env, w *report.Writer, args []string) err
 // package lists, and nothing is resolved, installed, recorded or logged.
 func cmdInventory(ctx context.Context, env *Env, w *report.Writer, args []string, only []string) error {
 	var (
-		format string
-		pin    bool
-		names  []string
+		format      string
+		pin         bool
+		portability bool
+		names       []string
 	)
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
@@ -1144,6 +1145,8 @@ func cmdInventory(ctx context.Context, env *Env, w *report.Writer, args []string
 			format = strings.TrimPrefix(a, "--format=")
 		case a == "--pin-versions":
 			pin = true
+		case a == "--portability":
+			portability = true
 		case strings.HasPrefix(a, "-"):
 			return fmt.Errorf("%w: unknown option %q for inventory", ErrUsage, a)
 		default:
@@ -1165,6 +1168,9 @@ func cmdInventory(ctx context.Context, env *Env, w *report.Writer, args []string
 			return fmt.Errorf("%w: unknown argument %q for inventory (package names select what --format toml captures)", ErrUsage, names[0])
 		}
 		return fmt.Errorf("%w: --pin-versions only applies to --format toml", ErrUsage)
+	}
+	if portability && format == "toml" {
+		return fmt.Errorf("%w: --portability is a summary and --format toml a manifest; pick one", ErrUsage)
 	}
 	reg := env.registry()
 	for _, name := range only {
@@ -1191,6 +1197,11 @@ func cmdInventory(ctx context.Context, env *Env, w *report.Writer, args []string
 		// Capture is a rendering of the same observation: it writes the
 		// manifest to stdout and nothing anywhere else.
 		return w.CaptureTOML(eng.Capture(inv, doc, engine.CaptureOptions{Names: names, PinVersions: pin}))
+	}
+	if portability {
+		// Also only a reading of the same observation: an estimate of how
+		// much of the selected software could be reproduced elsewhere.
+		return w.Portability(eng.Portability(inv, doc))
 	}
 	return w.Inventory(inv)
 }
