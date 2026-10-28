@@ -131,8 +131,8 @@ config → desired state → provider resolution → current state → diff → 
   persists its decision — this is managed state, never a generated cache
 - An edit lands in the file that owns the entry, and every write goes through
   a temporary file, fsync, and rename
-- `settings` changes behaviour but never desired state: `providers` restricts
-  resolution, `no_confirm` quietens asks, `retention_days` (global only)
+- `settings` changes behaviour but never desired state: `providers` is an
+  ordered preference that only settles a tie the resolver would ask about, `no_confirm` quietens asks, `retention_days` (global only)
   bounds the records
 - The TOML `schema` field (currently 1) is a separate version from the JSON
   envelope's — they are not related and must not be conflated
@@ -150,9 +150,14 @@ config → desired state → provider resolution → current state → diff → 
   falls through to the system package manager as it would anywhere else, and
   `go` is never offered as an alternative for a name that is not a module path
   (`golang.LooksLikeModulePath`)
-- When the rules produce no clear winner it reports the ambiguity —
-  confidence, alternatives — rather than guessing, and the CLI asks (the
-  current project's provider is offered first among the alternatives)
+- When the rules produce no clear winner, `[settings] providers` (best
+  first) breaks the tie: the first listed provider that is one of the tied
+  ones, available, allowed, and able to honour the entry's pin, channel and
+  scope decides, and `explain` shows a "configured preference" step either
+  way. It never widens the candidates or outranks the rules above
+- With no preference to settle it, it reports the ambiguity — confidence,
+  alternatives — rather than guessing, and the CLI asks (the current
+  project's provider is offered first among the alternatives)
 - The hints are deliberately small: `rg` maps to Rust, `ripgrep` does not,
   because `brew install ripgrep` is what almost everyone means
 

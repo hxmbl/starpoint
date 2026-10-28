@@ -56,8 +56,13 @@ type Raw struct {
 // Settings holds user preferences. These affect behaviour but never desired
 // state.
 type Settings struct {
-	// Providers restricts automatic provider resolution to these names. Empty
-	// means all available providers may be considered.
+	// Providers is the user's provider preference, best first. When
+	// resolution ends in a tie it would otherwise ask about, the first listed
+	// provider that is one of the tied ones and can honour the entry (its
+	// version pin, channel and scope) settles it. It is not a restriction: it
+	// never outranks a recorded provider or an existing owner, and providers
+	// it does not name are still considered. A project file's list replaces
+	// the global one.
 	Providers []string `toml:"providers,omitempty"`
 	// NoConfirm makes destructive operations non-interactive by default.
 	NoConfirm bool `toml:"no_confirm,omitempty"`
@@ -625,7 +630,10 @@ Available keys: name, version, provider, scope, channel, reason
           a Rust release channel (stable, beta, nightly)
 
 [settings]
-  providers   restrict automatic provider choice to these providers
+  providers   your preferred providers, best first, e.g. ["brew", "cargo"]:
+              when Starpoint would otherwise ask which provider should own a
+              package, the first one listed that could install it decides.
+              A recorded provider or an existing install always wins.
   no_confirm  skip confirmation prompts for destructive operations
   retention_days
               how many days of records to keep: the audit log of what Starpoint
