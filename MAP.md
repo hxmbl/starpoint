@@ -250,6 +250,19 @@ user, an unknown directory is root, as it always was
   No resolver, no per-package lookups, no writes; a failing provider is a
   `discover-failed` warning, not a stop
 
+**`internal/engine/capture.go`** - `starpoint inventory --format toml`
+- A rendering of an inventory, nothing more: no resolver, no provider calls
+  beyond the inventory's, no writes. Default policy is managed entries
+  (copied from the configuration) plus what a provider calls requested;
+  named packages are captured exactly. Dependencies, system software,
+  unclassifiable packages and names two unrecorded providers report are
+  reported with a code (`requested-unknown`, `ambiguous-identity`,
+  `system-software`, `not-found`), never guessed. Scope is written only when
+  it differs from the provider's default; a pin only with `--pin-versions`
+  and a provider that can pin (`pin-unsupported`, `version-unknown`)
+- `report.CaptureTOML` puts that account in a comment header and
+  `config.EncodeManifest` writes schema and packages only, never [settings]
+
 **`internal/engine/survey.go`** - One round of concurrent "do you have this?"
 - `SurveyTimeout` is 20 seconds; a hung package manager costs the timeout, not
   the run — and providers that cannot enumerate are skipped rather than asked

@@ -28,6 +28,8 @@ complete -c starpoint -n '__fish_seen_subcommand_from list ls' -l managed -d 'On
 complete -c starpoint -n '__fish_seen_subcommand_from doctor transition move' -l all -d 'Show everything'
 complete -c starpoint -n '__fish_seen_subcommand_from adopt' -l all -d 'Adopt everything installed on request'
 complete -c starpoint -n '__fish_seen_subcommand_from adopt' -a "$providers" -d 'Owner'
+complete -c starpoint -n '__fish_seen_subcommand_from inventory' -l format -r -a 'table toml' -d 'Output: table, or a TOML manifest'
+complete -c starpoint -n '__fish_seen_subcommand_from inventory' -l pin-versions -d 'Pin observed versions in the manifest'
 complete -c starpoint -n '__fish_seen_subcommand_from install add i' -l channel -r -d 'Release channel'
 complete -c starpoint -n '__fish_seen_subcommand_from install add i' -l project -d 'Record in the project configuration'
 complete -c starpoint -n '__fish_seen_subcommand_from install add i' -l allow-duplicate -d 'Let an unattended install add a second copy'
