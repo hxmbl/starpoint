@@ -53,7 +53,7 @@ func TestSyncRefusesAManagedCopyBesideTheSystemsUnattended(t *testing.T) {
 		t.Errorf("refusal = %+v", r)
 	}
 	doc := decodeRefusal(t, errOut)
-	if doc.SchemaVersion != 9 || doc.Refused == nil || len(doc.Refused.Actions) != 1 ||
+	if doc.SchemaVersion != 10 || doc.Refused == nil || len(doc.Refused.Actions) != 1 ||
 		doc.Refused.Actions[0].Action != string(model.ActionInstall) || doc.Refused.Actions[0].Package != "zsh" ||
 		doc.Refused.Actions[0].Provider != "brew" {
 		t.Errorf("the refusal carries the planned install of a managed copy: %+v", doc.Refused)
