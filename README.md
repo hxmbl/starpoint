@@ -55,6 +55,25 @@ A project may also have its own `.starpoint.toml`. It applies when you run
 Starpoint inside that directory and takes precedence over the global file for
 the packages it declares.
 
+When Starpoint cannot tell which provider should own a package (`fastfetch`
+with both Homebrew and apt here, or `ripgrep` with Homebrew and Cargo) it asks,
+and an unattended run refuses rather than guess. `[settings] providers` answers
+that question ahead of time, best first:
+
+```toml
+[settings]
+providers = ["brew", "cargo"]
+```
+
+The first listed provider that is one of the tied candidates, is available, and
+can honour the entry's version pin, channel and scope decides, and the recorded
+`reason` says so. It is a preference, not a restriction: a `provider` written
+in the entry, `--provider` on the command line, an existing install and a
+name's known owner (`rustc` is rustup's) all still win, providers it does not
+list are still considered, and when no listed provider fits Starpoint asks as
+before. `starpoint explain <package>` shows whether the preference decided.
+A project's own list replaces the global one inside that project.
+
 `starpoint install .` installs what the project in the current directory needs:
 
 1. the packages its `.starpoint.toml` declares;

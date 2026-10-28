@@ -188,6 +188,10 @@ type Options struct {
 	NoConfirm bool
 	// Allowed restricts provider candidates to these names.
 	Allowed []string
+	// Preferred is `[settings] providers`, best first: a tie-breaker for a
+	// provider choice the resolver would otherwise ask about. It is not a
+	// restriction and never outranks a recorded provider or owner.
+	Preferred []string
 	// Dir is the working directory, used for project context.
 	Dir string
 	// ConfigPath identifies the source-of-truth file for audit records.
@@ -964,6 +968,7 @@ func (e *Engine) resolveInput(pkg model.Package, existing *model.Installation, a
 		Existing:  existing,
 		Available: available,
 		Allowed:   opts.Allowed,
+		Preferred: opts.Preferred,
 		Ecosystem: opts.Ecosystem,
 		Locator:   e.locator,
 	}
