@@ -128,6 +128,19 @@ func (e *Env) guardAmbiguous(command string, opts engine.Options, actions []mode
 		Actions: changeActions(model.ActionInstall, actions), Package: first.State.Package.Name, Candidates: candidates}
 }
 
+// refuseAmbiguousInstall is install's provider-ambiguous refusal: several
+// providers could own a package nobody named a provider for, and there is no
+// terminal to ask on. Picking one would be a decision nobody made, so the
+// command stops before anything changes and says how to make the choice.
+func (e *Env) refuseAmbiguousInstall(pkg model.Package, candidates []string) error {
+	msg := fmt.Sprintf("refusing to install %s: it could be provided by %s and there is no terminal to ask which. "+
+		"Name the provider ('starpoint install %s <provider>' or --provider <name>). Nothing was changed",
+		pkg.Name, strings.Join(candidates, ", "), pkg.Name)
+	e.audit(auditlog.Entry{Event: auditlog.EventGuard, Command: "install", Result: "refused", Detail: CodeProviderAmbiguous + ": " + msg})
+	return &RefusalError{Code: CodeProviderAmbiguous, Exit: ExitRefusedDecision, Message: msg, Command: "install",
+		Package: pkg.Name, Candidates: candidates}
+}
+
 // besideSystem takes out of a sync plan every entry with no provider whose
 // only copy is the operating system's, as the install of a managed copy it
 // would take to converge it. Left in, it would be reported as provider

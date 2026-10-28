@@ -1809,10 +1809,13 @@ func (e *Env) askProvider(ctx context.Context, eng *engine.Engine, doc *config.D
 		return "", "", nil
 	}
 	options := append([]string{dec.Provider}, dec.Alternatives...)
-	if e.Choose == nil {
-		return "", "", fmt.Errorf(
-			"%s could be provided by %s and there is no terminal to ask on; rerun with --provider <name>",
-			pkg.Name, strings.Join(options, " or "))
+	if e.Choose == nil || !e.interactive() {
+		if opts.DryRun {
+			// A dry run changes nothing, so it shows the resolver's own
+			// choice, marked ambiguous, rather than refusing.
+			return "", "", nil
+		}
+		return "", "", e.refuseAmbiguousInstall(pkg, options)
 	}
 	question := fmt.Sprintf("%s could be provided by %s. Which provider should own it?",
 		pkg.Name, strings.Join(options, ", "))

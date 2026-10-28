@@ -232,7 +232,9 @@ Options:
 
 Install software and record it, with the provider that owns it, in the
 configuration. Starpoint picks the provider and asks when the choice is
-ambiguous. A provider may be named before or after the package.
+ambiguous. With no terminal to ask on, an ambiguous choice is refused with
+provider-ambiguous (exit 5), naming the candidates; nothing is installed.
+A provider may be named before or after the package.
 
 'starpoint install .' installs what the project in the current directory
 needs: the packages declared in its .starpoint.toml, its toolchain (recorded in

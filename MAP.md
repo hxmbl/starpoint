@@ -54,7 +54,8 @@ config → desired state → provider resolution → current state → diff → 
   script can tell "it would not do this without being told it may" from "it
   tried and failed": 3 (`destructive-unattended`), 4 (`elevated-refused`)
   and 5, a decision only the user can make with nobody to ask
-  (`owner-ambiguous`), which names the candidates
+  (`owner-ambiguous`, `provider-ambiguous`, `duplicate-install`), which
+  names the candidates
 - A `RefusalError` carries the plan it refused, so the caller sees exactly what
   would have happened; nothing was changed, and the refusal is audited
 - An unattended run (`--yes`, no terminal, or a piped answer) that would delete
