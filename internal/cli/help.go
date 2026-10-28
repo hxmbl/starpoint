@@ -48,7 +48,7 @@ var commandFlags = map[string][]string{
 	"init":       {"--force"},
 	"sync":       {"--dry-run", "--no-confirm"},
 	"list":       {"--managed", "--provider"},
-	"inventory":  {"--provider"},
+	"inventory":  {"--provider", "--format", "--pin-versions"},
 	"adopt":      {"--all", "--provider", "--dry-run", "--no-confirm"},
 	"info":       {},
 	"explain":    {"--provider"},
@@ -134,6 +134,7 @@ Options:
   --verbose, -v       List every effect, not only what is removed or overwritten
 `,
 	"inventory": `Usage: starpoint inventory [--provider <name>]...
+       starpoint inventory --format toml [package...] [--pin-versions] [--provider <name>]...
 
 List every package each available provider reports as installed: provider,
 the provider's own name for it, version, scope, path, and whether the
@@ -147,8 +148,23 @@ to another owner. It works with no configuration at all. A provider whose
 health check or listing fails, or does not answer within 20 seconds, is
 reported (discover-failed) and the others are still shown.
 
+--format toml prints a Starpoint manifest instead: [[package]] entries that
+parse back as configuration, for you to review, commit, and use as desired
+state. Redirect it to a file yourself; Starpoint writes nothing. By default it
+captures what the configuration already manages (copied as written) and what
+a provider says was installed on request. Dependencies and the operating
+system's own software are left out, and so is anything a provider cannot say
+was asked for, a name two providers report with nothing recording which copy
+is wanted, and a provider that could not list. Each is named in the comments
+at the top, with the reason. Naming packages captures exactly those. Entries
+name the provider that reports them, carry scope only when it differs from
+where that provider installs, and are unpinned unless --pin-versions is given
+(and the provider can install a chosen version).
+
 Options:
   --provider <name>   Only this provider (repeatable)
+  --format <format>   table (default) or toml
+  --pin-versions      With --format toml, pin each observed version
   --json              Machine-readable output
 `,
 	"adopt": `Usage: starpoint adopt <package>... [provider]
