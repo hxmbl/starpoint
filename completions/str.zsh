@@ -1,9 +1,9 @@
-#compdef starpoint
-# Zsh completion for Starpoint. Install under a directory on $fpath as
-# _starpoint (for example ~/.zfunc/_starpoint).
+#compdef str starpoint
+# Zsh completion for Starpoint: str, and starpoint during the transition.
+# Install under a directory on $fpath as _str (for example ~/.zfunc/_str).
 #
 # Keep in sync with internal/cli/help.go (commandFlags); a test checks it.
-_starpoint() {
+_str() {
   local -a commands globals providers flags
   local cmd word
   commands=(init sync list ls inventory adopt info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover logging logs help)
@@ -58,8 +58,8 @@ _starpoint() {
 }
 # Autoloaded from $fpath (via #compdef) the file body runs as the completion
 # function itself; sourced directly, it registers the function instead.
-if [[ "$funcstack[1]" == "_starpoint" ]]; then
-  _starpoint "$@"
+if [[ "$funcstack[1]" == "_str" ]]; then
+  _str "$@"
 else
-  compdef _starpoint starpoint
+  compdef _str str starpoint
 fi

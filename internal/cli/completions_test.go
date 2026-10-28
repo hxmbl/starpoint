@@ -33,7 +33,7 @@ func TestCompletionsCoverEveryCommandFlagAndProvider(t *testing.T) {
 		names = append(names, p.Name())
 	}
 
-	for _, file := range []string{"starpoint.bash", "starpoint.zsh", "starpoint.fish"} {
+	for _, file := range []string{"str.bash", "str.zsh", "str.fish"} {
 		body := readCompletion(t, file)
 		words := map[string]bool{}
 		for _, w := range regexp.MustCompile(`[A-Za-z0-9.-]+`).FindAllString(body, -1) {
@@ -97,6 +97,34 @@ func TestUsageListsCommandsAliasesAndKeyOptions(t *testing.T) {
 	} {
 		if !strings.Contains(usage, want) {
 			t.Errorf("usage does not mention %q", want)
+		}
+	}
+}
+
+// str is the executable (STRM-445); starpoint is its old name and still runs
+// the same program, so every shell completes both.
+func TestCompletionsRegisterStrAndTheOldName(t *testing.T) {
+	bash := readCompletion(t, "str.bash")
+	if !strings.Contains(bash, "complete -F _str str starpoint") {
+		t.Error("str.bash should register its completion for str and starpoint")
+	}
+	zsh := readCompletion(t, "str.zsh")
+	if !strings.HasPrefix(zsh, "#compdef str starpoint\n") {
+		t.Error("str.zsh should start with '#compdef str starpoint'")
+	}
+	fish := readCompletion(t, "str.fish")
+	if !strings.Contains(fish, "complete -c str ") || strings.Contains(fish, "complete -c starpoint") {
+		t.Error("str.fish should complete str; the old name has its own file")
+	}
+	// Fish finds completions by command name, so the old name has a file of
+	// its own that borrows str's instead of repeating them.
+	legacy := readCompletion(t, "starpoint.fish")
+	if !strings.Contains(legacy, "complete -c starpoint --wraps str") {
+		t.Error("starpoint.fish should wrap str")
+	}
+	for _, old := range []string{"starpoint.bash", "starpoint.zsh"} {
+		if _, err := os.Stat(filepath.Join("..", "..", "completions", old)); err == nil {
+			t.Errorf("completions/%s should be gone: str.%s covers both names", old, strings.TrimPrefix(old, "starpoint."))
 		}
 	}
 }
