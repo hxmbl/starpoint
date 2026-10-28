@@ -254,14 +254,12 @@ func Write(path string, raw Raw) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
-	var sb strings.Builder
-	enc := toml.NewEncoder(&sb)
-	enc.Indent = "  "
-	if err := enc.Encode(raw); err != nil {
-		return fmt.Errorf("encoding config: %w", err)
+	data, err := Encode(raw)
+	if err != nil {
+		return err
 	}
 	tmp := path + ".tmp"
-	if err := writeFileSync(tmp, []byte(sb.String())); err != nil {
+	if err := writeFileSync(tmp, data); err != nil {
 		os.Remove(tmp)
 		return err
 	}
@@ -271,6 +269,39 @@ func Write(path string, raw Raw) error {
 	}
 	syncDir(filepath.Dir(path))
 	return nil
+}
+
+// Encode renders a configuration exactly as Write puts it on disk, for
+// output that is meant to become a configuration file (a captured manifest)
+// without Starpoint writing one itself.
+func Encode(raw Raw) ([]byte, error) {
+	if raw.Schema == 0 {
+		raw.Schema = SchemaVersion
+	}
+	var sb strings.Builder
+	enc := toml.NewEncoder(&sb)
+	enc.Indent = "  "
+	if err := enc.Encode(raw); err != nil {
+		return nil, fmt.Errorf("encoding config: %w", err)
+	}
+	return []byte(sb.String()), nil
+}
+
+// EncodeManifest renders packages as a configuration with no [settings]: a
+// manifest describes software, and the settings of the machine it came from
+// (its retention window, its prompts) are not part of what it describes.
+func EncodeManifest(pkgs []model.Package) ([]byte, error) {
+	manifest := struct {
+		Schema   int             `toml:"schema"`
+		Packages []model.Package `toml:"package,omitempty"`
+	}{Schema: SchemaVersion, Packages: pkgs}
+	var sb strings.Builder
+	enc := toml.NewEncoder(&sb)
+	enc.Indent = "  "
+	if err := enc.Encode(manifest); err != nil {
+		return nil, fmt.Errorf("encoding manifest: %w", err)
+	}
+	return []byte(sb.String()), nil
 }
 
 // writeFileSync writes data to path and flushes it to disk before returning.
