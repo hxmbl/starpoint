@@ -43,8 +43,8 @@ func TestPortabilityFullyCaptured(t *testing.T) {
 
 	doc := h.portability()
 	p := doc.Portability
-	if doc.SchemaVersion != 10 {
-		t.Errorf("schema_version = %d, want 10", doc.SchemaVersion)
+	if doc.SchemaVersion != 11 {
+		t.Errorf("schema_version = %d, want 11", doc.SchemaVersion)
 	}
 	if p.Declared.Total != 2 || p.Declared.Reproducible != 2 || p.Discovered.Total != 0 {
 		t.Errorf("want both declared entries reproducible and nothing else selected: %+v / %+v", p.Declared, p.Discovered)

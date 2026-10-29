@@ -47,8 +47,8 @@ func TestInventoryMatchesManagedByProviderAndName(t *testing.T) {
 	h.uv.With(model.Installation{Name: "ruff", Version: "0.6.0"})
 	var doc inventoryDoc
 	h.decode(h.mustRun("inventory", "--json"), &doc)
-	if doc.SchemaVersion != report.SchemaVersion || report.SchemaVersion != 10 {
-		t.Fatalf("schema_version = %d (writer %d), want 10", doc.SchemaVersion, report.SchemaVersion)
+	if doc.SchemaVersion != report.SchemaVersion || report.SchemaVersion != 11 {
+		t.Fatalf("schema_version = %d (writer %d), want 11", doc.SchemaVersion, report.SchemaVersion)
 	}
 	got := map[string]bool{}
 	for _, p := range doc.Packages {
