@@ -1134,6 +1134,7 @@ func cmdInventory(ctx context.Context, env *Env, w *report.Writer, args []string
 		format      string
 		pin         bool
 		portability bool
+		compare     string
 		names       []string
 	)
 	for i := 0; i < len(args); i++ {
@@ -1150,6 +1151,17 @@ func cmdInventory(ctx context.Context, env *Env, w *report.Writer, args []string
 			pin = true
 		case a == "--portability":
 			portability = true
+		case a == "--compare":
+			if i+1 >= len(args) || args[i+1] == "" {
+				return fmt.Errorf("%w: --compare needs a manifest file (from 'str inventory --format toml')", ErrUsage)
+			}
+			compare = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--compare="):
+			compare = strings.TrimPrefix(a, "--compare=")
+			if compare == "" {
+				return fmt.Errorf("%w: --compare needs a manifest file (from 'str inventory --format toml')", ErrUsage)
+			}
 		case strings.HasPrefix(a, "-"):
 			return fmt.Errorf("%w: unknown option %q for inventory", ErrUsage, a)
 		default:
@@ -1174,6 +1186,26 @@ func cmdInventory(ctx context.Context, env *Env, w *report.Writer, args []string
 	}
 	if portability && format == "toml" {
 		return fmt.Errorf("%w: --portability is a summary and --format toml a manifest; pick one", ErrUsage)
+	}
+	if compare != "" && (portability || format == "toml") {
+		return fmt.Errorf("%w: --compare reads a manifest and --portability or --format toml describe this machine; pick one", ErrUsage)
+	}
+	var manifest []model.Package
+	if compare != "" {
+		if !filepath.IsAbs(compare) {
+			compare = filepath.Join(env.WorkDir, compare)
+		}
+		f, warns, err := config.LoadFile(compare, false)
+		if err != nil {
+			return err
+		}
+		if !f.Exists {
+			return fmt.Errorf("%w: manifest %s does not exist", ErrUsage, compare)
+		}
+		for _, warn := range warns {
+			env.warn("manifest: " + warn)
+		}
+		manifest = f.Raw.Packages
 	}
 	reg := env.registry()
 	for _, name := range only {
@@ -1200,6 +1232,11 @@ func cmdInventory(ctx context.Context, env *Env, w *report.Writer, args []string
 		// Capture is a rendering of the same observation: it writes the
 		// manifest to stdout and nothing anywhere else.
 		return w.CaptureTOML(eng.Capture(inv, doc, engine.CaptureOptions{Names: names, PinVersions: pin}))
+	}
+	if compare != "" {
+		// A reading of the same observation against a manifest from another
+		// machine: the plan is printed, never run.
+		return w.Compare(eng.Compare(inv, compare, manifest))
 	}
 	if portability {
 		// Also only a reading of the same observation: an estimate of how

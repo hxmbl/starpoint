@@ -271,7 +271,7 @@ func (w *Writer) JSON() bool { return w.asJSON }
 // estimate of how much of the selected software could be reproduced on
 // another machine, and why the rest could not. Every existing field keeps its
 // meaning.
-const SchemaVersion = 10
+const SchemaVersion = 11
 
 // respond emits one flat JSON object: schema_version plus the given fields.
 //
