@@ -48,7 +48,7 @@ var commandFlags = map[string][]string{
 	"init":       {"--force"},
 	"sync":       {"--dry-run", "--no-confirm"},
 	"list":       {"--managed", "--provider"},
-	"inventory":  {"--provider", "--format", "--pin-versions", "--portability"},
+	"inventory":  {"--provider", "--format", "--pin-versions", "--portability", "--compare"},
 	"adopt":      {"--all", "--provider", "--dry-run", "--no-confirm"},
 	"info":       {},
 	"explain":    {"--provider"},
@@ -136,6 +136,7 @@ Options:
 	"inventory": `Usage: str inventory [--provider <name>]...
        str inventory --format toml [package...] [--pin-versions] [--provider <name>]...
        str inventory --portability [--provider <name>]...
+       str inventory --compare <manifest.toml> [--provider <name>]...
 
 List every package each available provider reports as installed: provider,
 the provider's own name for it, version, scope, path, and whether the
@@ -172,11 +173,24 @@ reason. Dependencies and system software are counted and left out. It is an
 estimate from what the providers here report, not a promise about another
 machine, and it changes nothing.
 
+--compare <manifest.toml> reads a manifest captured on another machine
+(with --format toml) and compares it with what the providers here report.
+Each entry is present, drift (another version than its pin, or another
+provider has it), missing, unsupported (the operating system's own, a
+provider Starpoint does not have or that is unusable here, a pin, channel or
+placement it cannot honour) or unknown (no provider named, or a provider
+that did not list), with the reason. Names are never mapped to another
+provider. The recovery plan is the list of 'str install' commands for the
+missing entries, ordered by provider and name. It is printed, never run:
+each command confirms first, records the package in this machine's
+configuration, and refuses to make a second copy. Nothing is changed.
+
 Options:
   --provider <name>   Only this provider (repeatable)
   --format <format>   table (default) or toml
   --pin-versions      With --format toml, pin each observed version
   --portability       Summarise how reproducible the selected software is
+  --compare <file>    Compare a manifest from another machine and plan its recovery
   --json              Machine-readable output
 `,
 	"adopt": `Usage: str adopt <package>... [provider]
