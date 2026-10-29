@@ -9,6 +9,7 @@ package apt
 import (
 	"context"
 	"strings"
+	"sync"
 
 	"github.com/hxmbl/starpoint/internal/exec"
 	"github.com/hxmbl/starpoint/internal/model"
@@ -25,6 +26,9 @@ const ChannelMain = "main"
 // Provider implements provider.Provider for APT.
 type Provider struct {
 	runner exec.Runner
+
+	archMu sync.Mutex
+	arch   string // dpkg's native architecture, once known
 }
 
 var _ provider.Provider = (*Provider)(nil)
@@ -87,6 +91,7 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 	if res.Failed() {
 		return nil, shell.Failure(p.Name(), "list", shell.Diagnostic(res.Field()), nil)
 	}
+	native := p.nativeArch(ctx)
 	var out []model.Installation
 	for _, line := range strings.Split(res.Stdout, "\n") {
 		parts := strings.SplitN(strings.TrimSpace(line), "\t", 2)
@@ -96,7 +101,7 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 		// dpkg distinguishes installed from config-files-only states; -W only
 		// lists known packages, so filter on the status text when present.
 		out = append(out, model.Installation{
-			Name:     parts[0],
+			Name:     native.strip(parts[0]),
 			Version:  parts[1],
 			Provider: p.Name(),
 			Scope:    model.ScopeGlobal,
@@ -120,11 +125,44 @@ func (p *Provider) Installed(ctx context.Context, pkg model.Package) (*model.Ins
 		return nil, nil
 	}
 	return &model.Installation{
-		Name:     fields[0],
+		Name:     p.nativeArch(ctx).strip(fields[0]),
 		Version:  fields[1],
 		Provider: p.Name(),
 		Scope:    model.ScopeGlobal,
 	}, nil
+}
+
+// arch is dpkg's native architecture ("arm64", "amd64"); empty when it
+// could not be read.
+type arch string
+
+// strip drops the native-architecture qualifier dpkg's ${binary:Package}
+// adds to Multi-Arch: same packages (libc6:arm64 becomes libc6), so a name
+// means the same package on a machine of another architecture and matches
+// what 'str install' and apt-mark write. A foreign-architecture qualifier
+// (libc6:i386) is a different package and is kept, as is every name when
+// the native architecture is unknown.
+func (a arch) strip(name string) string {
+	if a == "" {
+		return name
+	}
+	return strings.TrimSuffix(name, ":"+string(a))
+}
+
+// nativeArch asks dpkg for its architecture once. A failure is not kept,
+// and leaves names as dpkg wrote them.
+func (p *Provider) nativeArch(ctx context.Context) arch {
+	p.archMu.Lock()
+	defer p.archMu.Unlock()
+	if p.arch != "" {
+		return arch(p.arch)
+	}
+	res, err := p.runner.Run(ctx, "dpkg", "--print-architecture")
+	if err != nil || res.Failed() {
+		return ""
+	}
+	p.arch = strings.TrimSpace(res.Stdout)
+	return arch(p.arch)
 }
 
 // Install installs a package, honouring an explicit version pin.

@@ -2,6 +2,7 @@ package apt
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/hxmbl/starpoint/internal/exec"
@@ -164,5 +165,50 @@ func TestPermissionErrorNamesRoot(t *testing.T) {
 	}
 	if pe.Message == "" {
 		t.Error("the message must tell the user what to do")
+	}
+}
+
+// dpkg qualifies Multi-Arch: same packages with the native architecture
+// (libc6:arm64). Seen on a real Debian trixie arm64 host: the qualifier made
+// a captured manifest name an arm64-only package, so an amd64 machine would
+// have been planned a foreign-architecture install, and a configuration
+// entry "zlib1g" never matched the installed "zlib1g:arm64". The native
+// qualifier is dropped; a foreign one is a different package and is kept.
+func TestDiscoverDropsTheNativeArchitectureQualifier(t *testing.T) {
+	p, r := newProvider(t)
+	r.Set("arm64\n", "dpkg", "--print-architecture")
+	r.Set("libc6:arm64\t2.41-12\nlibc6:armhf\t2.41-12\ngit\t1:2.47.3-0\nzlib1g:arm64\t1:1.3.dfsg\n", "dpkg-query", "-W", "-f="+dpkgFormat)
+	insts, err := p.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	var names []string
+	for _, in := range insts {
+		names = append(names, in.Name)
+	}
+	if got := strings.Join(names, " "); got != "libc6 libc6:armhf git zlib1g" {
+		t.Errorf("names = %q, want the native qualifier dropped and the foreign one kept", got)
+	}
+	r.Set("zlib1g:arm64\t1:1.3.dfsg\n", "dpkg-query", "-W", "-f="+dpkgFormat, "zlib1g")
+	inst, err := p.Installed(context.Background(), model.Package{Name: "zlib1g"})
+	if err != nil || inst == nil || inst.Name != "zlib1g" {
+		t.Errorf("Installed should report the unqualified name: %+v, %v", inst, err)
+	}
+	marks, err := func() (map[string]bool, error) {
+		r.Set("libc6\ngit\n", "apt-mark", "showmanual")
+		return p.Requested(context.Background(), insts)
+	}()
+	if err != nil || !marks["libc6"] || marks["zlib1g"] || !marks["libc6:armhf"] {
+		t.Errorf("manual marks still match: %v, %v", marks, err)
+	}
+}
+
+// When dpkg cannot say its architecture, names are left as dpkg wrote them.
+func TestDiscoverKeepsQualifiersWhenTheArchitectureIsUnknown(t *testing.T) {
+	p, r := newProvider(t)
+	r.Set("libc6:arm64\t2.41-12\n", "dpkg-query", "-W", "-f="+dpkgFormat)
+	insts, err := p.Discover(context.Background())
+	if err != nil || len(insts) != 1 || insts[0].Name != "libc6:arm64" {
+		t.Errorf("want libc6:arm64 unchanged: %+v, %v", insts, err)
 	}
 }
