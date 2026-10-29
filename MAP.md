@@ -275,6 +275,16 @@ user, an unknown directory is root, as it always was
   `channel-unsupported`) from provider capabilities alone. Always labelled
   an estimate; writes nothing
 
+**`internal/engine/compare.go`** - `str inventory --compare <manifest>`
+- A manifest from another machine read against this machine's inventory:
+  each entry `present`, `drift` (`version-drift`, `provider-drift`),
+  `missing`, `unsupported` or `unknown`, from the inventory and provider
+  capabilities alone. Never maps a name or a provider; an entry naming no
+  provider is matched only when exactly one provider has it and is never
+  planned. The plan is the `str install` commands for missing entries,
+  printed and never run, so install's confirmation, recording and
+  duplicate rule still decide; writes nothing
+
 **`internal/engine/survey.go`** - One round of concurrent "do you have this?"
 - `SurveyTimeout` is 20 seconds; a hung package manager costs the timeout, not
   the run — and providers that cannot enumerate are skipped rather than asked
