@@ -803,6 +803,21 @@ Usage:
   str <command> [options]
   str <command> --help      Help for one command
 
+From one machine to another (steps 1 to 4 change nothing):
+  1. str inventory                           See what every provider has installed
+  2. str inventory --format toml > setup.toml
+                                             Capture the selected software; review the file
+  3. str inventory --portability             Estimate how much of it another machine could reproduce
+  4. str inventory --compare setup.toml      On the other machine: what is present, drifted,
+                                             missing or unsupported, and the recovery plan
+  5. Run the plan's 'str install' steps, with --dry-run first. These change the machine:
+     each asks first, records the package, and refuses to make a second copy.
+
+Leave the machine and the configuration alone: list, inventory, info, explain,
+doctor, runs, help, and every --dry-run. All but inventory append to Starpoint's own
+log in ~/.starpoint/logs/; inventory writes nothing at all.
+Everything else can change the machine or the configuration, and asks first.
+
 Commands:
   init [--force]                 Create the global configuration (~/.starpoint.toml)
   sync [--dry-run] [--no-confirm]
@@ -810,7 +825,8 @@ Commands:
                                  never removes or moves software
   list, ls                       Show managed software, where it is, and who owns it
   inventory [--provider <name>]  List what every provider has installed, managed or not;
-                                 changes and records nothing
+                                 changes and records nothing (--format toml captures a
+                                 manifest, --portability estimates, --compare <file> plans)
   info, show <package>           Show one package's state in detail
   explain <package>              Show how Starpoint decides which provider owns a package
   doctor [--all]                 Inspect Starpoint, configuration, providers, ownership, PATH

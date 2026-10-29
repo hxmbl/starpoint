@@ -32,6 +32,41 @@ str sync                  # converge
 str doctor                # inspect everything
 ```
 
+### From one machine to another
+
+The quickest way to see what Starpoint is for: look at the machine you have,
+capture what you chose to install, and plan how to get it back on another
+machine. Steps 1 to 4 only read. Nothing is installed, removed or recorded
+until you run a plan step yourself.
+
+<!-- journey:start -->
+```sh
+# On the machine you have:
+str inventory                               # 1. everything each provider has installed, managed or not
+str inventory --format toml > setup.toml    # 2. capture the selected software as a manifest; review it
+str inventory --portability                 # 3. how much of it another machine could reproduce, and why not
+
+# On the machine you want, with setup.toml copied over:
+str inventory --compare setup.toml          # 4. present, drift, missing, unsupported, and the recovery plan
+str install jq brew --dry-run               # 5. a plan step: see it first, then run it without --dry-run
+```
+<!-- journey:end -->
+
+Step 4 prints the plan as the `str install` commands for what is missing,
+ordered by provider and name. It also lists what it will not plan and why: a
+pin the provider here cannot install, a provider this machine does not have,
+something another provider already has, or an entry whose provider the
+manifest does not name. Starpoint never maps a package to another provider
+or name for you.
+
+Step 5 is where the machine changes. Each step asks first, records the
+package in `~/.starpoint.toml`, and is refused rather than make a second copy
+of software another provider already has. `--json` on steps 1 to 4 gives the
+same answers in machine-readable form (see [docs/json-schema.md](docs/json-schema.md)).
+The package-manager commands below (`install`, `sync`, `adopt`, `transition`,
+`update`, `prune`) work as they always have. The journey is a way in, not a
+replacement.
+
 ### `str` was `starpoint`
 
 The executable used to be called `starpoint`. The old name still runs the same
