@@ -81,8 +81,15 @@ func Dirs() []string { return systemDirs[runtime.GOOS] }
 
 // Discover lists executables in the system directories.
 func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
+	return p.discoverIn(Dirs()), nil
+}
+
+// discoverIn lists the executables in dirs. An entry is judged by what it
+// points at, as running it would: a symlink to a directory (Debian's
+// /usr/bin/X11 -> .) is not software, and a dangling one runs nothing.
+func (p *Provider) discoverIn(dirs []string) []model.Installation {
 	var out []model.Installation
-	for _, dir := range Dirs() {
+	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue
@@ -91,19 +98,20 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 			if e.IsDir() {
 				continue
 			}
-			info, err := e.Info()
-			if err != nil || info.Mode()&0o111 == 0 {
+			path := filepath.Join(dir, e.Name())
+			info, err := os.Stat(path)
+			if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
 				continue
 			}
 			out = append(out, model.Installation{
 				Name:     e.Name(),
 				Provider: p.Name(),
 				Scope:    model.ScopeGlobal,
-				Path:     filepath.Join(dir, e.Name()),
+				Path:     path,
 			})
 		}
 	}
-	return out, nil
+	return out
 }
 
 // Installed resolves a name within the system directories, ignoring PATH. Looking

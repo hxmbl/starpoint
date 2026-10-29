@@ -2,7 +2,11 @@ package system
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"runtime"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/hxmbl/starpoint/internal/model"
@@ -109,5 +113,32 @@ func TestDiscoverOnlyReturnsExecutablesInSystemDirs(t *testing.T) {
 		if !OwnsPath(i.Path) {
 			t.Errorf("discovered a path outside the system directories: %+v", i)
 		}
+	}
+}
+
+// Seen on a real Debian trixie host: /usr/bin/X11 is a symlink to ".", and
+// was reported as system software called "X11". Entries are judged by what
+// they point at.
+func TestDiscoverSkipsSymlinksToDirectoriesAndDanglingLinks(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, mode os.FileMode) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("git", 0o755)
+	write("README", 0o644)
+	for link, target := range map[string]string{"X11": ".", "gone": "nowhere", "vi": "git"} {
+		if err := os.Symlink(target, filepath.Join(dir, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var names []string
+	for _, in := range New(testsupport.NewFakeRunner()).discoverIn([]string{dir}) {
+		names = append(names, in.Name)
+	}
+	sort.Strings(names)
+	if got := strings.Join(names, " "); got != "git vi" {
+		t.Errorf("discovered %q, want the executable and the link to it only", got)
 	}
 }
