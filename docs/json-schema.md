@@ -4,9 +4,11 @@ This document describes Starpoint's machine-readable output envelope and payload
 
 ## Schema Version
 
-Current schema version: `10`
+Current schema version: `11`
 
-All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Renaming the executable from `starpoint` to `str` changed nothing here: the envelope, every code and the `doctor` payload's `starpoint` object (which describes Starpoint itself) are the same under either name, and so is the version. Every response is `{ "schema_version": 10, ...command fields }`; errors are `{ "schema_version": 10, "error": "..." }` on stderr, and a refusal adds `code`, `exit_code` and, when the command had a plan, `refused` (see "Errors and refusals").
+All JSON output, including errors, includes a top-level `schema_version` field. The version applies to the complete response envelope and every command payload. It is independent of the TOML configuration `schema` field. Renaming the executable from `starpoint` to `str` changed nothing here: the envelope, every code and the `doctor` payload's `starpoint` object (which describes Starpoint itself) are the same under either name, and so is the version. Every response is `{ "schema_version": 11, ...command fields }`; errors are `{ "schema_version": 11, "error": "..." }` on stderr, and a refusal adds `code`, `exit_code` and, when the command had a plan, `refused` (see "Errors and refusals").
+
+Version 11 adds `inventory --compare <manifest>`, a read-only comparison of a manifest captured on another machine with this one: each entry `present`, `drift`, `missing`, `unsupported` or `unknown`, with a code and reason, and a recovery plan of the `str install` commands for what is missing, which Starpoint prints and never runs. Every field a version 10 consumer read keeps its meaning. See "Migrating from schema 10 to 11".
 
 Version 10 adds `inventory --portability`, a read-only estimate of how much of the selected software on this machine Starpoint could reproduce on another one, with the reason for each entry that it could not. Every field a version 9 consumer read keeps its meaning. See "Migrating from schema 9 to 10".
 
@@ -386,7 +388,7 @@ nothing, writes no configuration and leaves no audit entry. It reports:
 
 ```json
 {
-  "schema_version": 10,
+  "schema_version": 11,
   "providers": [
     {
       "name": "string",
@@ -456,7 +458,7 @@ resolved, nothing is written. It cannot be combined with `--format toml`.
 
 ```json
 {
-  "schema_version": 10,
+  "schema_version": 11,
   "portability": {
     "note": "string",
     "declared":   { "total": "integer", "reproducible": "integer", "unknown": "integer", "unsupported": "integer" },
@@ -503,6 +505,72 @@ guarantee: the other machine's operating system, architecture, package
 sources and available versions decide what can actually be installed. A
 provider that could not list leaves a `discover-failed` warning, in both
 `warnings`, and the summary is incomplete.
+
+### Inventory: compare
+
+`str inventory --compare <manifest.toml> --json` reads a manifest (the
+`[[package]]` entries `inventory --format toml` writes on another machine)
+and compares it with this machine's inventory. It writes nothing, runs no
+installs and does not consult the resolver.
+
+```json
+{
+  "schema_version": 11,
+  "comparison": {
+    "note": "string",
+    "manifest": "/abs/path/laptop.toml",
+    "counts": { "total": 0, "present": 0, "drift": 0, "missing": 0, "unsupported": 0, "unknown": 0 },
+    "entries": [
+      {
+        "name": "string",
+        "provider": "string (as the manifest names it; omitted when it names none)",
+        "resolved_provider": "string (an unnamed entry that exactly one provider has here)",
+        "version": "string (the manifest's pin)",
+        "channel": "string",
+        "scope": "string",
+        "status": "present | drift | missing | unsupported | unknown",
+        "code": "string",
+        "reason": "string",
+        "target": [ { "provider": "string", "version": "string" } ],
+        "candidates": ["string"],
+        "commands": ["string (what settles a drift by hand; never run)"]
+      }
+    ],
+    "plan": [
+      { "name": "string", "provider": "string", "version": "string", "channel": "string",
+        "command": "str install ruff@0.6.0 uv" }
+    ],
+    "warnings": [Warning]
+  },
+  "warnings": [Warning]
+}
+```
+
+Entries are ordered by name, plan steps by provider then name, so the same
+manifest and the same machine give the same output.
+
+| `status` | `code` | Meaning |
+|---|---|---|
+| `present` | | The provider the manifest names has it, at the pinned version if it pins one. An entry naming no provider is present when exactly one non-system provider has it (`resolved_provider`). |
+| `drift` | `version-drift` | The manifest pins a version and the provider here has another. Not planned: changing it replaces the installed version. |
+| `drift` | `provider-drift` | Another provider has it here. Not planned: installing it would make a second copy. `commands` names `str adopt` and `str install … --allow-duplicate`. |
+| `missing` | | Nothing here has it and its provider can install it as asked. It is a plan step. |
+| `unsupported` | `unsupported-provider` | `system`, a provider Starpoint does not have (never mapped to another), or one that cannot install. |
+| `unsupported` | `provider-unavailable` | A Starpoint provider that is not usable here; `reason` carries its health reason. |
+| `unsupported` | `pin-unavailable` | A pin its provider cannot install on request. It is not offered unpinned. |
+| `unsupported` | `channel-unsupported` | A channel its provider has no notion of. |
+| `unsupported` | `scope-unplannable` | A placement other than the provider's default, which `str install` cannot ask for. |
+| `unknown` | `unknown-provider` | The manifest names no provider and no non-system provider has it here. Starpoint will not choose one. |
+| `unknown` | `ambiguous-identity` | The manifest names no provider and several providers have it here (`candidates`). |
+| `unknown` | `not-listed` | Its provider is usable but did not list, so whether it is already here is not known. |
+
+The plan is advice. Running a step goes through `install` as usual: it
+confirms first, records the package in this machine's configuration, and is
+refused with `duplicate-install` (exit 5) rather than make a second copy
+when unattended. A provider that could not list leaves a `discover-failed`
+warning and the comparison is incomplete. The command exits 0 whatever the
+counts; read `counts` to gate a script. A manifest that does not exist is a
+usage error (exit 2); one that does not parse is an error (exit 1).
 
 ### Doctor: unmanaged software
 
@@ -582,7 +650,7 @@ not observed; inside a virtualenv the planned effect is a non-destructive
 
 ```json
 {
-  "schema_version": 10,
+  "schema_version": 11,
   "operation": "remove",
   "dry_run": false,
   "config_changed": true,
@@ -644,7 +712,7 @@ not observed; inside a virtualenv the planned effect is a non-destructive
 Every error is one JSON document on stderr:
 
 ```json
-{ "schema_version": 10, "error": "string" }
+{ "schema_version": 11, "error": "string" }
 ```
 
 A refusal is an error that a flag would have allowed. Nothing was changed. It
@@ -653,7 +721,7 @@ planned its work, `refused`:
 
 ```json
 {
-  "schema_version": 10,
+  "schema_version": 11,
   "error": "string",
   "code": "destructive-unattended | elevated-refused | invoking-user-unresolved | privilege-drop-failed | owner-ambiguous | duplicate-install | provider-ambiguous",
   "exit_code": 3,
@@ -693,7 +761,7 @@ Exit status for every command: `0` success, `1` failure, `2` usage error, `3`,
 
 ```json
 {
-  "schema_version": 10,
+  "schema_version": 11,
   "error": "refusing to remove unattended: it would delete or replace something (ruff) and --yes (or --no-confirm) was given. Nothing was changed. Review the planned changes, then rerun with --allow-destructive to allow it",
   "code": "destructive-unattended",
   "exit_code": 3,
@@ -1017,6 +1085,15 @@ Version 10 adds; nothing a version 9 consumer read is removed or renamed.
 2. `inventory --portability` is new, with its own payload: `portability`
    and `warnings` (see "Inventory: portability"). Plain `inventory` returns
    the same payload as in version 9.
+
+## Migrating from schema 10 to 11
+
+Version 11 adds; nothing a version 10 consumer read is removed or renamed.
+
+1. The version number moved from 10 to 11.
+2. `inventory --compare <manifest>` is new, with its own payload:
+   `comparison` and `warnings` (see "Inventory: compare"). Plain
+   `inventory`, `--portability` and `--format toml` are unchanged.
 
 ## Versioning Policy
 
