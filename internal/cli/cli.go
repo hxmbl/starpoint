@@ -813,7 +813,9 @@ From one machine to another (steps 1 to 4 change nothing):
   5. Run the plan's 'str install' steps, with --dry-run first. These change the machine:
      each asks first, records the package, and refuses to make a second copy.
 
-Read only: list, inventory, info, explain, doctor, runs, help, and every --dry-run.
+Leave the machine and the configuration alone: list, inventory, info, explain,
+doctor, runs, help, and every --dry-run. All but inventory append to Starpoint's own
+log in ~/.starpoint/logs/; inventory writes nothing at all.
 Everything else can change the machine or the configuration, and asks first.
 
 Commands:

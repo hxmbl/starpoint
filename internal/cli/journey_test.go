@@ -82,7 +82,7 @@ func TestReadmeJourneyRunsAsWritten(t *testing.T) {
 }
 
 // The top-level help leads with the same journey and says which commands
-// only read.
+// leave the machine alone, and which of those still write a log.
 func TestHelpPointsAtTheJourney(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")
 	out := h.mustRun("help")
@@ -91,11 +91,17 @@ func TestHelpPointsAtTheJourney(t *testing.T) {
 		"str inventory --format toml > setup.toml",
 		"str inventory --portability",
 		"str inventory --compare setup.toml",
-		"Read only: list, inventory, info, explain, doctor, runs",
+		"Leave the machine and the configuration alone: list, inventory, info, explain,",
+		"All but inventory append to Starpoint's own\nlog in ~/.starpoint/logs/; inventory writes nothing at all.",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("want %q in the top-level help:\n%s", want, out)
 		}
+	}
+	// list and doctor write their own audit entries, so the help must not
+	// call them read only.
+	if strings.Contains(out, "Read only:") {
+		t.Errorf("the top-level help should not call commands that log read only:\n%s", out)
 	}
 	inv := h.mustRun("inventory", "--help")
 	if !strings.Contains(inv, "Moving a setup to another machine") || !strings.Contains(inv, "--compare setup.toml") {
