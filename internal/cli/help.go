@@ -185,6 +185,12 @@ missing entries, ordered by provider and name. It is printed, never run:
 each command confirms first, records the package in this machine's
 configuration, and refuses to make a second copy. Nothing is changed.
 
+Moving a setup to another machine, all read-only until the last step:
+  str inventory --format toml > setup.toml   # on the machine you have; review it
+  str inventory --portability                # how much another machine could reproduce
+  str inventory --compare setup.toml         # on the machine you want: the recovery plan
+Then run the plan's 'str install' steps yourself, with --dry-run first.
+
 Options:
   --provider <name>   Only this provider (repeatable)
   --format <format>   table (default) or toml
