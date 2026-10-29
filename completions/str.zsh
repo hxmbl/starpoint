@@ -32,7 +32,7 @@ _str() {
     init) flags=(--force) ;;
     sync) flags=(--dry-run --no-confirm) ;;
     list|ls) flags=(--managed --provider) ;;
-    inventory) flags=(--provider --format --pin-versions --portability) ;;
+    inventory) flags=(--provider --format --pin-versions --portability --compare) ;;
     adopt) flags=(--all --provider --dry-run --no-confirm) ;;
     info|show) flags=() ;;
     explain) flags=(--provider) ;;
