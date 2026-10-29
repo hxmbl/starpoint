@@ -8,29 +8,29 @@ import (
 	"github.com/hxmbl/starpoint/internal/model"
 )
 
-// The audit found `starpoint add --help` planning an install of a package
+// The audit found `str add --help` planning an install of a package
 // called "--help" (and running it with --no-confirm). Help after any command is
 // help for that command.
 func TestHelpAfterEveryCommandPrintsThatCommandsHelp(t *testing.T) {
 	cases := map[string]string{
-		"install":    "Usage: starpoint install",
-		"add":        "Usage: starpoint install",
-		"i":          "Usage: starpoint install",
-		"remove":     "Usage: starpoint remove",
-		"uninstall":  "Usage: starpoint remove",
-		"rm":         "Usage: starpoint remove",
-		"update":     "Usage: starpoint update",
-		"upgrade":    "Usage: starpoint update",
-		"sync":       "Usage: starpoint sync",
-		"list":       "Usage: starpoint list",
-		"info":       "Usage: starpoint info",
-		"explain":    "Usage: starpoint explain",
-		"doctor":     "Usage: starpoint doctor",
-		"transition": "Usage: starpoint transition",
-		"runs":       "Usage: starpoint runs",
-		"prune":      "Usage: starpoint prune",
-		"recover":    "Usage: starpoint recover",
-		"init":       "Usage: starpoint init",
+		"install":    "Usage: str install",
+		"add":        "Usage: str install",
+		"i":          "Usage: str install",
+		"remove":     "Usage: str remove",
+		"uninstall":  "Usage: str remove",
+		"rm":         "Usage: str remove",
+		"update":     "Usage: str update",
+		"upgrade":    "Usage: str update",
+		"sync":       "Usage: str sync",
+		"list":       "Usage: str list",
+		"info":       "Usage: str info",
+		"explain":    "Usage: str explain",
+		"doctor":     "Usage: str doctor",
+		"transition": "Usage: str transition",
+		"runs":       "Usage: str runs",
+		"prune":      "Usage: str prune",
+		"recover":    "Usage: str recover",
+		"init":       "Usage: str init",
 	}
 	for cmd, want := range cases {
 		for _, flag := range []string{"--help", "-h"} {
@@ -53,7 +53,7 @@ func TestHelpFlagIsNeverAPackageName(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")
 	before := h.configBody()
 	code, out, _ := h.run("add", "ripgrep", "--help", "--no-confirm")
-	if code != 0 || !strings.Contains(out, "Usage: starpoint install") {
+	if code != 0 || !strings.Contains(out, "Usage: str install") {
 		t.Fatalf("expected install help, got %d:\n%s", code, out)
 	}
 	if len(h.brew.InstallCalls) != 0 || h.configBody() != before {
@@ -64,7 +64,7 @@ func TestHelpFlagIsNeverAPackageName(t *testing.T) {
 func TestHelpCommandTakesACommandName(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")
 	code, out, _ := h.run("help", "uninstall")
-	if code != 0 || !strings.Contains(out, "Usage: starpoint remove") {
+	if code != 0 || !strings.Contains(out, "Usage: str remove") {
 		t.Errorf("help uninstall should show remove's help, got %d:\n%s", code, out)
 	}
 }

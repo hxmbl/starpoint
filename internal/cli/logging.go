@@ -154,7 +154,7 @@ func loggingConfig(env *Env, w *report.Writer, stateDir, logDir string) error {
 	} else if _, err := os.Lstat(cfg.Path); err == nil {
 		// Something is already there and Starpoint did not write it. It belongs to
 		// the user, so it is left alone and reported rather than replaced.
-		cfg.Note = fmt.Sprintf("%s exists and was not written by Starpoint, so it was left unchanged. Move it aside and run 'starpoint logging config' again to generate one.", cfg.Path)
+		cfg.Note = fmt.Sprintf("%s exists and was not written by Starpoint, so it was left unchanged. Move it aside and run 'str logging config' again to generate one.", cfg.Path)
 		env.audit(auditlog.Entry{
 			Event: auditlog.EventConfig, Command: "logging",
 			Result: "refused", Detail: cfg.Path,

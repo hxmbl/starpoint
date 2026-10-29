@@ -642,7 +642,7 @@ func validate(f File) []string {
 	return out
 }
 
-// RenderTemplate is the documentation `starpoint init` prints.
+// RenderTemplate is the documentation `str init` prints.
 //
 // It is printed rather than written into the file on purpose: Starpoint rewrites
 // the configuration whenever it records a provider decision, and a TOML round

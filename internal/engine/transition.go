@@ -473,7 +473,7 @@ func (e *Engine) executeTransition(ctx context.Context, st model.State, opts Opt
 			t.Recoverable = true
 			t.Note = fmt.Sprintf("the %s copy was removed, but the %s copy no longer works: %s",
 				from, t.To.Name, t.Verification.Reason())
-			t.Advice = fmt.Sprintf("reinstall %s with 'starpoint sync' or with %s directly", pkg.Name, t.To.Name)
+			t.Advice = fmt.Sprintf("reinstall %s with 'str sync' or with %s directly", pkg.Name, t.To.Name)
 			if err == nil {
 				err = fmt.Errorf("%s: %s", pkg.Name, t.Note)
 			}

@@ -28,7 +28,7 @@ func (w *Writer) CaptureTOML(c engine.Capture) error {
 		}
 		fmt.Fprintf(&b, "# "+format+"\n", args...)
 	}
-	line("Starpoint manifest captured by 'starpoint inventory --format toml'.")
+	line("Starpoint manifest captured by 'str inventory --format toml'.")
 	line("Review it before using it as desired state: every entry names the provider that")
 	line("reports the package on this machine. Capturing changed nothing on this machine.")
 	line("")

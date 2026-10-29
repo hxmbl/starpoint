@@ -3,7 +3,10 @@ version: 2
 project_name: starpoint
 
 builds:
-  - main: ./cmd/starpoint
+  # The executable is str (STRM-445). The archives and the formula keep the
+  # project's name, starpoint; the formula also links the old command name.
+  - main: ./cmd/str
+    binary: str
     env:
       - CGO_ENABLED=0
     goos:
@@ -49,10 +52,14 @@ brews:
     description: Declarative orchestration over the package managers on your machine.
     license: MIT
     test: |
+      system "#{bin}/str", "--version"
       system "#{bin}/starpoint", "--version"
     install: |
-      bin.install "starpoint"
-      bash_completion.install "completions/starpoint.bash" => "starpoint"
-      zsh_completion.install "completions/starpoint.zsh"
+      bin.install "str"
+      bin.install_symlink "str" => "starpoint"
+      bash_completion.install "completions/str.bash" => "str"
+      bash_completion.install_symlink bash_completion/"str" => "starpoint"
+      zsh_completion.install "completions/str.zsh" => "_str"
+      fish_completion.install "completions/str.fish"
       fish_completion.install "completions/starpoint.fish"
     skip_upload: true

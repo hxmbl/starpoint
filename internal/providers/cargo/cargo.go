@@ -255,7 +255,7 @@ func classify(op string, res exec.Result) error {
 		strings.Contains(text, "no package named"), strings.Contains(text, "registry index was not found"):
 		return shell.NotFound(Name, op, "Cargo has no crate with this name in the registry")
 	case strings.Contains(text, "already exists"), strings.Contains(text, "binary `") && strings.Contains(text, "already exists"):
-		return shell.Err(Name, op, provider.ErrConflict, "the crate is already installed; use starpoint update", nil)
+		return shell.Err(Name, op, provider.ErrConflict, "the crate is already installed; use str update", nil)
 	case strings.Contains(text, "network"), strings.Contains(text, "connection"), strings.Contains(text, "could not resolve host"):
 		return shell.Err(Name, op, provider.ErrNetwork, "could not reach crates.io", nil)
 	case strings.Contains(text, "permission denied"):

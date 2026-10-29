@@ -132,7 +132,7 @@ type Target struct {
 // Target reports the invoking user's environment, when an elevated run came
 // through sudo or doas from an ordinary user whose ids and home are known.
 //
-// That environment is what such a run acts on: `sudo starpoint install ruff`
+// That environment is what such a run acts on: `sudo str install ruff`
 // is a person asking for ruff, and putting it in /root/.local/bin would give
 // them nothing they can run. Running elevated from root itself (SUDO_USER is
 // root), or with ids or a home that cannot be resolved, has no target: the

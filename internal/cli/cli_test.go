@@ -111,7 +111,7 @@ func newHarness(t *testing.T, configBody string) *harness {
 	testsupport.WriteFile(t, cfg, configBody)
 
 	// Tracking lives in the harness's own state directory, which is where
-	// `starpoint runs` reads from.
+	// `str runs` reads from.
 	stateDir, _ := config.StateDir(cfg)
 	tracker, _ := tracking.New(tracking.PathIn(stateDir))
 
@@ -211,7 +211,7 @@ func (h *harness) mustRun(args ...string) string {
 	h.t.Helper()
 	code, out, errOut := h.run(args...)
 	if code != 0 {
-		h.t.Fatalf("starpoint %s exited %d\nstdout:\n%s\nstderr:\n%s",
+		h.t.Fatalf("str %s exited %d\nstdout:\n%s\nstderr:\n%s",
 			strings.Join(args, " "), code, out, errOut)
 	}
 	return out
@@ -281,7 +281,7 @@ func TestUnknownCommandFails(t *testing.T) {
 func TestVersionFlag(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")
 	out := h.mustRun("--version")
-	if !strings.Contains(out, "starpoint") {
+	if !strings.HasPrefix(out, "str ") {
 		t.Errorf("unexpected version output: %s", out)
 	}
 }
@@ -610,7 +610,7 @@ func TestSyncReportsProviderDriftAndMovesNothing(t *testing.T) {
 		if strings.Contains(out, "relocate") {
 			t.Errorf("%v: sync must not plan a move:\n%s", args, out)
 		}
-		if !strings.Contains(out, "starpoint transition ripgrep") || !strings.Contains(out, "starpoint adopt ripgrep brew") {
+		if !strings.Contains(out, "str transition ripgrep") || !strings.Contains(out, "str adopt ripgrep brew") {
 			t.Errorf("%v: the drift should name both ways to settle it:\n%s", args, out)
 		}
 		if h.asked() {
@@ -734,7 +734,7 @@ func TestListJSONIsMachineReadable(t *testing.T) {
 func TestListWithNoConfiguration(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")
 	out := h.mustRun("list")
-	if !strings.Contains(out, "starpoint install") {
+	if !strings.Contains(out, "str install") {
 		t.Errorf("an empty list should suggest what to do next:\n%s", out)
 	}
 }
@@ -999,7 +999,7 @@ func TestDoctorFlagsMissingConfiguration(t *testing.T) {
 	if code := Run(context.Background(), env, []string{"doctor"}); code != 0 {
 		t.Fatalf("doctor should still succeed: %s", out.String())
 	}
-	if !strings.Contains(out.String(), "run 'starpoint init'") {
+	if !strings.Contains(out.String(), "run 'str init'") {
 		t.Errorf("doctor should suggest init:\n%s", out.String())
 	}
 }

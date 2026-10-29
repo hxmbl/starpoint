@@ -294,7 +294,7 @@ func (e *Env) alignPolicy() *align.Policy {
 // alignOwnFiles gives Starpoint's own records (the global configuration and
 // the state directory: audit log, history, locks) back to the user an
 // elevated run acts for. It runs at the end of every command, read-only ones
-// included, since even `sudo starpoint list` writes to the audit log.
+// included, since even `sudo str list` writes to the audit log.
 func (e *Env) alignOwnFiles() {
 	if e.target == nil {
 		return

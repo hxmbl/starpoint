@@ -16,19 +16,39 @@ config → desired state → provider resolution → current state → diff → 
 
 Starpoint runs on Linux and macOS. There are no Windows builds.
 
-```sh
-go install github.com/hxmbl/starpoint/cmd/starpoint@latest
-# or, from a checkout:
-go build -o starpoint ./cmd/starpoint
+The command is `str`.
 
-./starpoint init                  # create ~/.starpoint.toml
-./starpoint install ruff          # pick a provider, install, record ownership
-./starpoint list                  # what is installed, where, and who owns it
-./starpoint info ruff             # the full picture for one package
-./starpoint sync --dry-run        # what would change
-./starpoint sync                  # converge
-./starpoint doctor                # inspect everything
+```sh
+go install github.com/hxmbl/starpoint/cmd/str@latest
+# or, from a checkout:
+go build -o str ./cmd/str
+
+str init                  # create ~/.starpoint.toml
+str install ruff          # pick a provider, install, record ownership
+str list                  # what is installed, where, and who owns it
+str info ruff             # the full picture for one package
+str sync --dry-run        # what would change
+str sync                  # converge
+str doctor                # inspect everything
 ```
+
+### `str` was `starpoint`
+
+The executable used to be called `starpoint`. The old name still runs the same
+program, so scripts keep working while they move over:
+
+- The Homebrew formula is still `starpoint`; it installs `str` and links
+  `starpoint` to it, with completions for both names.
+- `go install github.com/hxmbl/starpoint/cmd/starpoint@latest` still builds the
+  old name. The release archives ship `str` only; `ln -s str starpoint` beside
+  it keeps the old name.
+- Under the old name, `--version` still prints `starpoint <version>`. At a
+  terminal it also prints one note on stderr pointing at `str`; a script that
+  captures stderr or pipes it sees nothing new.
+- Nothing else changes: the configuration is still `~/.starpoint.toml` (and a
+  project's `.starpoint.toml`), state stays in `.starpoint/` beside it, the
+  `--json` output and its `schema_version` are the same, and the project,
+  module and repository keep the name Starpoint.
 
 ## Configuration
 
@@ -71,10 +91,10 @@ can honour the entry's version pin, channel and scope decides, and the recorded
 in the entry, `--provider` on the command line, an existing install and a
 name's known owner (`rustc` is rustup's) all still win, providers it does not
 list are still considered, and when no listed provider fits Starpoint asks as
-before. `starpoint explain <package>` shows whether the preference decided.
+before. `str explain <package>` shows whether the preference decided.
 A project's own list replaces the global one inside that project.
 
-`starpoint install .` installs what the project in the current directory needs:
+`str install .` installs what the project in the current directory needs:
 
 1. the packages its `.starpoint.toml` declares;
 2. the toolchain its ecosystem expects (node/npm, cargo/rustc, go, python3,
@@ -116,14 +136,14 @@ configuration nor requirements.txt is reported rather than guessed at.
 `provider` is the ownership decision. Once written it is authoritative: `sync`
 converges on it instead of re-deciding. If you deliberately move software to a
 different provider by editing that field, `sync` reports the mismatch as drift
-(`provider-drift`) and changes nothing; `starpoint transition <package>` makes
+(`provider-drift`) and changes nothing; `str transition <package>` makes
 the move — it installs the new copy, verifies it, and only then removes the
-old one — and `starpoint adopt <package> <provider>` instead records the
+old one — and `str adopt <package> <provider>` instead records the
 provider that really has it. `sync` never removes software.
 
 `version` is a hard pin. Starpoint will not move it on its own. If a provider
 cannot deliver it, Starpoint reports the conflict instead of editing the
-configuration to make the problem go away. When `starpoint update` finds a newer
+configuration to make the problem go away. When `str update` finds a newer
 version than a pin allows, it explains the conflict and asks:
 
 ```
@@ -163,8 +183,8 @@ read from the global file only, so a project you have checked out cannot shorten
 or lengthen it. A window that is unset, zero or negative means the default, never
 "keep nothing".
 
-`starpoint logging` reports what is kept, how long, and whether the system's own
-log rotation has been pointed at it; `starpoint logging prune` applies the window
+`str logging` reports what is kept, how long, and whether the system's own
+log rotation has been pointed at it; `str logging prune` applies the window
 now and says what went. Retention does not depend on either — they are for
 looking, not for keeping.
 
@@ -175,7 +195,7 @@ about bulk, not about the configuration ever becoming empty.
 ### Handing the logs to the system logger
 
 Starpoint's own retention already deletes expired logs without privileges, on
-every platform it supports. `starpoint logging config` additionally writes the
+every platform it supports. `str logging config` additionally writes the
 system logger's own rotation configuration, so that logs still inside the window
 are compressed and their count is capped:
 
@@ -197,40 +217,40 @@ is printed for you to run.
 
 | Command | Purpose |
 | --- | --- |
-| `starpoint init [--force]` | Create `~/.starpoint.toml`; exits 1 without changing anything if it exists, `--force` replaces it |
-| `starpoint sync [--dry-run] [--no-confirm]` | Converge the machine onto the configuration: install what is missing, reconcile pins, and record the owner of entries that are installed but have no provider yet (a config-only change). Never removes or moves software; a provider mismatch is reported as drift. An entry with no provider that only the OS has is asked about before a managed copy is added (default no), and refused unattended with `duplicate-install` (exit 5) |
-| `starpoint transition [pkg...] [--all] [--dry-run] [--no-confirm]` | Show or perform provider transitions (alias: `move`) |
-| `starpoint transition --reverse <package>` | Reverse the most recent transition when safe |
-| `starpoint doctor [--all]` | Inspect Starpoint, config, providers, ownership, inconsistencies, PATH; counts unmanaged software per provider and points at `starpoint adopt` (information, not a problem) |
-| `starpoint inventory [--provider <name>]` | List every package each provider reports, managed or not, matched by provider and name; observes only (Health and Discover), works with no configuration, writes nothing — not even the audit log, and an elevated run chowns nothing; each provider gets 20 s to answer; says per package whether it was installed on request, as a dependency, or unknown |
-| `starpoint inventory --format toml [package...] [--pin-versions]` | Print a reviewable manifest ([[package]] entries that parse back as configuration) to stdout; Starpoint writes no file. By default: what the configuration already manages (copied as written) plus what a provider says was installed on request. Dependencies, system software, packages a provider cannot classify, and a name two providers report are left out and listed with a reason in the comment header, as is a provider that could not list. Naming packages captures exactly those. Versions are pinned only with `--pin-versions` and only for providers that can install a chosen version |
-| `starpoint inventory --portability` | Estimate how much of the selected software (configuration entries plus what providers say was installed on request) Starpoint could reproduce on another machine: each entry is reproducible, unknown (no provider, two providers, provider cannot say it was requested) or unsupported (system software, a provider Starpoint lacks or that cannot install, a pin or channel its provider cannot honour), with the reason. An estimate from this machine's provider data, not a guarantee; read-only and deterministic; `--json` carries it as `portability` (schema 10) |
-| `starpoint adopt <package> [provider]`, `starpoint adopt --all` | Record the owner of software that is already installed; never installs, removes or moves anything. `--all` takes everything a provider says was installed on request; dependencies, unclassifiable packages and system software stay unmanaged. `--dry-run`, `--no-confirm` |
-| `starpoint list [--managed] [--provider <name>]` | Show managed software, its location, scope and provider (alias: `ls`) |
-| `starpoint info <package>` | Show one package's state in detail (alias: `show`) |
-| `starpoint explain <package>` | Explain how Starpoint resolves ownership |
-| `starpoint install <package> [provider]` | Install and record (aliases: `add`, `i`); `--version`, `--channel`, `--project`, `--dry-run`, `--no-confirm`. Never adds a second copy silently: unattended, a copy another provider has (or, unless you name the provider, one only the OS has) is refused with `duplicate-install` unless `--allow-duplicate` |
-| `starpoint install .` | Install the current project's declared packages and dependencies; record its toolchain in the project config |
-| `starpoint remove <package> [provider]` | Uninstall and delete from config (aliases: `uninstall`, `rm`); `--dry-run`, `--no-confirm`, `--allow-empty` |
-| `starpoint update [--self] [--dry-run] [--no-confirm]` | Update managed software; asks before moving past a pin (alias: `upgrade`) |
-| `starpoint prune [--dry-run] [--no-confirm]` | Preview and remove orphaned user-scoped installations inside your home directory; never a package manager itself, and every orphan left alone is listed with the reason; refuses when the configuration declares no packages |
-| `starpoint recover [--discard] [--no-confirm]` | Inspect and clear files left by an interrupted run |
-| `starpoint runs [--package <name>] [--directory <dir>]` | Show where Starpoint has been run (alias: `history`) |
-| `starpoint logging [prune\|config]` | Show, age out, or configure Starpoint's own logging (alias: `logs`) |
-| `starpoint help [command]` | General help, or one command's help (same as `<command> --help`) |
+| `str init [--force]` | Create `~/.starpoint.toml`; exits 1 without changing anything if it exists, `--force` replaces it |
+| `str sync [--dry-run] [--no-confirm]` | Converge the machine onto the configuration: install what is missing, reconcile pins, and record the owner of entries that are installed but have no provider yet (a config-only change). Never removes or moves software; a provider mismatch is reported as drift. An entry with no provider that only the OS has is asked about before a managed copy is added (default no), and refused unattended with `duplicate-install` (exit 5) |
+| `str transition [pkg...] [--all] [--dry-run] [--no-confirm]` | Show or perform provider transitions (alias: `move`) |
+| `str transition --reverse <package>` | Reverse the most recent transition when safe |
+| `str doctor [--all]` | Inspect Starpoint, config, providers, ownership, inconsistencies, PATH; counts unmanaged software per provider and points at `str adopt` (information, not a problem) |
+| `str inventory [--provider <name>]` | List every package each provider reports, managed or not, matched by provider and name; observes only (Health and Discover), works with no configuration, writes nothing — not even the audit log, and an elevated run chowns nothing; each provider gets 20 s to answer; says per package whether it was installed on request, as a dependency, or unknown |
+| `str inventory --format toml [package...] [--pin-versions]` | Print a reviewable manifest ([[package]] entries that parse back as configuration) to stdout; Starpoint writes no file. By default: what the configuration already manages (copied as written) plus what a provider says was installed on request. Dependencies, system software, packages a provider cannot classify, and a name two providers report are left out and listed with a reason in the comment header, as is a provider that could not list. Naming packages captures exactly those. Versions are pinned only with `--pin-versions` and only for providers that can install a chosen version |
+| `str inventory --portability` | Estimate how much of the selected software (configuration entries plus what providers say was installed on request) Starpoint could reproduce on another machine: each entry is reproducible, unknown (no provider, two providers, provider cannot say it was requested) or unsupported (system software, a provider Starpoint lacks or that cannot install, a pin or channel its provider cannot honour), with the reason. An estimate from this machine's provider data, not a guarantee; read-only and deterministic; `--json` carries it as `portability` (schema 10) |
+| `str adopt <package> [provider]`, `str adopt --all` | Record the owner of software that is already installed; never installs, removes or moves anything. `--all` takes everything a provider says was installed on request; dependencies, unclassifiable packages and system software stay unmanaged. `--dry-run`, `--no-confirm` |
+| `str list [--managed] [--provider <name>]` | Show managed software, its location, scope and provider (alias: `ls`) |
+| `str info <package>` | Show one package's state in detail (alias: `show`) |
+| `str explain <package>` | Explain how Starpoint resolves ownership |
+| `str install <package> [provider]` | Install and record (aliases: `add`, `i`); `--version`, `--channel`, `--project`, `--dry-run`, `--no-confirm`. Never adds a second copy silently: unattended, a copy another provider has (or, unless you name the provider, one only the OS has) is refused with `duplicate-install` unless `--allow-duplicate` |
+| `str install .` | Install the current project's declared packages and dependencies; record its toolchain in the project config |
+| `str remove <package> [provider]` | Uninstall and delete from config (aliases: `uninstall`, `rm`); `--dry-run`, `--no-confirm`, `--allow-empty` |
+| `str update [--self] [--dry-run] [--no-confirm]` | Update managed software; asks before moving past a pin (alias: `upgrade`) |
+| `str prune [--dry-run] [--no-confirm]` | Preview and remove orphaned user-scoped installations inside your home directory; never a package manager itself, and every orphan left alone is listed with the reason; refuses when the configuration declares no packages |
+| `str recover [--discard] [--no-confirm]` | Inspect and clear files left by an interrupted run |
+| `str runs [--package <name>] [--directory <dir>]` | Show where Starpoint has been run (alias: `history`) |
+| `str logging [prune\|config]` | Show, age out, or configure Starpoint's own logging (alias: `logs`) |
+| `str help [command]` | General help, or one command's help (same as `<command> --help`) |
 
 A provider may be named after the package names, before them, or with
 `--provider`, and a version may be written inline:
 
 ```
-starpoint install ripgrep brew
-starpoint install brew ripgrep
-starpoint install ripgrep --provider brew
-starpoint install ripgrep@14.1.0 brew
-starpoint install @types/node@5.0.0 npm
+str install ripgrep brew
+str install brew ripgrep
+str install ripgrep --provider brew
+str install ripgrep@14.1.0 brew
+str install @types/node@5.0.0 npm
 ```
 
-A single token is always a package name — `starpoint install brew` installs the
+A single token is always a package name — `str install brew` installs the
 software called brew — and naming two providers is an error rather than a guess.
 
 **Confirmation.** Anything that installs, removes or updates software describes
@@ -253,7 +273,7 @@ runs are unchanged: the confirmation step already lists every effect, the
 destructive ones marked `!`. Dry runs are never refused.
 
 ```
-$ starpoint remove ruff --yes
+$ str remove ruff --yes
 error [destructive-unattended]: refusing to remove unattended: it would delete or replace something (ruff) and --yes (or --no-confirm) was given. Nothing was changed. Review the planned changes, then rerun with --allow-destructive to allow it
 
 Planned changes (none were made; ! removes or overwrites something):
@@ -264,11 +284,11 @@ Planned changes (none were made; ! removes or overwrites something):
       ! ruff would stop resolving to ~/.local/bin/ruff
 ```
 
-**What prune never touches.** `starpoint prune` only removes software inside the
+**What prune never touches.** `str prune` only removes software inside the
 home directory of the user it acts for (under `sudo`, the invoking user's; in a
 plain root shell, root's own), and never a package manager: no registered
-provider (npm, pip, uv, pnpm, yarn, cargo, ...), `corepack` or `starpoint`
-itself, wherever it lives. A system npm prefix such as `/usr/lib/node_modules`
+provider (npm, pip, uv, pnpm, yarn, cargo, ...), `corepack` or Starpoint
+itself (`str`, or `starpoint`), wherever it lives. A system npm prefix such as `/usr/lib/node_modules`
 or the interpreter's own site-packages belongs to the machine, whoever runs
 Starpoint. Each orphan it leaves alone for either reason is still listed, with
 the reason, as a `prune-skipped` warning in human output and in `--json`.
@@ -281,7 +301,7 @@ a question that names whose environment will change stands in for the flag;
 refusal exits 4 with `code: "elevated-refused"`.
 
 ```
-$ sudo starpoint install ripgrep --yes
+$ sudo str install ripgrep --yes
 error [elevated-refused]: refusing to install as root (effective user id 0, root). Nothing was changed. Run it as your own user, or pass --allow-root to mean it (--yes does not answer this question; an unattended elevated run needs --allow-root)
 ```
 
@@ -359,7 +379,7 @@ fails raises a `permission-fix-failed` warning. Every action reports `run_as`
 JSON, in the audit log and, with `--verbose`, in human output:
 
 ```
-$ sudo starpoint install ruff --provider uv --yes --allow-root --verbose
+$ sudo str install ruff --provider uv --yes --allow-root --verbose
 installed ruff via uv
   ...
   uv runs as alice (uid 1000, gid 1000), privileges dropped: uv installs tools into the user's home (~/.local/share/uv/tools, ~/.local/bin)
@@ -379,7 +399,7 @@ Global options work anywhere on the line: `--json`, `--provider <name>`
 `--color <when>`, `--allow-destructive`, `--allow-root`, `--version`,
 `--help`.
 `--help` (or `-h`) after a command prints that command's help, as does
-`starpoint help <command>`; it is never taken as a package name. Any other
+`str help <command>`; it is never taken as a package name. Any other
 unrecognised `-`-prefixed token is a usage error rather than a package name.
 
 ### Output
@@ -461,7 +481,7 @@ every entry; `--json` always carries the full inventory. A directory PATH names
 twice (or via a symlink, such as `/bin` → `/usr/bin`) is read once. `list` shows
 configured software and unaccounted executables. Provider transitions use
 observed inventory and executable resolution to resume after interruption;
-`starpoint runs` exposes transition history and `transition --reverse` attempts
+`str runs` exposes transition history and `transition --reverse` attempts
 a safe reversal.
 
 State-changing commands share a per-config lock. The lock prevents two Starpoint
@@ -471,7 +491,7 @@ Configuration is written to a sibling temporary file, flushed, and renamed into
 place, so a crash mid-write cannot leave a half-written config: the rename is the
 only step that publishes it. If a run is interrupted between those steps, the
 leftover `.tmp` file makes Starpoint refuse to modify configuration rather than
-layer new writes on top of a change the user never saw. `starpoint recover` reports
+layer new writes on top of a change the user never saw. `str recover` reports
 what was left behind and, with `--discard`, clears it. JSON response shapes are
 documented in [`docs/json-schema.md`](docs/json-schema.md).
 
@@ -479,12 +499,13 @@ Shell completions live in `completions/` and complete every command spelling,
 each command's own flags, and provider names after `--provider`:
 
 ```
-# bash
-cp completions/starpoint.bash ~/.local/share/bash-completion/completions/starpoint
-# zsh (any directory on $fpath, before compinit runs)
-cp completions/starpoint.zsh ~/.zfunc/_starpoint
-# fish
-cp completions/starpoint.fish ~/.config/fish/completions/
+# bash (one file completes str and starpoint; bash-completion finds it by name)
+cp completions/str.bash ~/.local/share/bash-completion/completions/str
+ln -s str ~/.local/share/bash-completion/completions/starpoint
+# zsh (any directory on $fpath, before compinit runs; covers both names)
+cp completions/str.zsh ~/.zfunc/_str
+# fish (starpoint.fish borrows str's completions for the old name)
+cp completions/str.fish completions/starpoint.fish ~/.config/fish/completions/
 ```
 
 ### Asking every provider at once
@@ -493,7 +514,7 @@ Before resolving a package, `install` asks **every** provider concurrently
 whether it has that software, and says what it found:
 
 ```
-$ starpoint install rake gem
+$ str install rake gem
 rake: also present via system
 About to change your machine:
   Record rake (gem)
@@ -506,29 +527,29 @@ install — so an ordinary run says nothing about it: the confirmation already
 says what will be installed and by whom. `--verbose` states it plainly
 (`neofetch: not installed by any provider yet`), and names any provider that is
 installed yet unable to enumerate its inventory, because that weakens the claim.
-`starpoint info` always gives that qualification, since "no provider has it" is
+`str info` always gives that qualification, since "no provider has it" is
 its whole answer there.
 
 When nothing on the machine and nothing about the name settles who should own
 it, Starpoint asks. The project you run it in only settles it for a name with
-that ecosystem's own shape: inside a Go repository `starpoint install
-golang.org/x/tools/gopls` goes to `go`, but `starpoint install neofetch` is
+that ecosystem's own shape: inside a Go repository `str install
+golang.org/x/tools/gopls` goes to `go`, but `str install neofetch` is
 resolved exactly as it would be anywhere else — a Go project says what the
 project is written in, not where your tools come from, and `go install` cannot
 install a bare name at all. (An npm scoped name, `@scope/name`, is the Node
 equivalent; Rust, Python and Ruby names have no shape to check.) When the
 question is asked anyway, the project's own provider is offered first among the
 alternatives, and `go` is never offered for a name that is not a module path. That includes the common case of one system package manager
-beside language providers: `starpoint install cowsay` on a machine with apt, uv
+beside language providers: `str install cowsay` on a machine with apt, uv
 and npm offers apt as the default but asks, because "the Debian package" and "the
 PyPI package" are different choices. Without a terminal the command fails and
 names `--provider`. A provider named on the command line is recorded with the
 reason `chosen by the user on the command line`, a prompt answer as `provider
 chosen interactively`.
 
-`starpoint info <package>` uses the same lookup for software it does not manage,
+`str info <package>` uses the same lookup for software it does not manage,
 so it names *every* provider that has it rather than the first one that answered.
-On this machine, `starpoint info rake` reports that `system` provides it and that
+On this machine, `str info rake` reports that `system` provides it and that
 `gem` also has 12.3.3 — the duplicate a sequential lookup would have hidden.
 
 The point is not speed. Resolution otherwise proceeds one provider at a time and
@@ -547,9 +568,9 @@ own phases, its own command and its own evidence, not an install followed by a
 remove.
 
 ```
-starpoint transition                 # what would move, and how far each has got
-starpoint transition ruff             # move it, with confirmation
-starpoint transition --dry-run ruff   # describe it, change nothing
+str transition                 # what would move, and how far each has got
+str transition ruff             # move it, with confirmation
+str transition --dry-run ruff   # describe it, change nothing
 ```
 
 The ordering is the safety property. The phases are `planned` → `installed` →
@@ -567,7 +588,7 @@ one is confirmed working:
   outcome of a transition is a duplicate rather than a hole.
 - **Recovery needs no journal.** The phase is derived from what is on the machine:
   both copies present means the old one still needs removing, only the new one means
-  it is done, only the old one means nothing happened. Running `starpoint transition`
+  it is done, only the old one means nothing happened. Running `str transition`
   again finishes an interrupted transition instead of starting over.
 - **Shared executable paths are handed over, not raced.** uv and `pip --user`
   both write console scripts to `~/.local/bin`, so installing the new copy first
@@ -583,8 +604,8 @@ one is confirmed working:
 
 `sync` does not perform transitions: a package whose configured provider is
 not the one that has it is reported as a `provider-drift` warning naming
-`starpoint transition <package>` and `starpoint adopt <package> <owner>`, and
-it stays unconverged. `starpoint transition` shows every pending move with its
+`str transition <package>` and `str adopt <package> <owner>`, and
+it stays unconverged. `str transition` shows every pending move with its
 phase and evidence, and `--json` exposes the whole record for other tools.
 
 ### rustup and Cargo are different providers
@@ -601,19 +622,19 @@ name = "rustc"          # owned by rustup, resolved through the default toolchai
 name = "stable"         # the toolchain itself; version = "1.99.0" pins a release
 ```
 
-`starpoint install rustc` installs the default channel. `starpoint remove rustc`
+`str install rustc` installs the default channel. `str remove rustc`
 is refused: it names the toolchain that provides it, and removing the default or
 active toolchain would leave no Rust compiler. Remove the toolchain by name
 instead, and only after choosing another default.
 
-A bare version is not a package name, so `starpoint install 1.50.0` is rejected
-with the two forms that do work: `starpoint install stable --version 1.50.0`, or
+A bare version is not a package name, so `str install 1.50.0` is rejected
+with the two forms that do work: `str install stable --version 1.50.0`, or
 `--channel nightly`.
 
 ## Architecture
 
 ```
-cmd/starpoint            entry point
+cmd/str                  entry point (cmd/starpoint: the same program under the old name)
 internal/cli             argument parsing, confirmation, output selection
 internal/report          human and JSON rendering
 internal/engine          desired vs current comparison, plan, apply, add/remove/update
@@ -640,7 +661,7 @@ package-manager knowledge beyond what lives in `resolve`.
 
 ```sh
 make check     # fmt check, vet, and the full test suite
-make build     # build ./bin/starpoint
+make build     # build ./bin/str (and ./bin/starpoint, the old name)
 make test      # go test ./...
 make fmt       # gofmt -w
 make test-race # the suite under the race detector
@@ -660,7 +681,7 @@ suite substitutes a scripted command runner and in-memory providers.
 - Additional ecosystems such as Bun, Deno, mise/asdf, winget, Chocolatey,
   Composer, Maven/Gradle, NuGet, SwiftPM, CocoaPods, vcpkg and Conda remain
   candidates.
-- A universal project dependency system. `starpoint install .` delegates to each
+- A universal project dependency system. `str install .` delegates to each
   ecosystem's own installer, chosen by a narrow, documented rule set, rather
   than pretending one command can understand every ecosystem.
 
@@ -721,7 +742,7 @@ suite substitutes a scripted command runner and in-memory providers.
   (ripgrep → rg, fd-find → fd, bottom → btm, ...). For any other crate it
   assumes the crate's own name and says so; crates.io knows the binary names,
   but planning does not go to the network.
-- `starpoint update` on a Rust toolchain runs `rustup toolchain install` for the
+- `str update` on a Rust toolchain runs `rustup toolchain install` for the
   channel, which moves a channel forward. A concrete toolchain pinned in the
   configuration is never moved.
 

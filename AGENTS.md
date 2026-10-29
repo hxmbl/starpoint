@@ -12,16 +12,17 @@ did — including in machine-readable form (`--json`).
 ## Build Commands
 
 ```sh
-make build    # bin/starpoint, version stamped via ldflags from git describe
+make build    # bin/str and bin/starpoint (the old name), version stamped via ldflags from git describe
 make run      # build and run the local binary
 ```
 
 Building without the Makefile: `go build -ldflags "-X
-github.com/hxmbl/starpoint/internal/cli.Version=$(VERSION)" -o bin/starpoint
-./cmd/starpoint`. There is no version constant to edit — the version only
+github.com/hxmbl/starpoint/internal/cli.Version=$(VERSION)" -o bin/str
+./cmd/str`. There is no version constant to edit — the version only
 exists through that stamp.
 
-A bare `go build ./cmd/starpoint` in the repo root drops a `starpoint` binary
+A bare `go build ./cmd/str` in the repo root drops a `str` binary (and
+`./cmd/starpoint` a `starpoint` one)
 into the tree root. It is gitignored; never commit it, and never treat it as
 part of a release.
 
@@ -81,7 +82,8 @@ distinct when writing new tests.
 ## Project Layout
 
 Go 1.27, module `github.com/hxmbl/starpoint`. Entry point is
-`cmd/starpoint`, which only calls `cli.Run`. Everything else is `internal/`.
+`cmd/str`, which only calls `cli.Main`; `cmd/starpoint` is the same program
+under the executable's old name, kept during the transition (STRM-445). Everything else is `internal/`.
 
 - `internal/cli/` — command dispatch, aliases, flags, prompting, confirmation,
   guard rules, help text, colorized human output. Tests beside the code.
@@ -116,7 +118,7 @@ Go 1.27, module `github.com/hxmbl/starpoint`. Entry point is
 - `internal/lock/`, `internal/recovery/` — file locking for mutations, and the
   recovery of interrupted configuration writes.
 - `internal/model/`, `internal/project/`, `internal/color/` — core types; "what
-  does the project in the current directory need" (`starpoint install .`);
+  does the project in the current directory need" (`str install .`);
   color rules.
 
 ## The config is managed state
@@ -155,7 +157,7 @@ Rules when touching report or output code:
 
 ## Completions are guarded
 
-`completions/starpoint.bash`, `starpoint.zsh` and `starpoint.fish` are
+`completions/str.bash`, `str.zsh` and `str.fish` are
 hand-written and guarded by `internal/cli/completions_test.go`, which checks
 every command spelling, alias, flag and provider name against all three files.
 **Any** new command, alias, flag or provider requires updating all three files.

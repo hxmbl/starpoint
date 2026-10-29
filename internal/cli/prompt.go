@@ -15,7 +15,7 @@ import (
 // question to out.
 //
 // It never assumes yes. A terminal is prompted normally; a pipe is read once, so
-// `yes | starpoint sync` works; and a stream that ends without an answer is an
+// `yes | str sync` works; and a stream that ends without an answer is an
 // error naming --no-confirm, because silently declining would leave the caller
 // unsure whether the operation happened.
 func PromptConfirm(in io.Reader, out io.Writer) func(string) (bool, error) {

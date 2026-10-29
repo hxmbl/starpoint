@@ -170,7 +170,7 @@ func (e *Engine) Capture(inv Inventory, doc *config.Document, opts CaptureOption
 				providers = append(providers, it.Provider)
 			}
 			out.Notes = append(out.Notes, CaptureNote{Name: name, Code: CaptureAmbiguous, Candidates: providers,
-				Message: fmt.Sprintf("installed through %s, and nothing records which copy is wanted; record one with 'starpoint adopt %s <provider>' or add the entry by hand",
+				Message: fmt.Sprintf("installed through %s, and nothing records which copy is wanted; record one with 'str adopt %s <provider>' or add the entry by hand",
 					strings.Join(providers, " and "), name)})
 			continue
 		}

@@ -36,7 +36,7 @@ func TestDoctorCountsUnmanagedSoftwarePerProvider(t *testing.T) {
 		}
 	}
 	out := h.mustRun("doctor")
-	if !strings.Contains(out, "brew: 2 unmanaged, 1 installed on request") || !strings.Contains(out, "starpoint adopt --all --dry-run") {
+	if !strings.Contains(out, "brew: 2 unmanaged, 1 installed on request") || !strings.Contains(out, "str adopt --all --dry-run") {
 		t.Errorf("doctor should show the count and the command:\n%s", out)
 	}
 	if strings.Contains(h.mustRun("sync", "--dry-run"), "unmanaged") {

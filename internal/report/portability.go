@@ -50,7 +50,7 @@ func (w *Writer) Portability(p engine.Portability) error {
 			p.Overall.Reproducible, p.Overall.Total, p.Overall.Reproducible*100/p.Overall.Total)
 	}
 	if p.Discovered.Total > 0 {
-		fmt.Fprintln(w.out, "Discovered software is only reproduced once it is declared: 'starpoint inventory --format toml' captures it for review.")
+		fmt.Fprintln(w.out, "Discovered software is only reproduced once it is declared: 'str inventory --format toml' captures it for review.")
 	}
 	if len(p.Warnings) > 0 {
 		fmt.Fprintln(w.out, "Incomplete: a provider could not list, so what it has is not counted.")

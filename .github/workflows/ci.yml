@@ -89,4 +89,6 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-        run: go build -o /dev/null ./cmd/starpoint
+        run: |
+          go build -o /dev/null ./cmd/str
+          go build -o /dev/null ./cmd/starpoint

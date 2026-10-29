@@ -1,7 +1,7 @@
 // Package privdrop builds the identity provider commands run as when an
 // elevated Starpoint drops privileges for them.
 //
-// Under `sudo starpoint install ruff` Starpoint runs as root on behalf of the
+// Under `sudo str install ruff` Starpoint runs as root on behalf of the
 // user who typed sudo. Package managers that install into that user's home
 // (uv, pip --user, Cargo, Go, rustup, Nix profiles, and npm, pnpm, yarn, gem
 // or Homebrew when their prefix belongs to the user) have no use for root, and

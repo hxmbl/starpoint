@@ -103,7 +103,7 @@ func TestReadOnlyCommandsAndDoctorRunElevated(t *testing.T) {
 	} {
 		code, out, errOut := h.run(args...)
 		if code == ExitRefusedElevated || strings.Contains(errOut, CodeElevatedRefused) {
-			t.Errorf("starpoint %s must not be refused as root (exit %d)\n%s%s", strings.Join(args, " "), code, out, errOut)
+			t.Errorf("str %s must not be refused as root (exit %d)\n%s%s", strings.Join(args, " "), code, out, errOut)
 		}
 	}
 }

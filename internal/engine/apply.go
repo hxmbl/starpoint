@@ -455,7 +455,7 @@ func removeEntry(f *config.File, name string) {
 // The configuration is written even when the package was already installed,
 // because the ownership decision is the durable artifact. If the provider is
 // forced but its tooling is missing, the decision is recorded anyway: the
-// configuration is the source of truth, and `starpoint sync` will converge once
+// configuration is the source of truth, and `str sync` will converge once
 // the provider exists. With AdoptOnly, nothing is installed at all.
 func (e *Engine) Add(ctx context.Context, doc *config.Document, pkg model.Package, opts Options) (*Result, error) {
 	d, err := e.describeAdd(ctx, doc, pkg, opts)
@@ -812,7 +812,7 @@ func (e *Engine) Update(ctx context.Context, doc *config.Document, opts Options)
 		}
 		if before == nil {
 			skip(model.WarnNotInstalled, pkg, resolution.Provider,
-				fmt.Sprintf("%s is not installed; run 'starpoint sync'", pkg.Name))
+				fmt.Sprintf("%s is not installed; run 'str sync'", pkg.Name))
 			continue
 		}
 		before = e.withPath(before)

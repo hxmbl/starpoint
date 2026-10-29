@@ -62,7 +62,7 @@ func TestDetectOutsideAProject(t *testing.T) {
 
 func TestToolchainsAreNeverInferredAsRequirements(t *testing.T) {
 	// Every tool the markers name is a language runtime, and none of them may
-	// become an installable requirement: `starpoint install .` must never try to
+	// become an installable requirement: `str install .` must never try to
 	// install rustc because it saw a Cargo.toml.
 	dir := t.TempDir()
 	touch(t, filepath.Join(dir, "Cargo.toml"))

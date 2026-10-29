@@ -223,7 +223,7 @@ func TestSyncPointsAtTransitionsInsteadOfMoving(t *testing.T) {
 	h.stagedMove("/uv/bin/ruff")
 
 	out := h.mustRun("sync", "--dry-run")
-	if !strings.Contains(out, "starpoint transition ruff") {
+	if !strings.Contains(out, "str transition ruff") {
 		t.Errorf("sync should point at transition:\n%s", out)
 	}
 	if !strings.Contains(out, "brew") || !strings.Contains(out, "uv") {

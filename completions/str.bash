@@ -1,8 +1,8 @@
-# Bash completion for Starpoint. Install by sourcing this file from
-# ~/.bash_completion or copying it into /etc/bash_completion.d/.
+# Bash completion for Starpoint: str, and starpoint during the transition.
+# Install by sourcing this file from ~/.bash_completion or copying it into /etc/bash_completion.d/.
 #
 # Keep in sync with internal/cli/help.go (commandFlags); a test checks it.
-_starpoint() {
+_str() {
   local cur prev cmd i commands globals providers flags
   cur=${COMP_WORDS[COMP_CWORD]}
   prev=${COMP_WORDS[COMP_CWORD-1]}
@@ -56,4 +56,4 @@ _starpoint() {
     COMPREPLY=( $(compgen -W "$providers" -- "$cur") )
   fi
 }
-complete -F _starpoint starpoint
+complete -F _str str starpoint

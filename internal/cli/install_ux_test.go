@@ -9,7 +9,7 @@ import (
 	"github.com/hxmbl/starpoint/internal/testsupport"
 )
 
-// installInGoProject reproduces `starpoint install neofetch` typed inside a Go
+// installInGoProject reproduces `str install neofetch` typed inside a Go
 // repository on a machine with Homebrew, Go and other language providers.
 func installInGoProject(t *testing.T) (*harness, *testsupport.FakeProvider) {
 	t.Helper()

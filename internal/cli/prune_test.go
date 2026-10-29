@@ -129,10 +129,11 @@ func TestPruneLeavesSoftwareOutsideTheHomeAlone(t *testing.T) {
 
 // A package manager is never an orphan: npm lists npm and corepack among its
 // own globals, and uv or pnpm may have been installed through pip or npm.
+// Starpoint itself is one too, under either executable name.
 // Pruning them would take a provider away.
 func TestPruneNeverRemovesAPackageManager(t *testing.T) {
 	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"jq\"\nprovider = \"brew\"\n")
-	for _, name := range []string{"npm", "corepack", "uv", "orphan"} {
+	for _, name := range []string{"npm", "corepack", "uv", "str", "starpoint", "orphan"} {
 		h.uv.With(model.Installation{Name: name, Version: "1.0"})
 	}
 

@@ -8,7 +8,7 @@ import (
 	"github.com/hxmbl/starpoint/internal/retention"
 )
 
-// LoggingStatus is the machine-readable shape of `starpoint logging`.
+// LoggingStatus is the machine-readable shape of `str logging`.
 type LoggingStatus struct {
 	StateDir      string          `json:"state_dir"`
 	AuditLogDir   string          `json:"audit_log_dir"`
@@ -25,7 +25,7 @@ type LoggingStatus struct {
 	OSConfigured bool `json:"os_configured"`
 }
 
-// Logging renders `starpoint logging`.
+// Logging renders `str logging`.
 func (w *Writer) Logging(status LoggingStatus) error {
 	if w.asJSON {
 		return w.respond(flatten(status))
@@ -63,7 +63,7 @@ func (w *Writer) Logging(status LoggingStatus) error {
 	return nil
 }
 
-// LoggingPrune renders `starpoint logging prune`.
+// LoggingPrune renders `str logging prune`.
 func (w *Writer) LoggingPrune(rep retention.Report) error {
 	if w.asJSON {
 		return w.respond(map[string]any{
@@ -95,7 +95,7 @@ func (w *Writer) LoggingPrune(rep retention.Report) error {
 	return nil
 }
 
-// LoggingConfig renders `starpoint logging config`.
+// LoggingConfig renders `str logging config`.
 func (w *Writer) LoggingConfig(cfg oslog.Config, written bool) error {
 	if w.asJSON {
 		return w.respond(map[string]any{
