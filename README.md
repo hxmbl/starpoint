@@ -323,7 +323,7 @@ Planned changes (none were made; ! removes or overwrites something):
 home directory of the user it acts for (under `sudo`, the invoking user's; in a
 plain root shell, root's own), and never a package manager: no registered
 provider (npm, pip, uv, pnpm, yarn, cargo, ...), `corepack` or Starpoint
-itself (`str`, or a leftover `starpoint` from before the rename), wherever it lives. A system npm prefix such as `/usr/lib/node_modules`
+itself (`str`), wherever it lives. A system npm prefix such as `/usr/lib/node_modules`
 or the interpreter's own site-packages belongs to the machine, whoever runs
 Starpoint. Each orphan it leaves alone for either reason is still listed, with
 the reason, as a `prune-skipped` warning in human output and in `--json`.
