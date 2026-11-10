@@ -1,4 +1,4 @@
-# Bash completion for Starpoint: str, and starpoint during the transition.
+# Bash completion for Starpoint: str.
 # Install by sourcing this file from ~/.bash_completion or copying it into /etc/bash_completion.d/.
 #
 # Keep in sync with internal/cli/help.go (commandFlags); a test checks it.
@@ -56,4 +56,4 @@ _str() {
     COMPREPLY=( $(compgen -W "$providers" -- "$cur") )
   fi
 }
-complete -F _str str starpoint
+complete -F _str str

@@ -395,7 +395,7 @@ enumerate and remove. Configured packages and system/global software are never
 touched. Prune only removes software inside the home directory of the user it
 acts for (under sudo, the invoking user's), and never a package manager: no
 registered provider (npm, pip, uv, pnpm, ...), corepack or Starpoint itself
-(str, or starpoint), wherever it lives. A system npm prefix or the
+(str, or a leftover starpoint from before the rename), wherever it lives. A system npm prefix or the
 interpreter's own site-packages is left alone. Every orphan it leaves alone is still listed, with the reason, as a
 prune-skipped warning.
 

@@ -16,12 +16,9 @@ config → desired state → provider resolution → current state → diff → 
 
 ## Entry Point
 **`cmd/str/main.go`** - The executable, `str`; it only calls `cli.Main`
-- `cmd/starpoint/main.go` is the same program under the old name (STRM-445),
-  kept for `go install .../cmd/starpoint` and scripts during the transition
 - `internal/cli/main.go` (`Main`) installs signal handling (interrupt, SIGTERM)
-  as a context, works out whether it was started as `str` or `starpoint`
-  (`Env.Name`: the version line uses it, and the old name at a terminal gets
-  one note on stderr), then hands over to `Run`
+  as a context, then hands over to `Run`. `str` is the only executable name;
+  the old `starpoint` name was dropped (STRM-457)
 - Wires an `Env`: the three streams, the working directory, the confirmation
   and choose prompts, and `Interactive`, which is true only when a person can
   answer at a terminal
@@ -519,10 +516,7 @@ That is the whole direct set, on purpose; each addition needs a reason.
   `.zsh` and `.fish` and fails if any command spelling, alias, command flag,
   global flag or provider name is missing — a new command, flag or provider
   means updating all three hand-written files
-- `completions/starpoint.fish` only wraps `str` for the old name (fish loads
-  completions by command name); bash and zsh register both names from the
-  `str` files
-- A bare `go build ./cmd/str` (or `./cmd/starpoint`) in the repo root drops a
+- A bare `go build ./cmd/str` in the repo root drops a
   gitignored binary into the tree root: a local artifact, never part of a
   release
 

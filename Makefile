@@ -5,7 +5,6 @@
 
 GO ?= go
 BIN ?= bin/str
-LEGACY_BIN ?= bin/starpoint
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/hxmbl/starpoint/internal/cli.Version=$(VERSION)
 
@@ -16,11 +15,10 @@ all: check
 ## check: run every verification step
 check: fmt-check vet test
 
-## build: compile the CLI as str, plus the transitional starpoint name
+## build: compile the CLI as str
 build:
 	@mkdir -p $(dir $(BIN))
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/str
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(LEGACY_BIN) ./cmd/starpoint
 
 ## test: run the full test suite
 test:

@@ -91,4 +91,3 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           go build -o /dev/null ./cmd/str
-          go build -o /dev/null ./cmd/starpoint

@@ -72,17 +72,13 @@ replacement.
 
 ### `str` was `starpoint`
 
-The executable used to be called `starpoint`. The old name still runs the same
-program, so scripts keep working while they move over:
+The executable used to be called `starpoint`. That name no longer runs
+anything: call `str` instead, in scripts too.
 
-- The Homebrew formula is still `starpoint`; it installs `str` and links
-  `starpoint` to it, with completions for both names.
-- `go install github.com/hxmbl/starpoint/cmd/starpoint@latest` still builds the
-  old name. The release archives ship `str` only; `ln -s str starpoint` beside
-  it keeps the old name.
-- Under the old name, `--version` still prints `starpoint <version>`. At a
-  terminal it also prints one note on stderr pointing at `str`; a script that
-  captures stderr or pipes it sees nothing new.
+- The Homebrew formula is still `starpoint`; it installs `str` (and its
+  completions) only.
+- `go install github.com/hxmbl/starpoint/cmd/str@latest` builds the
+  executable; there is no `cmd/starpoint` any more.
 - Nothing else changes: the configuration is still `~/.starpoint.toml` (and a
   project's `.starpoint.toml`), state stays in `.starpoint/` beside it, the
   `--json` output and its `schema_version` are the same, and the project,
@@ -327,7 +323,7 @@ Planned changes (none were made; ! removes or overwrites something):
 home directory of the user it acts for (under `sudo`, the invoking user's; in a
 plain root shell, root's own), and never a package manager: no registered
 provider (npm, pip, uv, pnpm, yarn, cargo, ...), `corepack` or Starpoint
-itself (`str`, or `starpoint`), wherever it lives. A system npm prefix such as `/usr/lib/node_modules`
+itself (`str`, or a leftover `starpoint` from before the rename), wherever it lives. A system npm prefix such as `/usr/lib/node_modules`
 or the interpreter's own site-packages belongs to the machine, whoever runs
 Starpoint. Each orphan it leaves alone for either reason is still listed, with
 the reason, as a `prune-skipped` warning in human output and in `--json`.
@@ -538,13 +534,12 @@ Shell completions live in `completions/` and complete every command spelling,
 each command's own flags, and provider names after `--provider`:
 
 ```
-# bash (one file completes str and starpoint; bash-completion finds it by name)
+# bash (bash-completion finds it by name)
 cp completions/str.bash ~/.local/share/bash-completion/completions/str
-ln -s str ~/.local/share/bash-completion/completions/starpoint
-# zsh (any directory on $fpath, before compinit runs; covers both names)
+# zsh (any directory on $fpath, before compinit runs)
 cp completions/str.zsh ~/.zfunc/_str
-# fish (starpoint.fish borrows str's completions for the old name)
-cp completions/str.fish completions/starpoint.fish ~/.config/fish/completions/
+# fish
+cp completions/str.fish ~/.config/fish/completions/
 ```
 
 ### Asking every provider at once
@@ -673,7 +668,7 @@ with the two forms that do work: `str install stable --version 1.50.0`, or
 ## Architecture
 
 ```
-cmd/str                  entry point (cmd/starpoint: the same program under the old name)
+cmd/str                  entry point
 internal/cli             argument parsing, confirmation, output selection
 internal/report          human and JSON rendering
 internal/engine          desired vs current comparison, plan, apply, add/remove/update
@@ -700,7 +695,7 @@ package-manager knowledge beyond what lives in `resolve`.
 
 ```sh
 make check     # fmt check, vet, and the full test suite
-make build     # build ./bin/str (and ./bin/starpoint, the old name)
+make build     # build ./bin/str
 make test      # go test ./...
 make fmt       # gofmt -w
 make test-race # the suite under the race detector

@@ -101,30 +101,29 @@ func TestUsageListsCommandsAliasesAndKeyOptions(t *testing.T) {
 	}
 }
 
-// str is the executable (STRM-445); starpoint is its old name and still runs
-// the same program, so every shell completes both.
-func TestCompletionsRegisterStrAndTheOldName(t *testing.T) {
+// str is the only executable name: the old starpoint name and its completions
+// were dropped (STRM-457), so no shell registers it any more.
+func TestCompletionsRegisterOnlyStr(t *testing.T) {
 	bash := readCompletion(t, "str.bash")
-	if !strings.Contains(bash, "complete -F _str str starpoint") {
-		t.Error("str.bash should register its completion for str and starpoint")
+	if !strings.Contains(bash, "complete -F _str str\n") {
+		t.Error("str.bash should register its completion for str only")
 	}
 	zsh := readCompletion(t, "str.zsh")
-	if !strings.HasPrefix(zsh, "#compdef str starpoint\n") {
-		t.Error("str.zsh should start with '#compdef str starpoint'")
+	if !strings.HasPrefix(zsh, "#compdef str\n") {
+		t.Error("str.zsh should start with '#compdef str'")
 	}
 	fish := readCompletion(t, "str.fish")
-	if !strings.Contains(fish, "complete -c str ") || strings.Contains(fish, "complete -c starpoint") {
-		t.Error("str.fish should complete str; the old name has its own file")
+	if !strings.Contains(fish, "complete -c str ") {
+		t.Error("str.fish should complete str")
 	}
-	// Fish finds completions by command name, so the old name has a file of
-	// its own that borrows str's instead of repeating them.
-	legacy := readCompletion(t, "starpoint.fish")
-	if !strings.Contains(legacy, "complete -c starpoint --wraps str") {
-		t.Error("starpoint.fish should wrap str")
+	for _, f := range []string{bash, zsh, fish} {
+		if strings.Contains(f, "starpoint") {
+			t.Error("completions should not mention the dropped starpoint command")
+		}
 	}
-	for _, old := range []string{"starpoint.bash", "starpoint.zsh"} {
+	for _, old := range []string{"starpoint.bash", "starpoint.zsh", "starpoint.fish"} {
 		if _, err := os.Stat(filepath.Join("..", "..", "completions", old)); err == nil {
-			t.Errorf("completions/%s should be gone: str.%s covers both names", old, strings.TrimPrefix(old, "starpoint."))
+			t.Errorf("completions/%s should be gone: the starpoint command was dropped", old)
 		}
 	}
 }

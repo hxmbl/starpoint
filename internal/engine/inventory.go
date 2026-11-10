@@ -308,8 +308,9 @@ func requestedLabel(m map[string]bool, name string) string {
 }
 
 // packageManagerNames are names that are never an ordinary user package:
-// every registered provider, plus corepack and Starpoint itself under both of
-// its executable names (str, and starpoint from before the rename).
+// every registered provider, plus corepack and Starpoint itself: str, and
+// starpoint, so prune never deletes a leftover copy of the old executable
+// name (dropped in STRM-457) out from under someone still migrating.
 func (e *Engine) packageManagerNames() map[string]bool {
 	out := map[string]bool{"corepack": true, "starpoint": true, "str": true}
 	for _, q := range e.reg.All() {
