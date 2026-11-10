@@ -20,9 +20,12 @@ The command is `str`.
 
 ```sh
 go install github.com/hxmbl/starpoint/cmd/str@latest
-# or, from a checkout:
+```
+or, from a checkout:
+```sh
 go build -o str ./cmd/str
-
+```
+```
 str init                  # create ~/.starpoint.toml
 str install ruff          # pick a provider, install, record ownership
 str list                  # what is installed, where, and who owns it
