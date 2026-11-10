@@ -1,5 +1,5 @@
-#compdef str starpoint
-# Zsh completion for Starpoint: str, and starpoint during the transition.
+#compdef str
+# Zsh completion for Starpoint: str.
 # Install under a directory on $fpath as _str (for example ~/.zfunc/_str).
 #
 # Keep in sync with internal/cli/help.go (commandFlags); a test checks it.
@@ -61,5 +61,5 @@ _str() {
 if [[ "$funcstack[1]" == "_str" ]]; then
   _str "$@"
 else
-  compdef _str str starpoint
+  compdef _str str
 fi

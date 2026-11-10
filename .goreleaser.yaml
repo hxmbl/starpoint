@@ -4,7 +4,7 @@ project_name: starpoint
 
 builds:
   # The executable is str (STRM-445). The archives and the formula keep the
-  # project's name, starpoint; the formula also links the old command name.
+  # project's name, starpoint; the old starpoint command was dropped (STRM-457).
   - main: ./cmd/str
     binary: str
     env:
@@ -53,13 +53,9 @@ brews:
     license: MIT
     test: |
       system "#{bin}/str", "--version"
-      system "#{bin}/starpoint", "--version"
     install: |
       bin.install "str"
-      bin.install_symlink "str" => "starpoint"
       bash_completion.install "completions/str.bash" => "str"
-      bash_completion.install_symlink bash_completion/"str" => "starpoint"
       zsh_completion.install "completions/str.zsh" => "_str"
       fish_completion.install "completions/str.fish"
-      fish_completion.install "completions/starpoint.fish"
     skip_upload: true

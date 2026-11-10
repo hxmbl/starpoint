@@ -5,6 +5,5 @@ dist/
 coverage.txt
 .DS_Store
 
-# Built binaries. `go build ./cmd/str` (or ./cmd/starpoint) writes one into the repo root.
+# Built binaries. `go build ./cmd/str` writes one into the repo root.
 /str
-/starpoint

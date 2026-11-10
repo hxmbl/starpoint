@@ -12,7 +12,7 @@ did — including in machine-readable form (`--json`).
 ## Build Commands
 
 ```sh
-make build    # bin/str and bin/starpoint (the old name), version stamped via ldflags from git describe
+make build    # bin/str, version stamped via ldflags from git describe
 make run      # build and run the local binary
 ```
 
@@ -21,8 +21,7 @@ github.com/hxmbl/starpoint/internal/cli.Version=$(VERSION)" -o bin/str
 ./cmd/str`. There is no version constant to edit — the version only
 exists through that stamp.
 
-A bare `go build ./cmd/str` in the repo root drops a `str` binary (and
-`./cmd/starpoint` a `starpoint` one)
+A bare `go build ./cmd/str` in the repo root drops a `str` binary
 into the tree root. It is gitignored; never commit it, and never treat it as
 part of a release.
 
@@ -82,8 +81,7 @@ distinct when writing new tests.
 ## Project Layout
 
 Go 1.27, module `github.com/hxmbl/starpoint`. Entry point is
-`cmd/str`, which only calls `cli.Main`; `cmd/starpoint` is the same program
-under the executable's old name, kept during the transition (STRM-445). Everything else is `internal/`.
+`cmd/str`, which only calls `cli.Main`. Everything else is `internal/`.
 
 - `internal/cli/` — command dispatch, aliases, flags, prompting, confirmation,
   guard rules, help text, colorized human output. Tests beside the code.

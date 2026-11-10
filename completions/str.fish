@@ -1,6 +1,6 @@
 # Fish completion for Starpoint (str). Install with:
 #   mkdir -p ~/.config/fish/completions
-#   cp completions/str.fish completions/starpoint.fish ~/.config/fish/completions/
+#   cp completions/str.fish ~/.config/fish/completions/
 #
 # Keep in sync with internal/cli/help.go (commandFlags); a test checks it.
 set -l commands init sync list ls inventory adopt info show explain doctor install add i remove uninstall rm transition move update upgrade runs history prune recover logging logs help
