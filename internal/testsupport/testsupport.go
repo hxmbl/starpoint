@@ -142,6 +142,9 @@ type FakeProvider struct {
 	InstallPath string
 	// Latest is what LatestVersion reports per package; missing means unknown.
 	Latest map[string]string
+	// Activity is what CurrentActivity reports; empty means the fake cannot
+	// report a live activity.
+	Activity string
 	// ExeDir is what ExecutableDir reports; empty means unknown.
 	ExeDir string
 	// RemoveHook runs after a successful Remove, for tests that model a
@@ -348,6 +351,9 @@ func (f *FakeProvider) LatestVersion(_ context.Context, pkg model.Package) (stri
 	defer f.mu.Unlock()
 	return f.Latest[pkg.Name], nil
 }
+
+// CurrentActivity implements provider.ActivityReporter from Activity.
+func (f *FakeProvider) CurrentActivity() string { return f.Activity }
 
 // ExecutableDir implements provider.ExecutableDirProvider.
 func (f *FakeProvider) ExecutableDir(context.Context) string { return f.ExeDir }

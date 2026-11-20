@@ -831,7 +831,9 @@ func (e *Engine) Update(ctx context.Context, doc *config.Document, opts Options)
 			continue
 		}
 		obs := e.observe(ctx, p, pkg, before)
+		notifyProgress(opts, Progress{Kind: ProgressProviderStart, Provider: p, Package: pkg.Name})
 		after, err := p.Update(ctx, pkg)
+		notifyProgress(opts, Progress{Kind: ProgressPackageDone, Provider: p, Package: pkg.Name})
 		observed := obs.finish(ctx, model.EffectModify, after)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %s", pkg.Name, err.Error()))
@@ -913,11 +915,13 @@ func (e *Engine) pinConflict(ctx context.Context, doc *config.Document, p provid
 	target := pkg
 	target.Version = latest
 	var inst *model.Installation
+	notifyProgress(opts, Progress{Kind: ProgressProviderStart, Provider: p, Package: pkg.Name})
 	if p.Capabilities().Update {
 		inst, err = p.Update(ctx, target)
 	} else {
 		inst, err = p.Install(ctx, provider.Request{Package: target, Dir: opts.Dir})
 	}
+	notifyProgress(opts, Progress{Kind: ProgressPackageDone, Provider: p, Package: pkg.Name})
 	if err != nil {
 		return nil, "", fmt.Errorf("updating past the pin: %w", err)
 	}

@@ -205,6 +205,15 @@ type Verifier interface {
 	Verify(ctx context.Context, pkg model.Package) error
 }
 
+// ActivityReporter is implemented by providers that can describe what they
+// are doing right now — downloading, compiling, installing — so a progress
+// display can show the live stage of an operation. CurrentActivity is polled
+// while an operation runs; an empty string means the provider cannot report a
+// stage and the display falls back to the package it is updating.
+type ActivityReporter interface {
+	CurrentActivity() string
+}
+
 // ContextAwareProvider is an optional interface that providers can implement
 // to support context-aware installation. When a provider implements this
 // interface, the core can install packages scoped to a specific project

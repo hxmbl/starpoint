@@ -2773,7 +2773,21 @@ func cmdUpdate(ctx context.Context, env *Env, w *report.Writer, args []string, a
 		return nil
 	}
 
+	// Live progress while the update runs: the engine emits progress events
+	// as it moves from provider to provider, and the display redraws the
+	// block in place in a terminal.
+	var disp *updateDisplay
+	if !dryRun && !w.JSON() && len(previewRes.Applied) > 0 {
+		disp = newUpdateDisplay(env.Stdout, env.palOut, len(previewRes.Applied), color.Enabled(color.Auto, env.Stdout))
+		disp.Start()
+	}
+	if disp != nil {
+		opts.Progress = disp.onEvent
+	}
 	res, updateErr := eng.Update(ctx, doc, opts)
+	if disp != nil {
+		disp.Finalize()
+	}
 	if self {
 		selfRes, err := updateSelf(ctx, env, opts)
 		if err != nil {
