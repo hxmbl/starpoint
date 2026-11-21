@@ -188,3 +188,17 @@ func TestUpdateDecliningAfterAgreeingToMoveAPinChangesNothing(t *testing.T) {
 		t.Errorf("declining must keep the pin:\n%s", h.configBody())
 	}
 }
+
+// While the update runs, the display shows the operation moving through
+// providers: the header, then the provider's completed summary.
+func TestUpdateDisplaysProgressWhileItRuns(t *testing.T) {
+	h := pinnedHarness(t)
+	h.ask(true)
+	out := h.mustRun("update")
+	if !strings.Contains(out, "Updating packages across providers...") {
+		t.Errorf("the progress display header should be shown:\n%s", out)
+	}
+	if !strings.Contains(out, "[uv] Completed:") || !strings.Contains(out, "  ruff") {
+		t.Errorf("the provider summary should be shown:\n%s", out)
+	}
+}

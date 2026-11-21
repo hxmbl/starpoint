@@ -211,6 +211,36 @@ type Options struct {
 	// SurveyTimeout bounds one round of concurrent provider lookups. Zero keeps
 	// the default.
 	SurveyTimeout time.Duration
+	// Progress, when set, receives Progress events during Update.
+	Progress func(Progress)
+}
+
+// ProgressKind classifies a Progress event from Engine.Update.
+type ProgressKind int
+
+const (
+	// ProgressProviderStart is emitted immediately before the engine calls a
+	// provider's Update for a package.
+	ProgressProviderStart ProgressKind = iota
+	// ProgressPackageDone is emitted immediately after the engine's Update
+	// call for a package returns, on success or failure.
+	ProgressPackageDone
+)
+
+// Progress is one event of the progress feed of Engine.Update.
+type Progress struct {
+	Kind     ProgressKind
+	Provider provider.Provider
+	Package  string
+	// Err is set on ProgressPackageDone when the package update failed.
+	Err error
+}
+
+// notifyProgress reports one Progress event when the caller asked for one.
+func notifyProgress(opts Options, ev Progress) {
+	if opts.Progress != nil {
+		opts.Progress(ev)
+	}
 }
 
 // Result is the outcome of an operation.
