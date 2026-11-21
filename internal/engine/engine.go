@@ -232,6 +232,8 @@ type Progress struct {
 	Kind     ProgressKind
 	Provider provider.Provider
 	Package  string
+	// Err is set on ProgressPackageDone when the package update failed.
+	Err error
 }
 
 // notifyProgress reports one Progress event when the caller asked for one.

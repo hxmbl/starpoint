@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"github.com/hxmbl/starpoint/internal/color"
 	"github.com/hxmbl/starpoint/internal/engine"
 	"github.com/hxmbl/starpoint/internal/provider"
+	"golang.org/x/term"
 )
 
 // updateDisplay renders the progress of a running `str update`.
@@ -32,11 +34,12 @@ type updateDisplay struct {
 	total         int
 	done          int
 	headerPrinted bool
-	// lines is the number of lines of the live block on screen; 0 until the
-	// first repaint.
-	lines int
-	stop  chan struct{}
-	wg    sync.WaitGroup
+	// rows is the number of terminal rows the live block occupies on screen; 0
+	// until the first repaint. Wrapped lines count as multiple rows so a narrow
+	// terminal is cleared fully.
+	rows int
+	stop chan struct{}
+	wg   sync.WaitGroup
 	// finished holds the providers the engine has moved past.
 	finished []finishedProvider
 	// current is the provider the engine is updating right now, or nil
@@ -90,11 +93,12 @@ func (d *updateDisplay) ProviderStart(pr provider.Provider, pkg string) {
 	d.renderLocked()
 }
 
-// PackageDone records the engine finishing a package's update call.
-func (d *updateDisplay) PackageDone(pr provider.Provider, pkg string) {
+// PackageDone records the engine finishing a package's update call. Failed
+// updates count toward progress but are not listed as completed.
+func (d *updateDisplay) PackageDone(pr provider.Provider, pkg string, err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.packageDoneLocked(pr, pkg)
+	d.packageDoneLocked(pr, pkg, err)
 	d.renderLocked()
 }
 
@@ -104,7 +108,7 @@ func (d *updateDisplay) onEvent(pr engine.Progress) {
 	case engine.ProgressProviderStart:
 		d.ProviderStart(pr.Provider, pr.Package)
 	case engine.ProgressPackageDone:
-		d.PackageDone(pr.Provider, pr.Package)
+		d.PackageDone(pr.Provider, pr.Package, pr.Err)
 	}
 }
 
@@ -129,8 +133,11 @@ func (d *updateDisplay) providerStartLocked(pr provider.Provider, pkg string) {
 }
 
 // packageDoneLocked is PackageDone without the render.
-func (d *updateDisplay) packageDoneLocked(pr provider.Provider, pkg string) {
+func (d *updateDisplay) packageDoneLocked(pr provider.Provider, pkg string, err error) {
 	d.done++
+	if err != nil {
+		return
+	}
 	if d.current != nil && d.current.provider.Name() == pr.Name() && !slices.Contains(d.current.pkgs, pkg) {
 		d.current.pkgs = append(d.current.pkgs, pkg)
 	}
@@ -193,18 +200,18 @@ func (d *updateDisplay) pollLoop() {
 }
 
 // pollOnceLocked asks the active provider for its current activity and
-// re-renders when it has one. Providers that cannot report a stage are not
-// re-rendered; the display shows the package being updated instead.
+// re-renders the terminal block so elapsed time keeps ticking. Non-terminal
+// displays have no live block to refresh.
 func (d *updateDisplay) pollOnceLocked() {
 	if d.current == nil {
 		return
 	}
-	ar, ok := d.current.provider.(provider.ActivityReporter)
-	if !ok {
-		return
+	if ar, ok := d.current.provider.(provider.ActivityReporter); ok {
+		if act := ar.CurrentActivity(); act != "" {
+			d.current.activity = act
+		}
 	}
-	if act := ar.CurrentActivity(); act != "" {
-		d.current.activity = act
+	if d.terminal {
 		d.renderLocked()
 	}
 }
@@ -223,17 +230,48 @@ func (d *updateDisplay) renderLocked() {
 }
 
 // repaintLocked redraws the block in place: the cursor sits just after the
-// last line of the previous block, so it moves up one line per block line
-// and erases to the end of the screen.
+// last row of the previous block, so it moves up one row per terminal row
+// and erases to the end of the screen. Wrapped lines count as multiple rows.
 func (d *updateDisplay) repaintLocked() {
 	lines := d.blockLines()
-	if d.lines > 0 {
-		fmt.Fprintf(d.w, "\x1b[%dA\x1b[J", d.lines)
+	width := d.termWidth()
+	if d.rows > 0 {
+		fmt.Fprintf(d.w, "\x1b[%dA\x1b[J", d.rows)
 	}
 	for _, l := range lines {
 		fmt.Fprintln(d.w, l)
 	}
-	d.lines = len(lines)
+	d.rows = blockRows(lines, width)
+}
+
+func (d *updateDisplay) termWidth() int {
+	f, ok := d.w.(*os.File)
+	if !ok {
+		return 0
+	}
+	w, _, err := term.GetSize(int(f.Fd()))
+	if err != nil || w <= 0 {
+		return 0
+	}
+	return w
+}
+
+// blockRows counts the terminal rows a block occupies. When width is unknown,
+// each line is one row; otherwise wrapped lines count as multiple rows.
+func blockRows(lines []string, width int) int {
+	if width <= 0 {
+		return len(lines)
+	}
+	rows := 0
+	for _, l := range lines {
+		n := color.VisibleLen(l)
+		if n == 0 {
+			rows++
+			continue
+		}
+		rows += (n + width - 1) / width
+	}
+	return rows
 }
 
 // blockLines builds the block: header, the finished providers' summaries,

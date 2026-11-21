@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -54,10 +55,10 @@ func TestUpdateDisplayNonTerminalPrintsProviderSummaries(t *testing.T) {
 	cargoP := testsupport.NewFakeProvider(cargo.Name, provider.KindRust)
 
 	d.ProviderStart(brewP, "actionlint")
-	d.PackageDone(brewP, "actionlint")
+	d.PackageDone(brewP, "actionlint", nil)
 	// Moving to another provider prints the previous one's summary.
 	d.ProviderStart(cargoP, "qemu")
-	d.PackageDone(cargoP, "qemu")
+	d.PackageDone(cargoP, "qemu", nil)
 	d.Finalize()
 
 	out := buf.String()
@@ -79,7 +80,7 @@ func TestUpdateDisplayTerminalBlockShowsCurrentProvider(t *testing.T) {
 	brewP := testsupport.NewFakeProvider(brew.Name, provider.KindBrew)
 	brewP.Activity = "compiling qemu"
 	d.ProviderStart(brewP, "actionlint")
-	d.PackageDone(brewP, "actionlint")
+	d.PackageDone(brewP, "actionlint", nil)
 
 	d.mu.Lock()
 	d.start = time.Now().Add(-12*time.Minute - 34*time.Second)
@@ -103,5 +104,77 @@ func TestUpdateDisplayTerminalBlockShowsCurrentProvider(t *testing.T) {
 	d.Finalize()
 	if !strings.Contains(buf.String(), "\x1b[") {
 		t.Error("repaint should move the cursor up once the block exists")
+	}
+}
+
+func TestUpdateDisplayTerminalPollRefreshesElapsedWithoutActivity(t *testing.T) {
+	var buf bytes.Buffer
+	d := newUpdateDisplay(&buf, color.Off(), 1, true)
+	d.Start()
+
+	brewP := testsupport.NewFakeProvider(brew.Name, provider.KindBrew)
+	d.ProviderStart(brewP, "ripgrep")
+	buf.Reset()
+
+	d.mu.Lock()
+	d.start = time.Now().Add(-5 * time.Second)
+	d.pollOnceLocked()
+	d.mu.Unlock()
+
+	if !strings.Contains(buf.String(), "\x1b[") {
+		t.Error("terminal poll should repaint so elapsed time keeps ticking even without provider activity")
+	}
+}
+
+func TestBlockRowsCountsWrappedLines(t *testing.T) {
+	lines := []string{"short", "this line wraps"}
+	// width 5: "short" = 1 row, "this line wraps" (15 chars) = 3 rows
+	if got := blockRows(lines, 5); got != 4 {
+		t.Errorf("blockRows = %d, want 4", got)
+	}
+	if got := blockRows(lines, 0); got != 2 {
+		t.Errorf("blockRows with unknown width should count logical lines, got %d", got)
+	}
+}
+
+func TestUpdateDisplayFailedPackageNotCompleted(t *testing.T) {
+	var buf bytes.Buffer
+	d := newUpdateDisplay(&buf, color.Off(), 2, false)
+	d.Start()
+	brewP := testsupport.NewFakeProvider(brew.Name, provider.KindBrew)
+
+	d.ProviderStart(brewP, "actionlint")
+	d.PackageDone(brewP, "actionlint", errors.New("boom"))
+	d.ProviderStart(brewP, "ripgrep")
+	d.PackageDone(brewP, "ripgrep", nil)
+	d.Finalize()
+
+	out := buf.String()
+	if strings.Contains(out, "actionlint") {
+		t.Errorf("failed package should not appear under Completed:\n%s", out)
+	}
+	if !strings.Contains(out, "[brew] Completed:\n  ripgrep") {
+		t.Errorf("successful package should still appear under Completed:\n%s", out)
+	}
+
+	d2 := newUpdateDisplay(&bytes.Buffer{}, color.Off(), 2, true)
+	d2.Start()
+	d2.ProviderStart(brewP, "actionlint")
+	d2.PackageDone(brewP, "actionlint", errors.New("boom"))
+	d2.ProviderStart(brewP, "ripgrep")
+	d2.mu.Lock()
+	lines := strings.Join(d2.blockLines(), "\n")
+	done := d2.done
+	d2.mu.Unlock()
+	d2.Finalize()
+
+	if strings.Contains(lines, "actionlint") {
+		t.Errorf("failed package should not appear in terminal block:\n%s", lines)
+	}
+	if !strings.Contains(lines, "Currently: ripgrep") {
+		t.Errorf("next package should be shown as current after a failure:\n%s", lines)
+	}
+	if done != 1 {
+		t.Errorf("failed package should still count toward progress, done=%d want 1", done)
 	}
 }
