@@ -49,10 +49,11 @@ type updateDisplay struct {
 }
 
 // finishedProvider is a provider that is no longer active: the block shows
-// its completed packages once another provider is running.
+// its completed and failed packages once another provider is running.
 type finishedProvider struct {
-	name string
-	pkgs []string
+	name   string
+	pkgs   []string
+	failed []string
 }
 
 // currentState is the provider the engine is updating right now.
@@ -65,6 +66,8 @@ type currentState struct {
 	activity string
 	// pkgs are the packages the engine has finished with under this provider.
 	pkgs []string
+	// failed are the packages whose update call returned an error.
+	failed []string
 }
 
 // newUpdateDisplay builds the display. total is the number of updates the
@@ -120,7 +123,7 @@ func (d *updateDisplay) providerStartLocked(pr provider.Provider, pkg string) {
 		if !d.terminal {
 			d.printSummaryLocked(d.current)
 		}
-		d.finished = append(d.finished, finishedProvider{name: d.current.provider.Name(), pkgs: d.current.pkgs})
+		d.finished = append(d.finished, finishedProvider{name: d.current.provider.Name(), pkgs: d.current.pkgs, failed: d.current.failed})
 		d.current = nil
 	}
 	if d.current == nil {
@@ -135,10 +138,16 @@ func (d *updateDisplay) providerStartLocked(pr provider.Provider, pkg string) {
 // packageDoneLocked is PackageDone without the render.
 func (d *updateDisplay) packageDoneLocked(pr provider.Provider, pkg string, err error) {
 	d.done++
-	if err != nil {
+	if d.current == nil || d.current.provider.Name() != pr.Name() {
 		return
 	}
-	if d.current != nil && d.current.provider.Name() == pr.Name() && !slices.Contains(d.current.pkgs, pkg) {
+	if err != nil {
+		if !slices.Contains(d.current.failed, pkg) {
+			d.current.failed = append(d.current.failed, pkg)
+		}
+		return
+	}
+	if !slices.Contains(d.current.pkgs, pkg) {
 		d.current.pkgs = append(d.current.pkgs, pkg)
 	}
 }
@@ -167,16 +176,28 @@ func (d *updateDisplay) Finalize() {
 	d.printSummaryLocked(d.current)
 }
 
-// printSummaryLocked prints a provider's completed packages, the way the
-// non-terminal display records a provider when it stops being the current
-// one.
+// printSummaryLocked prints a provider's completed and failed packages, the
+// way the non-terminal display records a provider when it stops being the
+// current one.
 func (d *updateDisplay) printSummaryLocked(c *currentState) {
-	if c == nil || len(c.pkgs) == 0 {
+	if c == nil || (len(c.pkgs) == 0 && len(c.failed) == 0) {
 		return
 	}
-	fmt.Fprintf(d.w, "[%s] Completed:\n", c.provider.Name())
-	for _, p := range c.pkgs {
-		fmt.Fprintf(d.w, "  %s\n", p)
+	name := c.provider.Name()
+	if len(c.pkgs) > 0 {
+		fmt.Fprintf(d.w, "[%s] Completed:\n", name)
+		for _, p := range c.pkgs {
+			fmt.Fprintf(d.w, "  %s\n", p)
+		}
+	}
+	if len(c.failed) > 0 {
+		fmt.Fprintf(d.w, "[%s] Failed:\n", name)
+		for _, p := range c.failed {
+			fmt.Fprintf(d.w, "  %s\n", p)
+		}
+	}
+	if len(c.pkgs) == 0 && len(c.failed) == 0 {
+		fmt.Fprintf(d.w, "[%s] (no packages completed)\n", name)
 	}
 	fmt.Fprintln(d.w)
 }
@@ -281,26 +302,41 @@ func (d *updateDisplay) blockLines() []string {
 	var lines []string
 	lines = append(lines, d.p.Bold("Updating packages across providers..."), "")
 	for _, f := range d.finished {
-		if len(f.pkgs) == 0 {
+		if len(f.pkgs) == 0 && len(f.failed) == 0 {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("[%s] Completed:", f.name))
-		lines = append(lines, indentedPkgs(f.pkgs)...)
+		if len(f.pkgs) > 0 {
+			lines = append(lines, fmt.Sprintf("[%s] Completed:", f.name))
+			lines = append(lines, indentedPkgs(f.pkgs)...)
+		}
+		if len(f.failed) > 0 {
+			lines = append(lines, fmt.Sprintf("[%s] Failed:", f.name))
+			lines = append(lines, indentedPkgs(f.failed)...)
+		}
+		if len(f.pkgs) == 0 && len(f.failed) == 0 {
+			lines = append(lines, fmt.Sprintf("[%s] (no packages completed)", f.name))
+		}
 		lines = append(lines, "")
 	}
 	if d.current != nil {
+		name := d.current.provider.Name()
 		if len(d.current.pkgs) > 0 {
-			lines = append(lines, fmt.Sprintf("[%s] Completed:", d.current.provider.Name()))
+			lines = append(lines, fmt.Sprintf("[%s] Completed:", name))
 			lines = append(lines, indentedPkgs(d.current.pkgs)...)
+			lines = append(lines, "")
+		}
+		if len(d.current.failed) > 0 {
+			lines = append(lines, fmt.Sprintf("[%s] Failed:", name))
+			lines = append(lines, indentedPkgs(d.current.failed)...)
 			lines = append(lines, "")
 		}
 		switch {
 		case d.current.activity != "":
-			lines = append(lines, fmt.Sprintf("[%s] Currently: %s", d.current.provider.Name(), d.current.activity))
+			lines = append(lines, fmt.Sprintf("[%s] Currently: %s", name, d.current.activity))
 		case d.current.pkg != "":
-			lines = append(lines, fmt.Sprintf("[%s] Currently: %s", d.current.provider.Name(), d.current.pkg))
+			lines = append(lines, fmt.Sprintf("[%s] Currently: %s", name, d.current.pkg))
 		default:
-			lines = append(lines, "Waiting for "+d.current.provider.Name()+"...")
+			lines = append(lines, "Waiting for "+name+"...")
 		}
 		lines = append(lines, "")
 	}
