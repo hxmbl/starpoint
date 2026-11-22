@@ -196,9 +196,6 @@ func (d *updateDisplay) printSummaryLocked(c *currentState) {
 			fmt.Fprintf(d.w, "  %s\n", p)
 		}
 	}
-	if len(c.pkgs) == 0 && len(c.failed) == 0 {
-		fmt.Fprintf(d.w, "[%s] (no packages completed)\n", name)
-	}
 	fmt.Fprintln(d.w)
 }
 
@@ -312,9 +309,6 @@ func (d *updateDisplay) blockLines() []string {
 		if len(f.failed) > 0 {
 			lines = append(lines, fmt.Sprintf("[%s] Failed:", f.name))
 			lines = append(lines, indentedPkgs(f.failed)...)
-		}
-		if len(f.pkgs) == 0 && len(f.failed) == 0 {
-			lines = append(lines, fmt.Sprintf("[%s] (no packages completed)", f.name))
 		}
 		lines = append(lines, "")
 	}
