@@ -188,7 +188,7 @@ func (p *Provider) Installed(ctx context.Context, pkg model.Package) (*model.Ins
 		return nil, err
 	}
 	for i := range all {
-		if all[i].Name == pkg.Name {
+		if all[i].Name == binaryName(pkg.Name) {
 			found := all[i]
 			return &found, nil
 		}
@@ -272,7 +272,14 @@ func (p *Provider) Install(ctx context.Context, req provider.Request) (*model.In
 	}
 	target := req.Package.Name
 	if req.Version() != "" {
-		target += "@v" + strings.TrimPrefix(strings.TrimPrefix(req.Version(), "=="), "=")
+		v := goVersion(req.Version())
+		if v == "" {
+			target += "@latest"
+		} else if len(v) > 0 && v[0] >= '0' && v[0] <= '9' {
+			target += "@v" + v
+		} else {
+			target += "@" + v
+		}
 	} else {
 		target += "@latest"
 	}
@@ -296,7 +303,7 @@ func (p *Provider) Remove(ctx context.Context, pkg model.Package) error {
 	if dir == "" {
 		return shell.Unsupported(p.Name(), "remove", "could not determine the Go bin directory")
 	}
-	target := filepath.Join(dir, pkg.Name)
+	target := filepath.Join(dir, binaryName(pkg.Name))
 	if _, err := os.Stat(target); err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -317,7 +324,14 @@ func (p *Provider) Update(ctx context.Context, pkg model.Package) (*model.Instal
 	}
 	target := pkg.Name
 	if pkg.Version != "" {
-		target += "@v" + strings.TrimPrefix(strings.TrimPrefix(pkg.Version, "=="), "=")
+		v := goVersion(pkg.Version)
+		if v == "" {
+			target += "@latest"
+		} else if len(v) > 0 && v[0] >= '0' && v[0] <= '9' {
+			target += "@v" + v
+		} else {
+			target += "@" + v
+		}
 	} else {
 		target += "@latest"
 	}
@@ -364,7 +378,14 @@ func (p *Provider) InstallWithContext(ctx context.Context, pkg model.Package, co
 	}
 	target := pkg.Name
 	if pkg.Version != "" {
-		target += "@v" + strings.TrimPrefix(strings.TrimPrefix(pkg.Version, "=="), "=")
+		v := goVersion(pkg.Version)
+		if v == "" {
+			target += "@latest"
+		} else if len(v) > 0 && v[0] >= '0' && v[0] <= '9' {
+			target += "@v" + v
+		} else {
+			target += "@" + v
+		}
 	} else {
 		target += "@latest"
 	}
