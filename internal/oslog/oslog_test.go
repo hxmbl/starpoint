@@ -58,7 +58,8 @@ func TestMacOSGeneratesNewsyslog(t *testing.T) {
 		t.Errorf("Starpoint must not write into a system directory: %q", c.Path)
 	}
 	// newsyslog's grammar is rigid, so the important property is that the file
-	// has exactly one configuration line and ends with the J flag.
+	// has exactly one configuration line and ends with the G and J flags. G
+	// makes the audit-*.jsonl path a pattern; without it nothing is rotated.
 	var lines []string
 	for _, l := range strings.Split(c.Content, "\n") {
 		if l != "" && !strings.HasPrefix(strings.TrimSpace(l), "#") {
@@ -68,8 +69,8 @@ func TestMacOSGeneratesNewsyslog(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("expected one configuration line, got %v", lines)
 	}
-	if !strings.HasSuffix(lines[0], "* J") {
-		t.Errorf("newsyslog should be told to rotate and compress: %q", lines[0])
+	if !strings.HasSuffix(lines[0], "* GJ") {
+		t.Errorf("newsyslog should glob the path and rotate and compress: %q", lines[0])
 	}
 	if !strings.Contains(lines[0], testLogDir+"/audit-*.jsonl") {
 		t.Errorf("the line does not name Starpoint's logs: %q", lines[0])
