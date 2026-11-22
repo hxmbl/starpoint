@@ -527,12 +527,12 @@ type LoadOptions struct {
 // Load reads the global configuration and, when asked, any project-local
 // configurations that apply to Dir.
 func Load(opts LoadOptions) (*Document, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("locating home directory: %w", err)
-	}
 	globalPath := opts.GlobalPath
 	if globalPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("locating home directory: %w", err)
+		}
 		globalPath = filepath.Join(home, GlobalFileName)
 	}
 	doc := &Document{}
@@ -548,6 +548,8 @@ func Load(opts LoadOptions) (*Document, error) {
 	}
 	seen := map[string]bool{globalPath: true}
 	dir := opts.Dir
+	var projects []File
+	var projectWarnings []string
 	for {
 		candidate := filepath.Join(dir, ProjectFileName)
 		if !seen[candidate] {
@@ -556,9 +558,9 @@ func Load(opts LoadOptions) (*Document, error) {
 			if err != nil {
 				return nil, err
 			}
-			doc.Warnings = append(doc.Warnings, warns...)
+			projectWarnings = append(projectWarnings, warns...)
 			if pf.Exists || len(pf.Raw.Packages) > 0 {
-				doc.Projects = append(doc.Projects, pf)
+				projects = append(projects, pf)
 			}
 		}
 		parent := filepath.Dir(dir)
@@ -567,6 +569,17 @@ func Load(opts LoadOptions) (*Document, error) {
 		}
 		dir = parent
 	}
+	// Discovery walked up from Dir, so the innermost project came first.
+	// Document.Projects is outermost first, and the merges give later entries
+	// priority: without reversing, a parent would override a child.
+	for i, j := 0, len(projects)-1; i < j; i, j = i+1, j-1 {
+		projects[i], projects[j] = projects[j], projects[i]
+	}
+	for i, j := 0, len(projectWarnings)-1; i < j; i, j = i+1, j-1 {
+		projectWarnings[i], projectWarnings[j] = projectWarnings[j], projectWarnings[i]
+	}
+	doc.Warnings = append(doc.Warnings, projectWarnings...)
+	doc.Projects = append(doc.Projects, projects...)
 	return doc, nil
 }
 
