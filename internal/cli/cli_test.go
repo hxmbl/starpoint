@@ -278,6 +278,34 @@ func TestUnknownCommandFails(t *testing.T) {
 	}
 }
 
+func TestUnknownCommandSuggestsCloseMatch(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	code, _, errOut := h.run("instal")
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d\n%s", code, errOut)
+	}
+	if !strings.Contains(errOut, "unknown command") {
+		t.Fatalf("stderr should say the command is unknown: %s", errOut)
+	}
+	if !strings.Contains(errOut, `Did you mean "install"?`) {
+		t.Errorf("stderr should suggest install: %s", errOut)
+	}
+}
+
+func TestUnknownCommandFlagTypoSuggestsFlag(t *testing.T) {
+	h := newHarness(t, "schema = 1\n")
+	code, _, errOut := h.run("--jsno")
+	if code != 2 {
+		t.Fatalf("expected exit code 2, got %d\n%s", code, errOut)
+	}
+	if !strings.Contains(errOut, "unknown command") {
+		t.Fatalf("stderr should say the command is unknown: %s", errOut)
+	}
+	if !strings.Contains(errOut, `Did you mean "--json"?`) {
+		t.Errorf("stderr should suggest --json: %s", errOut)
+	}
+}
+
 func TestVersionFlag(t *testing.T) {
 	h := newHarness(t, "schema = 1\n")
 	out := h.mustRun("--version")

@@ -488,7 +488,7 @@ func Run(ctx context.Context, env *Env, args []string) int {
 		return 0
 	}
 	if err == errUnknownCommand {
-		fmt.Fprintf(env.Stderr, "%s %q\n\n", env.palErr.BoldRed("unknown command"), cmd)
+		fmt.Fprintf(env.Stderr, "%s %q%s\n\n", env.palErr.BoldRed("unknown command"), cmd, suggestCommand(cmd))
 		printUsage(env.Stderr)
 		return 2
 	}
@@ -499,7 +499,7 @@ func Run(ctx context.Context, env *Env, args []string) int {
 			return env.finish(canonicalCommand(cmd), cmdArgs, refusal.Exit, err)
 		}
 		if errors.Is(err, ErrUsage) {
-			fmt.Fprintf(env.Stderr, "%s %s\n\n", env.palErr.BoldRed("error:"), err)
+			fmt.Fprintf(env.Stderr, "%s %s%s\n\n", env.palErr.BoldRed("error:"), err, usageSuggestion(err, cmd))
 			printCommandHelp(env.Stderr, cmd)
 			return env.finish(canonicalCommand(cmd), cmdArgs, 2, err)
 		}
