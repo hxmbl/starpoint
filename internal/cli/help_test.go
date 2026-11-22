@@ -92,6 +92,31 @@ func TestUnknownOptionsAreNotPackageNames(t *testing.T) {
 	}
 }
 
+func TestUnknownOptionSuggestsCloseMatch(t *testing.T) {
+	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"ripgrep\"\nprovider = \"brew\"\n")
+	code, _, errOut := h.run("install", "--hepl")
+	if code != 2 {
+		t.Fatalf("expected usage error (2), got %d\n%s", code, errOut)
+	}
+	if !strings.Contains(errOut, "unknown option") {
+		t.Fatalf("stderr should name the option: %s", errOut)
+	}
+	if !strings.Contains(errOut, `Did you mean "--help"?`) {
+		t.Errorf("stderr should suggest --help: %s", errOut)
+	}
+}
+
+func TestUnknownCommandOptionSuggestsCommandFlag(t *testing.T) {
+	h := newHarness(t, "schema = 1\n\n[[package]]\nname = \"ripgrep\"\nprovider = \"brew\"\n")
+	code, _, errOut := h.run("sync", "--dry-rnu")
+	if code != 2 {
+		t.Fatalf("expected usage error (2), got %d\n%s", code, errOut)
+	}
+	if !strings.Contains(errOut, `Did you mean "--dry-run"?`) {
+		t.Errorf("stderr should suggest --dry-run: %s", errOut)
+	}
+}
+
 // firstJSON decodes the first JSON document of a command's output.
 func firstJSON(t *testing.T, out string, target any) {
 	t.Helper()
