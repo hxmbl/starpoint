@@ -3,7 +3,10 @@ package cli
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/hxmbl/starpoint/internal/config"
+	"github.com/hxmbl/starpoint/internal/history"
 	"github.com/hxmbl/starpoint/internal/model"
 )
 
@@ -17,6 +20,39 @@ func (h *harness) stagedMove(onPath string) {
 }
 
 const stagedConfig = "schema = 1\n\n[[package]]\nname = \"ruff\"\nprovider = \"uv\"\n"
+
+// Reversal must read the history written under this run's state directory, not
+// the default ~/.starpoint/history.json.
+func TestTransitionReverseReadsConfiguredStateDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	h := newHarness(t, stagedConfig)
+
+	dir, err := config.StateDir(h.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hist, err := history.New(history.PathIn(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = hist.Record(model.Transition{
+		Package:    model.Package{Name: "ruff", Provider: "uv"},
+		From:       model.ProviderRef{Name: "brew", Available: true},
+		To:         model.ProviderRef{Name: "uv", Available: true},
+		Phase:      model.TransitionCompleted,
+		Reversible: true,
+		Timestamp:  time.Now().Unix(),
+	}, h.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, out, errOut := h.run("transition", "--reverse", "ruff", "--dry-run")
+	all := out + errOut
+	if strings.Contains(all, "No transition history found for ruff") || strings.Contains(all, "no reversible transitions found") {
+		t.Fatalf("reversal did not find the history in the configured state dir:\n%s", all)
+	}
+}
 
 func TestTransitionListsPendingMovesWithoutChangingAnything(t *testing.T) {
 	h := newHarness(t, stagedConfig)

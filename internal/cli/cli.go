@@ -3299,8 +3299,13 @@ func cmdTransitionReverse(ctx context.Context, env *Env, w *report.Writer, eng *
 		return fmt.Errorf("%w: --reverse requires package names", ErrUsage)
 	}
 
-	// Get transition history
-	hist, err := history.New("")
+	// Read the same history this configuration writes to. With no resolvable
+	// state directory, New("") falls back to the default location.
+	histPath := ""
+	if dir := env.stateDir(); dir != "" {
+		histPath = history.PathIn(dir)
+	}
+	hist, err := history.New(histPath)
 	if err != nil {
 		return fmt.Errorf("loading transition history: %w", err)
 	}
