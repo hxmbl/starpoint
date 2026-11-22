@@ -98,8 +98,11 @@ func TestUpdateDisplayTerminalBlockShowsCurrentProvider(t *testing.T) {
 			t.Errorf("the block should contain %q:\n%s", want, lines)
 		}
 	}
-	if !strings.HasSuffix(lines, "Progress: "+progressBar(1, 2)) {
+	if !strings.HasSuffix(lines, "Progress: "+progressStatus(1, 2, 0)) {
 		t.Errorf("the block should end with the progress line:\n%s", lines)
+	}
+	if !strings.Contains(lines, "(1/2)") {
+		t.Errorf("the progress line should show done/total counts:\n%s", lines)
 	}
 	d.Finalize()
 	if !strings.Contains(buf.String(), "\x1b[") {
@@ -218,5 +221,63 @@ func TestUpdateDisplayFailedOnlyProviderStillShown(t *testing.T) {
 
 	if !strings.Contains(lines, "[brew] Failed:\n  actionlint") {
 		t.Errorf("failed-only provider should be visible in terminal block:\n%s", lines)
+	}
+}
+
+func TestProgressStatusShowsCountsAndFailures(t *testing.T) {
+	if got, want := progressStatus(2, 4, 0), progressBar(2, 4)+" (2/4)"; got != want {
+		t.Errorf("progressStatus(2, 4, 0) = %q, want %q", got, want)
+	}
+	if got, want := progressStatus(2, 4, 1), progressBar(2, 4)+" (2/4, 1 failed)"; got != want {
+		t.Errorf("progressStatus(2, 4, 1) = %q, want %q", got, want)
+	}
+}
+
+func TestUpdateDisplayTerminalBlockShowsFailedTally(t *testing.T) {
+	var buf bytes.Buffer
+	d := newUpdateDisplay(&buf, color.Off(), 2, true)
+	d.Start()
+	brewP := testsupport.NewFakeProvider(brew.Name, provider.KindBrew)
+	d.ProviderStart(brewP, "actionlint")
+	d.PackageDone(brewP, "actionlint", errors.New("boom"))
+	d.PackageDone(brewP, "ripgrep", nil)
+
+	d.mu.Lock()
+	lines := strings.Join(d.blockLines(), "\n")
+	d.mu.Unlock()
+
+	if !strings.Contains(lines, progressBar(2, 2)+" (2/2, 1 failed)") {
+		t.Errorf("running block should show a failed tally beside progress:\n%s", lines)
+	}
+	d.Finalize()
+}
+
+func TestUpdateDisplayTerminalFinalBlockShowsResult(t *testing.T) {
+	var buf bytes.Buffer
+	d := newUpdateDisplay(&buf, color.Off(), 3, true)
+	d.Start()
+	brewP := testsupport.NewFakeProvider(brew.Name, provider.KindBrew)
+	cargoP := testsupport.NewFakeProvider(cargo.Name, provider.KindRust)
+
+	d.ProviderStart(brewP, "actionlint")
+	d.PackageDone(brewP, "actionlint", nil)
+	d.PackageDone(brewP, "ripgrep", errors.New("boom"))
+	d.ProviderStart(cargoP, "qemu")
+	d.PackageDone(cargoP, "qemu", nil)
+
+	// Keep only the final repaint so earlier "Currently" lines don't mask the
+	// check below.
+	buf.Reset()
+	d.Finalize()
+	out := buf.String()
+
+	if !strings.Contains(out, "Result: 2 updated, 1 failed") {
+		t.Errorf("final block should show the updated/failed result:\n%s", out)
+	}
+	if strings.Contains(out, "Currently:") {
+		t.Errorf("final block should not claim a package is still current:\n%s", out)
+	}
+	if !strings.Contains(out, "[brew] Failed:\n  ripgrep") {
+		t.Errorf("final block should still list the failed package:\n%s", out)
 	}
 }

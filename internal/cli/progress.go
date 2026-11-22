@@ -20,8 +20,9 @@ import (
 // While the engine updates packages it emits progress events through
 // Options.Progress. The display keeps one block on screen that is redrawn in
 // place: the header, the per-provider completion lists so far, the provider
-// being updated with its current package or activity, the elapsed time and
-// the progress of completed work. In a terminal the block is repainted with
+// being updated with its current package or activity, the elapsed time, and
+// progress with done/total counts and a failed tally. Once finalized it also
+// shows an updated/failed result line. In a terminal the block is repainted with
 // ANSI cursor control; without one, each provider's completion is printed as
 // it happens instead of being redrawn.
 type updateDisplay struct {
@@ -324,19 +325,41 @@ func (d *updateDisplay) blockLines() []string {
 			lines = append(lines, indentedPkgs(d.current.failed)...)
 			lines = append(lines, "")
 		}
-		switch {
-		case d.current.activity != "":
-			lines = append(lines, fmt.Sprintf("[%s] Currently: %s", name, d.current.activity))
-		case d.current.pkg != "":
-			lines = append(lines, fmt.Sprintf("[%s] Currently: %s", name, d.current.pkg))
-		default:
-			lines = append(lines, "Waiting for "+name+"...")
+		// A finalized block is the final snapshot, so nothing is "current".
+		if !d.finalized {
+			switch {
+			case d.current.activity != "":
+				lines = append(lines, fmt.Sprintf("[%s] Currently: %s", name, d.current.activity))
+			case d.current.pkg != "":
+				lines = append(lines, fmt.Sprintf("[%s] Currently: %s", name, d.current.pkg))
+			default:
+				lines = append(lines, "Waiting for "+name+"...")
+			}
+			lines = append(lines, "")
 		}
-		lines = append(lines, "")
 	}
+	updated, failed := d.counts()
 	lines = append(lines, d.p.Dim("Time elapsed: "+elapsedString(time.Since(d.start))))
-	lines = append(lines, d.p.Dim("Progress: "+progressBar(d.done, d.total)))
+	lines = append(lines, d.p.Dim("Progress: "+progressStatus(d.done, d.total, failed)))
+	if d.finalized {
+		lines = append(lines, d.p.Dim(fmt.Sprintf("Result: %d updated, %d failed", updated, failed)))
+	}
 	return lines
+}
+
+// counts reports how many packages were updated and how many failed, across
+// both finished and current providers. A package appears in exactly one of
+// those lists, so the totals match the per-provider summaries on screen.
+func (d *updateDisplay) counts() (updated, failed int) {
+	for _, f := range d.finished {
+		updated += len(f.pkgs)
+		failed += len(f.failed)
+	}
+	if d.current != nil {
+		updated += len(d.current.pkgs)
+		failed += len(d.current.failed)
+	}
+	return updated, failed
 }
 
 func indentedPkgs(pkgs []string) []string {
@@ -364,6 +387,16 @@ func elapsedString(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%ds", int(s))
 	}
+}
+
+// progressStatus renders the bar with done/total counts beside it and, when
+// there are any, a failed tally, e.g. "[====------------------------] 27% (3/11, 1 failed)".
+func progressStatus(done, total, failed int) string {
+	bar := progressBar(done, total)
+	if failed > 0 {
+		return fmt.Sprintf("%s (%d/%d, %d failed)", bar, done, total, failed)
+	}
+	return fmt.Sprintf("%s (%d/%d)", bar, done, total)
 }
 
 // progressBar renders the progress of completed work as a bar and a percent,
