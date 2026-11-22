@@ -159,7 +159,11 @@ func (p *Provider) Discover(ctx context.Context) ([]model.Installation, error) {
 			var dep depEntry
 			// A dependency with no version is a link or a workspace entry, which
 			// pnpm installs globals with and Starpoint cannot version.
-			_ = json.Unmarshal(raw, &dep)
+			if err := json.Unmarshal(raw, &dep); err != nil {
+				// A malformed dependency entry is skipped rather than recorded
+				// as an unversioned installation.
+				continue
+			}
 			out = append(out, model.Installation{
 				Name:     name,
 				Version:  strings.TrimPrefix(dep.Version, "^"),
