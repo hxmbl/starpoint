@@ -150,8 +150,11 @@ func TestUpdateDisplayFailedPackageNotCompleted(t *testing.T) {
 	d.Finalize()
 
 	out := buf.String()
-	if strings.Contains(out, "actionlint") {
+	if strings.Contains(out, "actionlint") && strings.Contains(out, "Completed:\n  actionlint") {
 		t.Errorf("failed package should not appear under Completed:\n%s", out)
+	}
+	if !strings.Contains(out, "[brew] Failed:\n  actionlint") {
+		t.Errorf("failed package should appear under Failed:\n%s", out)
 	}
 	if !strings.Contains(out, "[brew] Completed:\n  ripgrep") {
 		t.Errorf("successful package should still appear under Completed:\n%s", out)
@@ -168,13 +171,52 @@ func TestUpdateDisplayFailedPackageNotCompleted(t *testing.T) {
 	d2.mu.Unlock()
 	d2.Finalize()
 
-	if strings.Contains(lines, "actionlint") {
-		t.Errorf("failed package should not appear in terminal block:\n%s", lines)
+	if strings.Contains(lines, "Completed:\n  actionlint") {
+		t.Errorf("failed package should not appear under Completed in terminal block:\n%s", lines)
+	}
+	if !strings.Contains(lines, "[brew] Failed:\n  actionlint") {
+		t.Errorf("failed package should appear under Failed in terminal block:\n%s", lines)
 	}
 	if !strings.Contains(lines, "Currently: ripgrep") {
 		t.Errorf("next package should be shown as current after a failure:\n%s", lines)
 	}
 	if done != 1 {
 		t.Errorf("failed package should still count toward progress, done=%d want 1", done)
+	}
+}
+
+func TestUpdateDisplayFailedOnlyProviderStillShown(t *testing.T) {
+	var buf bytes.Buffer
+	d := newUpdateDisplay(&buf, color.Off(), 2, false)
+	d.Start()
+	brewP := testsupport.NewFakeProvider(brew.Name, provider.KindBrew)
+	cargoP := testsupport.NewFakeProvider(cargo.Name, provider.KindRust)
+
+	d.ProviderStart(brewP, "actionlint")
+	d.PackageDone(brewP, "actionlint", errors.New("boom"))
+	d.ProviderStart(cargoP, "ripgrep")
+	d.PackageDone(cargoP, "ripgrep", nil)
+	d.Finalize()
+
+	out := buf.String()
+	if !strings.Contains(out, "[brew] Failed:\n  actionlint") {
+		t.Errorf("failed-only provider summary should be printed:\n%s", out)
+	}
+	if !strings.Contains(out, "[cargo] Completed:\n  ripgrep") {
+		t.Errorf("later provider summary should still be printed:\n%s", out)
+	}
+
+	var termBuf bytes.Buffer
+	d2 := newUpdateDisplay(&termBuf, color.Off(), 1, true)
+	d2.Start()
+	d2.ProviderStart(brewP, "actionlint")
+	d2.PackageDone(brewP, "actionlint", errors.New("boom"))
+	d2.mu.Lock()
+	lines := strings.Join(d2.blockLines(), "\n")
+	d2.mu.Unlock()
+	d2.Finalize()
+
+	if !strings.Contains(lines, "[brew] Failed:\n  actionlint") {
+		t.Errorf("failed-only provider should be visible in terminal block:\n%s", lines)
 	}
 }

@@ -355,12 +355,12 @@ verification all run as the same account
 **`internal/report/report.go`** - Humans and machines, same results
 - JSON is a first-class path, not a wrapper around the text: another tool
   reads the structured data the engine produced, never a parsed table
-- One flat envelope per response: `{schema_version: 9, ...}` — errors too, on
+- One flat envelope per response: `{schema_version: 11, ...}` — errors too, on
   stderr, with refusal `code`, `exit_code` and, when there was a plan,
   `refused`
-- **`docs/json-schema.md`** documents schema 9 top to bottom: common types,
+- **`docs/json-schema.md`** documents schema 11 top to bottom: common types,
   `ActionResult` and its `run_as`, effects, summaries, refusal examples, and
-  the v1→v9 migration history. Any envelope change needs a bump plus a
+  the v1→v11 migration history. Any envelope change needs a bump plus a
   migration section there; removing or renaming fields is breaking
 
 **`internal/report/actions.go`** - `ActionResult`, the one shape every

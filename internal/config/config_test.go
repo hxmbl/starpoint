@@ -22,6 +22,20 @@ func TestLoadMissingFileIsEmptyNotAnError(t *testing.T) {
 	}
 }
 
+// An explicit global path is complete in itself; loading it must not depend on
+// the process having a home directory.
+func TestLoadWithExplicitPathDoesNotNeedHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	path := writeConfig(t, "schema = 1\n")
+	doc, err := Load(LoadOptions{GlobalPath: path})
+	if err != nil {
+		t.Fatalf("loading an explicit path without HOME: %v", err)
+	}
+	if !doc.Global.Exists {
+		t.Fatal("the explicitly named config was not loaded")
+	}
+}
+
 func TestLoadParsesPackages(t *testing.T) {
 	path := writeConfig(t, `
 schema = 1
@@ -415,5 +429,48 @@ func TestRetentionDaysRoundTripsExactlyAsWritten(t *testing.T) {
 				t.Errorf("Retention() = %d, want %d", got, tc.value)
 			}
 		})
+	}
+}
+
+// Discovery walks up from the current directory, but Document.Projects is
+// outermost first: a nested project file must override its parent.
+func TestLoadDiscoversProjectsOutermostFirst(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outer := filepath.Join(root, ProjectFileName)
+	inner := filepath.Join(child, ProjectFileName)
+	for path, version := range map[string]string{outer: "0.1.0", inner: "0.2.0"} {
+		body := "schema = 1\n\n[[package]]\nname = \"ruff\"\nversion = \"" + version + "\"\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	doc, err := Load(LoadOptions{
+		GlobalPath:       filepath.Join(root, "global.toml"),
+		Dir:              child,
+		DiscoverProjects: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Projects) != 2 {
+		t.Fatalf("found %d project files, want 2: %+v", len(doc.Projects), doc.Projects)
+	}
+	if got := doc.Projects[0].Path; got != outer {
+		t.Errorf("outermost project = %q, want %q", got, outer)
+	}
+	if got := doc.Projects[1].Path; got != inner {
+		t.Errorf("innermost project = %q, want %q", got, inner)
+	}
+	pkg, ok := doc.Package("ruff")
+	if !ok {
+		t.Fatal("ruff was not merged")
+	}
+	if pkg.Version != "0.2.0" {
+		t.Errorf("ruff version = %q, want the nested project's 0.2.0", pkg.Version)
 	}
 }
